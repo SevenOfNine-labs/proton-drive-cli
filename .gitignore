@@ -20,3 +20,6 @@ _book/
 
 # npm pack tarballs
 *.tgz
+
+# Changeset working files (agent-maintained, never committed)
+.changeset/

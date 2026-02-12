@@ -10,6 +10,9 @@ import { NodeType } from '@protontech/drive-sdk';
 import { logger } from '../utils/logger';
 import { resolvePathToNodeUid, ensureFolderPath, findFileInFolder } from '../sdk/pathResolver';
 
+/** Node types we recognize. SDK 0.9.8+ added album/photo — skip them. */
+const KNOWN_NODE_TYPES = new Set<string>([NodeType.File, NodeType.Folder]);
+
 // Re-export canonical oidToPath/pathToOid from bridge/validators (no heavy deps)
 export { oidToPath, pathToOid } from '../bridge/validators';
 import { oidToPath } from '../bridge/validators';
@@ -99,9 +102,14 @@ export async function listFolder(
 
   for await (const child of client.iterateFolderChildren(folderUid)) {
     if (child.ok) {
+      const nodeType = child.value.type;
+      if (!KNOWN_NODE_TYPES.has(nodeType)) {
+        logger.debug(`Skipping unknown node type "${nodeType}": ${child.value.name}`);
+        continue;
+      }
       items.push({
         name: child.value.name,
-        type: child.value.type === NodeType.File ? 'file' : 'folder',
+        type: nodeType === NodeType.File ? 'file' : 'folder',
         size: child.value.totalStorageSize || 0,
         modifiedTime: child.value.modificationTime
           ? Math.floor(child.value.modificationTime.getTime() / 1000)

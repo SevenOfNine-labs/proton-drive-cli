@@ -27,13 +27,16 @@ export class DriveCryptoService {
 
   /**
    * Initialize crypto service with user's mailbox password
-   * Decrypts and caches all user private keys
+   * Decrypts and caches all user private keys.
+   *
+   * Uses the crypto-init disk cache (keySalts, user, addresses) when
+   * available, eliminating 3 API round-trips on subsequent subprocesses.
    */
   async initialize(mailboxPassword: string): Promise<void> {
     // Normalize password (Proton uses NFC normalization)
     const normalizedPassword = mailboxPassword.normalize('NFC');
 
-    // Get key salts from API
+    // Get key salts from API (or cache)
     const keySalts = await this.userApi.getKeySalts();
 
     // Create a map of key ID to salt
@@ -42,7 +45,7 @@ export class DriveCryptoService {
       saltMap.set(keySalt.ID, keySalt.KeySalt);
     }
 
-    // Get user information (for user keys)
+    // Get user information (for user keys) — may come from cache
     const user = await this.userApi.getUser();
 
     // Decrypt user keys first (these are the primary account keys)
@@ -74,8 +77,12 @@ export class DriveCryptoService {
       }
     }
 
-    // Get user addresses
+    // Get user addresses — may come from cache
     const addresses = await this.userApi.getAddresses();
+
+    // Persist crypto-init data to disk cache for subsequent subprocesses.
+    // This is non-blocking and non-fatal (best-effort).
+    this.userApi.saveCryptoCache(keySalts, user, addresses).catch(() => {});
 
     // Decrypt address keys (these are encrypted with tokens from user keys)
     for (const address of addresses) {

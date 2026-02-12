@@ -1,9 +1,9 @@
-import axios from 'axios';
+import { HttpClient } from './http-client';
 import { AuthApiClient } from './auth';
 import { CaptchaError } from '../errors/types';
 
-jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
+jest.mock('./http-client');
+const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
 
 describe('AuthApiClient', () => {
   let client: AuthApiClient;
@@ -13,10 +13,10 @@ describe('AuthApiClient', () => {
   beforeEach(() => {
     mockPost = jest.fn();
     mockDelete = jest.fn();
-    mockedAxios.create.mockReturnValue({
+    MockedHttpClient.create = jest.fn().mockReturnValue({
       post: mockPost,
       delete: mockDelete,
-      interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } },
+      interceptors: { request: { use: jest.fn(), _handlers: [] }, response: { use: jest.fn(), _handlers: [] } },
     } as any);
 
     client = new AuthApiClient('https://test-api.proton.me');
@@ -91,12 +91,12 @@ describe('AuthApiClient', () => {
     });
 
     test('rethrows non-CAPTCHA errors', async () => {
-      const axiosError = new Error('Network Error');
-      (axiosError as any).response = {
+      const apiError = new Error('Network Error');
+      (apiError as any).response = {
         status: 500,
         data: { Code: 1000, Error: 'Internal Server Error' },
       };
-      mockPost.mockRejectedValue(axiosError);
+      mockPost.mockRejectedValue(apiError);
 
       await expect(client.getAuthInfo('user@proton.me'))
         .rejects.toThrow('Network Error');

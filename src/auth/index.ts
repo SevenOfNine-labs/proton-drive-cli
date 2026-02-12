@@ -2,7 +2,8 @@ import { AuthApiClient } from '../api/auth';
 import { SRPClient } from './srp';
 import { SessionManager } from './session';
 import { SessionCredentials } from '../types/auth';
-import { CaptchaError } from '../errors/types';
+import { AppError, CaptchaError, ErrorCode } from '../errors/types';
+import { isHttpClientError } from '../api/http-client';
 import { jwtDecode } from 'jwt-decode';
 import { logger } from '../utils/logger';
 
@@ -18,15 +19,13 @@ export class AuthService {
   }
 
   /**
-   * Authenticate with username and password using SRP protocol
-   * @param username - User's email address
-   * @param password - User's password
-   * @param captchaToken - Optional CAPTCHA token if required
-   * @returns Session credentials
+   * Authenticate with username and password using SRP protocol.
+   * Single attempt — no automatic retries. Rate-limit and CAPTCHA errors
+   * are surfaced to the caller so the user controls when to retry.
    */
   async login(username: string, password: string, captchaToken?: string): Promise<SessionCredentials> {
     try {
-      // Step 1: Get auth info (send CAPTCHA token if available - required for verification)
+      // Step 1: Get auth info (send CAPTCHA token if available)
       const authInfo = await this.authApi.getAuthInfo(username, captchaToken);
 
       // Step 2: Compute SRP handshake
@@ -57,7 +56,7 @@ export class AuthService {
         throw new Error('Server authentication failed: invalid server proof');
       }
 
-      // Step 5: Create session credentials (password is NOT stored — flows via stdin)
+      // Step 5: Create session credentials (password is NOT stored)
       const session: SessionCredentials = {
         sessionId: authResponse.UID,
         uid: authResponse.UID,
@@ -65,6 +64,7 @@ export class AuthService {
         refreshToken: authResponse.RefreshToken,
         scopes: authResponse.Scopes,
         passwordMode: authResponse.PasswordMode,
+        userHash: SessionManager.hashUsername(username),
       };
 
       // Step 6: Save session
@@ -76,6 +76,21 @@ export class AuthService {
     } catch (error: unknown) {
       if (error instanceof CaptchaError) {
         throw error;
+      }
+
+      // Proton API rate-limit (code 2028) — surface actual message, no auto-retry
+      if (isHttpClientError(error)) {
+        const data = error.response?.data as Record<string, unknown> | undefined;
+        const protonCode = data?.Code;
+        if (protonCode === 2028) {
+          const apiMessage = (data?.Error as string) || 'Too many requests';
+          throw new AppError(
+            apiMessage,
+            ErrorCode.RATE_LIMITED,
+            { protonCode, httpStatus: error.response?.status, apiMessage },
+            true
+          );
+        }
       }
 
       if (error instanceof Error) {
@@ -175,8 +190,9 @@ export class AuthService {
         }
       }
 
-      // Clear local session
+      // Clear local session and crypto cache
       await SessionManager.clearSession();
+      await SessionManager.clearCryptoCache();
       logger.info('Logged out successfully');
     } catch (error) {
       if (error instanceof Error) {

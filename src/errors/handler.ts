@@ -1,11 +1,11 @@
 import chalk from 'chalk';
 import { AppError, ErrorCode } from './types';
-import { AxiosError, isAxiosError } from 'axios';
+import { HttpClientError, isHttpClientError } from '../api/http-client';
 
 /**
- * Map Axios/HTTP errors to app errors
+ * Map HTTP client errors to app errors
  */
-export function mapHttpError(error: AxiosError): AppError {
+export function mapHttpError(error: HttpClientError): AppError {
   // No response - network error
   if (!error.response) {
     if (error.code === 'ECONNREFUSED') {
@@ -182,8 +182,8 @@ export function toAppError(error: unknown): AppError {
     return error;
   }
 
-  // Axios HTTP error
-  if (isAxiosError(error)) {
+  // HTTP client error
+  if (isHttpClientError(error)) {
     return mapHttpError(error);
   }
 

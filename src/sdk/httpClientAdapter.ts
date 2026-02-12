@@ -93,7 +93,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   }
 
   private async refreshTokenIfNeeded(): Promise<void> {
-    // Deduplicate concurrent refresh attempts
+    // Deduplicate concurrent refresh attempts within this process
     if (this.refreshInProgress) {
       return this.refreshInProgress;
     }
@@ -104,13 +104,31 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         if (!session) throw new Error('No session to refresh');
 
         const authApi = new AuthApiClient();
-        const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
-        await SessionManager.saveSession({
-          ...session,
-          accessToken: refreshResult.AccessToken,
-          refreshToken: refreshResult.RefreshToken,
-        });
-        logger.info('Token refreshed successfully');
+        try {
+          const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
+          await SessionManager.saveSession({
+            ...session,
+            accessToken: refreshResult.AccessToken,
+            refreshToken: refreshResult.RefreshToken,
+          });
+          logger.info('Token refreshed successfully');
+        } catch (refreshErr) {
+          // Refresh token may have been consumed by another subprocess.
+          // Re-read the session file — another process may have already
+          // written a fresh token pair.
+          logger.debug('Refresh failed, re-reading session file (possible cross-process race)');
+          const updatedSession = await SessionManager.loadSession();
+          if (
+            updatedSession &&
+            updatedSession.accessToken !== session.accessToken
+          ) {
+            // Another process already refreshed — use the new tokens
+            logger.info('Session refreshed by another process, using updated tokens');
+            return;
+          }
+          // Session unchanged — the refresh truly failed
+          throw refreshErr;
+        }
       } finally {
         this.refreshInProgress = null;
       }

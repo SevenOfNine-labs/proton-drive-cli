@@ -26,9 +26,13 @@ import { logger } from '../utils/logger';
 /**
  * Create an authenticated ProtonDriveClient with all adapters.
  *
- * Handles two flows:
- * 1. Existing session + password → restore session, initialize crypto
- * 2. Full login → authenticate, then initialize crypto
+ * Authentication strategy (in order):
+ * 1. Valid session (not expired) → use directly, initialize crypto
+ * 2. Expired session with refresh token → proactive refresh, then crypto
+ * 3. No session or refresh failed → full SRP login
+ *
+ * Crypto initialization is expensive (3 API calls: keySalts, user, addresses).
+ * When a crypto cache exists on disk, those calls are skipped entirely.
  *
  * @param password - User's mailbox password (always required for crypto)
  * @param username - Required for full login (optional if restoring session)
@@ -38,37 +42,67 @@ export async function createSDKClient(
   password: string,
   username?: string,
 ): Promise<ProtonDriveClient> {
-  // Initialize DriveCryptoService with the password.
-  // This decrypts user keys, address keys, and caches them.
   const driveCrypto = new DriveCryptoService();
 
-  // Try existing session first
-  let needsFullLogin = false;
+  let sessionReady = false;
+
+  // Step 1: Try existing session
   try {
-    const session = await SessionManager.loadSession();
-    if (session && password) {
-      await driveCrypto.initialize(password);
-      logger.debug('SDK client: restored from existing session');
+    if (await SessionManager.hasValidSession()) {
+      // Access token is still valid — use it directly
+      sessionReady = true;
+      logger.debug('SDK client: valid session found');
     } else {
-      needsFullLogin = true;
+      // Session may exist but token is expired — try proactive refresh
+      const session = await SessionManager.loadSession();
+      if (session) {
+        logger.debug('SDK client: session expired, attempting proactive refresh');
+        const { AuthApiClient } = await import('../api/auth');
+        const authApi = new AuthApiClient();
+        const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
+        await SessionManager.saveSession({
+          ...session,
+          accessToken: refreshResult.AccessToken,
+          refreshToken: refreshResult.RefreshToken,
+        });
+        sessionReady = true;
+        logger.debug('SDK client: proactive token refresh succeeded');
+      }
     }
-  } catch (err: any) {
-    const msg = String(err?.message || '').toLowerCase();
-    if (msg.includes('session') || msg.includes('login') || msg.includes('no valid') || msg.includes('corrupt')) {
-      needsFullLogin = true;
-    } else {
-      throw err;
+  } catch (refreshErr) {
+    // Refresh failed (token consumed by another process, or network error).
+    // Try re-reading session — another process may have already refreshed.
+    try {
+      if (await SessionManager.hasValidSession()) {
+        sessionReady = true;
+        logger.debug('SDK client: session refreshed by another process');
+      }
+    } catch {
+      // Still no valid session — fall through to full login
     }
   }
 
-  if (needsFullLogin) {
+  // Step 2: Initialize crypto with the session, or fall back to full login
+  if (sessionReady) {
+    try {
+      await driveCrypto.initialize(password);
+      logger.debug('SDK client: crypto initialized from session');
+    } catch (cryptoErr) {
+      // Crypto init failed (API error during key fetch, bad password, etc.)
+      // Fall through to full login only if we have credentials
+      logger.debug(`SDK client: crypto init failed (${cryptoErr instanceof Error ? cryptoErr.message : cryptoErr}), will try full login`);
+      sessionReady = false;
+    }
+  }
+
+  if (!sessionReady) {
     if (!username || !password) {
       throw new Error('No session found and credentials not provided');
     }
     const authService = new AuthService();
     await authService.login(username, password);
     await driveCrypto.initialize(password);
-    logger.debug('SDK client: authenticated with full login');
+    logger.debug('SDK client: authenticated with full SRP login');
   }
 
   // Build adapters

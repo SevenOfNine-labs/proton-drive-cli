@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { homedir } from 'os';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { jwtDecode } from 'jwt-decode';
 import { SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
@@ -9,10 +9,24 @@ import { logger } from '../utils/logger';
 /**
  * Session manager for storing and retrieving authentication credentials
  * Stores session data in ~/.proton-drive-cli/session.json
+ *
+ * Also manages a crypto-init cache (crypto-cache.json) that stores the
+ * raw API responses for keySalts, user, and addresses. These are encrypted
+ * (armored PGP keys) and safe to persist — the password is required at
+ * runtime to decrypt them. This eliminates 3 API round-trips per subprocess.
  */
 
 const SESSION_DIR = path.join(homedir(), '.proton-drive-cli');
 const SESSION_FILE = path.join(SESSION_DIR, 'session.json');
+const CRYPTO_CACHE_FILE = path.join(SESSION_DIR, 'crypto-cache.json');
+
+export interface CryptoCache {
+  sessionUid: string;
+  keySalts: Array<{ ID: string; KeySalt: string | null }>;
+  user: any;
+  addresses: any[];
+  cachedAt: string;
+}
 
 export class SessionManager {
   /**
@@ -127,6 +141,31 @@ export class SessionManager {
   }
 
   /**
+   * Hash a username for session identity comparison.
+   * Uses SHA-256 of the lowercased, trimmed username.
+   */
+  static hashUsername(username: string): string {
+    return createHash('sha256').update(username.toLowerCase().trim()).digest('hex');
+  }
+
+  /**
+   * Check if the current session belongs to a specific user.
+   * Returns true if a valid session exists AND its userHash matches.
+   * Returns false if no session exists, session is invalid, or hash doesn't match.
+   * Legacy sessions without userHash are treated as matching (backward compat).
+   */
+  static async isSessionForUser(username: string): Promise<boolean> {
+    if (!await this.hasValidSession()) return false;
+    const session = await this.loadSession();
+    if (!session) return false;
+
+    // Legacy sessions without userHash — assume they match
+    if (!session.userHash) return true;
+
+    return session.userHash === this.hashUsername(username);
+  }
+
+  /**
    * Get session directory path
    * @returns Path to session directory
    */
@@ -140,5 +179,84 @@ export class SessionManager {
    */
   static getSessionFilePath(): string {
     return SESSION_FILE;
+  }
+
+  // ─── Crypto-init cache ──────────────────────────────────────────────
+
+  /**
+   * Load cached crypto-init API responses (keySalts, user, addresses).
+   * Returns null if cache is missing, corrupted, or belongs to a different session.
+   */
+  static async loadCryptoCache(): Promise<CryptoCache | null> {
+    try {
+      if (!await fs.pathExists(CRYPTO_CACHE_FILE)) return null;
+
+      const cache: CryptoCache = await fs.readJson(CRYPTO_CACHE_FILE);
+      if (!cache.sessionUid || !cache.keySalts || !cache.user || !cache.addresses) {
+        logger.debug('Crypto cache invalid (missing fields)');
+        return null;
+      }
+
+      // Validate cache belongs to current session
+      const session = await this.loadSession();
+      if (!session || session.uid !== cache.sessionUid) {
+        logger.debug('Crypto cache stale (session UID mismatch)');
+        await this.clearCryptoCache();
+        return null;
+      }
+
+      logger.debug('Crypto cache loaded (skipping 3 API calls)');
+      return cache;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Save crypto-init API responses to disk.
+   * Tied to the current session UID so it auto-invalidates on re-login.
+   */
+  static async saveCryptoCache(
+    sessionUid: string,
+    keySalts: Array<{ ID: string; KeySalt: string | null }>,
+    user: any,
+    addresses: any[],
+  ): Promise<void> {
+    try {
+      await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
+      const cache: CryptoCache = {
+        sessionUid,
+        keySalts,
+        user,
+        addresses,
+        cachedAt: new Date().toISOString(),
+      };
+      const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+      const tmpFile = `${CRYPTO_CACHE_FILE}.tmp-${suffix}`;
+      try {
+        await fs.writeJson(tmpFile, cache, { spaces: 2, mode: 0o600 });
+        await fs.move(tmpFile, CRYPTO_CACHE_FILE, { overwrite: true });
+      } catch (writeErr) {
+        await fs.remove(tmpFile).catch(() => {});
+        throw writeErr;
+      }
+      logger.debug('Crypto cache saved');
+    } catch (err) {
+      // Non-fatal — next subprocess will just make the API calls
+      logger.debug(`Failed to save crypto cache: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Clear the crypto cache (e.g. on logout or session change).
+   */
+  static async clearCryptoCache(): Promise<void> {
+    try {
+      if (await fs.pathExists(CRYPTO_CACHE_FILE)) {
+        await fs.remove(CRYPTO_CACHE_FILE);
+      }
+    } catch {
+      // Non-fatal
+    }
   }
 }

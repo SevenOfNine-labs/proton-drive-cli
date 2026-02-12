@@ -1,0 +1,6 @@
+{
+  "main": "sea-bundle.cjs",
+  "output": "proton-drive-cli",
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": true
+}

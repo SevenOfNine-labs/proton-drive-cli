@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import { HttpClient } from './http-client';
 import { AuthInfoResponse, AuthResponse } from '../types/auth';
 import { CaptchaError } from '../errors/types';
 import { logger } from '../utils/logger';
@@ -8,12 +8,12 @@ import { logger } from '../utils/logger';
  * Handles SRP authentication flow with Proton's API
  */
 export class AuthApiClient {
-  private client: AxiosInstance;
+  private client: HttpClient;
   private baseUrl: string;
 
   constructor(baseUrl: string = 'https://drive-api.proton.me') {
     this.baseUrl = baseUrl;
-    this.client = axios.create({
+    this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 15000,
       headers: {
@@ -48,16 +48,7 @@ export class AuthApiClient {
       );
       return response.data;
     } catch (error: any) {
-      if (error.response?.data?.Code === 9001) {
-        const details = error.response.data.Details;
-        logger.debug('getAuthInfo CAPTCHA error details:', JSON.stringify(details, null, 2));
-        throw new CaptchaError({
-          captchaUrl: details.WebUrl,
-          captchaToken: details.HumanVerificationToken,
-          verificationMethods: details.HumanVerificationMethods,
-        });
-      }
-
+      this.throwIfHumanVerification(error, 'getAuthInfo');
       if (error.response) {
         logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
         logger.debug('Status:', error.response.status);
@@ -110,21 +101,34 @@ export class AuthApiClient {
       }
       return data;
     } catch (error: any) {
-      if (error.response?.data?.Code === 9001) {
-        const details = error.response.data.Details;
-        logger.debug('authenticate CAPTCHA error details:', JSON.stringify(details, null, 2));
-        throw new CaptchaError({
-          captchaUrl: details.WebUrl,
-          captchaToken: details.HumanVerificationToken,
-          verificationMethods: details.HumanVerificationMethods,
-        });
-      }
-
+      this.throwIfHumanVerification(error, 'authenticate');
       if (error.response) {
         logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
         logger.debug('Status:', error.response.status);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Check if an API error requires human verification (CAPTCHA).
+   * Proton can signal this via code 9001 OR via HumanVerificationToken in
+   * Details on other error codes (e.g. 2028). Check the Details field
+   * regardless of the error code.
+   */
+  private throwIfHumanVerification(error: any, context: string): void {
+    const data = error.response?.data;
+    if (!data) return;
+
+    const details = data.Details;
+    if (details?.HumanVerificationToken) {
+      logger.debug(`${context} human verification required (Code: ${data.Code}):`,
+        JSON.stringify(details, null, 2));
+      throw new CaptchaError({
+        captchaUrl: details.WebUrl,
+        captchaToken: details.HumanVerificationToken,
+        verificationMethods: details.HumanVerificationMethods,
+      });
     }
   }
 

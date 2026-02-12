@@ -1,6 +1,6 @@
-import { validateOid, validateLocalPath, errorToStatusCode } from './bridge';
+import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError } from './bridge';
 import { BridgeRequest } from '../bridge/validators';
-import { ErrorCode } from '../errors/types';
+import { ErrorCode, CaptchaError } from '../errors/types';
 
 describe('validateOid', () => {
   const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
@@ -116,6 +116,14 @@ describe('errorToStatusCode', () => {
     expect(errorToStatusCode({ message: 'Invalid input provided' })).toBe(400);
   });
 
+  it('maps CAPTCHA_REQUIRED to 407', () => {
+    expect(errorToStatusCode({ code: ErrorCode.CAPTCHA_REQUIRED })).toBe(407);
+  });
+
+  it('falls back to message-based matching for "captcha"', () => {
+    expect(errorToStatusCode({ message: 'CAPTCHA verification required' })).toBe(407);
+  });
+
   it('returns 500 for null/undefined error', () => {
     expect(errorToStatusCode(null)).toBe(500);
     expect(errorToStatusCode(undefined)).toBe(500);
@@ -146,5 +154,35 @@ describe('BridgeRequest credentialProvider field', () => {
     };
     expect(request.username).toBe('user@proton.me');
     expect(request.credentialProvider).toBe('git-credential');
+  });
+});
+
+describe('formatCaptchaError', () => {
+  it('produces 407 response with captchaUrl in details', () => {
+    const err = new CaptchaError({
+      captchaUrl: 'https://verify.proton.me/captcha?token=abc',
+      captchaToken: 'hvt-abc123',
+      verificationMethods: ['captcha'],
+    });
+    const resp = formatCaptchaError(err);
+    expect(resp.ok).toBe(false);
+    expect(resp.code).toBe(407);
+    expect(resp.error).toContain('CAPTCHA verification required');
+    const details = JSON.parse(resp.details!);
+    expect(details.captchaUrl).toContain('verify.proton.me');
+    expect(details.captchaToken).toBe('hvt-abc123');
+    expect(details.verificationMethods).toEqual(['captcha']);
+    expect(details.action).toBe('run: proton-drive login');
+  });
+
+  it('handles empty verificationMethods', () => {
+    const err = new CaptchaError({
+      captchaUrl: 'https://verify.proton.me/captcha',
+      captchaToken: 'hvt-xyz',
+    });
+    const resp = formatCaptchaError(err);
+    expect(resp.code).toBe(407);
+    const details = JSON.parse(resp.details!);
+    expect(details.verificationMethods).toEqual([]);
   });
 });

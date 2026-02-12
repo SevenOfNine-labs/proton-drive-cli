@@ -52,10 +52,10 @@ Credentials are resolved locally by `proton-drive-cli` — never sent over HTTP.
 Credentials flow through the proton-git-lfs stack:
 
 ```
-pass-cli → Go adapter → proton-lfs-bridge (HTTP, localhost) → proton-drive-cli (stdin)
+pass-cli → Go adapter → proton-drive-cli bridge (stdin)
 ```
 
-The Go adapter resolves `pass://` references and passes credentials via stdin to the bridge subprocess. Credentials are held in memory only.
+The Go adapter resolves `pass://` references and spawns `proton-drive-cli bridge` directly, passing credentials via stdin. Credentials are held in memory only.
 
 ### Piped stdin (scripted usage)
 

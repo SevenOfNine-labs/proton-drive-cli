@@ -26,9 +26,7 @@ User → CLI command → SDK adapter → Proton API
 ```
 pass-cli (stored credentials)
     ↓
-Go adapter (resolves via pass-cli)
-    ↓
-proton-lfs-bridge (Node.js HTTP bridge)
+Go adapter (resolves via pass-cli, spawns proton-drive-cli directly)
     ↓
 proton-drive-cli bridge (stdin: username + password)
     ↓
@@ -69,7 +67,7 @@ src/
 ├── api/           — Proton API clients (auth, user)
 ├── auth/          — SRP-6a authentication and session management
 │   └── srp/       — SRP protocol implementation
-├── bridge/        — Shared types and validators (exported for proton-lfs-bridge)
+├── bridge/        — Shared types and validators for the bridge protocol
 ├── cli/           — Command implementations
 ├── crypto/        — OpenPGP key management, Drive crypto
 ├── errors/        — Error types, codes, CLI error handler

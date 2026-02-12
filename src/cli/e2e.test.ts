@@ -17,6 +17,7 @@
  */
 
 import { execFile, ExecFileException } from 'child_process';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -740,6 +741,84 @@ describe('bridge command description', () => {
     expect(r.stdout).toContain('init');
     expect(r.stdout).toContain('batch-exists');
     expect(r.stdout).toContain('batch-delete');
+  });
+});
+
+// ─── Login Session Reuse ─────────────────────────────────────────────
+
+describe('login session reuse', () => {
+  const TEST_USER = 'test@example.com';
+  let tmpHome: string;
+
+  function hashUser(username: string): string {
+    return createHash('sha256').update(username.toLowerCase().trim()).digest('hex');
+  }
+
+  beforeEach(async () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'login-reuse-'));
+    const sessionDir = path.join(tmpHome, '.proton-drive-cli');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // Write a valid session file with a far-future JWT expiry and userHash
+    const session = {
+      sessionId: 'test-session-id',
+      uid: 'test-uid-123',
+      accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5OTk5OTk5fQ.K3DEMO',
+      refreshToken: 'refresh-token-abc',
+      scopes: ['self', 'drive'],
+      passwordMode: 1,
+      userHash: hashUser(TEST_USER),
+    };
+    fs.writeFileSync(
+      path.join(sessionDir, 'session.json'),
+      JSON.stringify(session),
+      { mode: 0o600 },
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('skips login when session already exists for same user', async () => {
+    const r = await runCli(['login', '-u', TEST_USER, '--password-stdin'], {
+      stdin: 'test-password',
+      env: { HOME: tmpHome },
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('Already authenticated');
+  });
+
+  it('skips login in quiet mode and outputs OK', async () => {
+    const r = await runCli(['--quiet', 'login', '-u', TEST_USER, '--password-stdin'], {
+      stdin: 'test-password',
+      env: { HOME: tmpHome },
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toBe('OK');
+  });
+
+  it('proceeds with login when different user provided', async () => {
+    // Different username — should NOT reuse session, should try to login
+    // (will fail on actual auth, but should NOT say "Already authenticated")
+    const r = await runCli(['login', '-u', 'other@example.com', '--password-stdin'], {
+      stdin: 'test-password',
+      env: { HOME: tmpHome },
+    });
+    expect(r.stdout).not.toContain('Already authenticated');
+  }, 30_000);
+
+  it('bridge auth reuses session for same user', async () => {
+    const r = await runBridge('auth', { username: TEST_USER, password: 'test' }, { HOME: tmpHome });
+    expect(r.json.ok).toBe(true);
+    expect(r.json.payload.sessionReused).toBe(true);
+  });
+
+  it('bridge auth does not reuse session for different user', async () => {
+    const r = await runBridge('auth', { username: 'other@example.com', password: 'test' }, { HOME: tmpHome });
+    // Should NOT reuse session — will try real auth and fail
+    if (r.json.payload?.sessionReused) {
+      fail('Should not reuse session for different user');
+    }
   });
 });
 

@@ -16,7 +16,8 @@ import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
 import { AuthService } from '../auth';
-import { ErrorCode } from '../errors/types';
+import { SessionManager } from '../auth/session';
+import { AppError, ErrorCode, CaptchaError } from '../errors/types';
 import { logger, LogLevel } from '../utils/logger';
 import {
   ensureOidFolder,
@@ -102,6 +103,7 @@ async function readStdinJson(): Promise<BridgeRequest> {
 
 // Re-export validators for existing consumers (e.g., bridge.test.ts)
 export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, errorToStatusCode } from '../bridge/validators';
+// formatCaptchaError is exported directly from this module (above)
 
 /**
  * Resolve credentials from request, falling back to git-credential
@@ -149,6 +151,22 @@ async function ensureBaseDir(client: ProtonDriveClient, storageBase: string): Pr
   return `/${normalizedBase}`;
 }
 
+// ─── CAPTCHA helper ─────────────────────────────────────────────────
+
+export function formatCaptchaError(error: CaptchaError): BridgeResponse {
+  return {
+    ok: false,
+    error: 'CAPTCHA verification required — run: proton-drive login',
+    code: 407,
+    details: JSON.stringify({
+      captchaUrl: error.captchaUrl,
+      captchaToken: error.captchaToken,
+      verificationMethods: error.verificationMethods,
+      action: 'run: proton-drive login',
+    }),
+  };
+}
+
 // ─── Command handlers ──────────────────────────────────────────────
 
 async function handleAuthCommand(request: BridgeRequest): Promise<void> {
@@ -159,10 +177,43 @@ async function handleAuthCommand(request: BridgeRequest): Promise<void> {
       return;
     }
 
+    // Session reuse: skip SRP if a valid session exists for this user
+    try {
+      if (await SessionManager.isSessionForUser(resolved.username)) {
+        writeSuccess({ authenticated: true, sessionReused: true });
+        return;
+      }
+    } catch {
+      // Session file corrupted or unreadable — fall through to full login
+    }
+
     const authService = new AuthService();
+
     await authService.login(resolved.username, resolved.password, undefined);
     writeSuccess({ authenticated: true });
   } catch (error: any) {
+    // CAPTCHA required (Proton API code 9001)
+    if (error instanceof CaptchaError) {
+      writeResponse(formatCaptchaError(error));
+      return;
+    }
+
+    // Invalid/expired CAPTCHA token (Proton API code 12087)
+    if (error?.response?.data?.Code === 12087) {
+      writeError('CAPTCHA token invalid or expired — run: proton-drive login', 407);
+      return;
+    }
+
+    // Abuse rate-limit (Proton API code 2028 / HTTP 422)
+    if (error instanceof AppError && error.code === ErrorCode.RATE_LIMITED) {
+      writeError('rate limited by Proton API — wait and retry', 429);
+      return;
+    }
+    if (error?.response?.data?.Code === 2028) {
+      writeError('rate limited by Proton API — wait and retry', 429);
+      return;
+    }
+
     writeError(
       error.message || 'Authentication failed',
       errorToStatusCode(error)

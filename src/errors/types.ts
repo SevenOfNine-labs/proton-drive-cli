@@ -106,8 +106,7 @@ export class AppError extends Error {
         return `Not a folder: ${this.details?.path || 'unknown'}`;
 
       case ErrorCode.RATE_LIMITED:
-        const retryAfter = this.details?.retryAfter || 60;
-        return `Too many requests. Please wait ${retryAfter} seconds and try again.`;
+        return this.message || 'Too many requests. Please try again later.';
 
       case ErrorCode.QUOTA_EXCEEDED:
         return 'Storage quota exceeded. Please free up space in your Proton Drive.';

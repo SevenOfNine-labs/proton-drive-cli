@@ -3,9 +3,9 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
+import { SessionManager } from '../auth/session';
 import { promptForToken } from '../auth/captcha-helper';
 import { CaptchaError } from '../errors/types';
-import { isAxiosError } from 'axios';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { readPasswordFromStdin, resolveCredentials } from '../utils/password';
@@ -27,7 +27,7 @@ export function createLoginCommand(): Command {
 
   command
     .description('Authenticate with Proton Drive')
-    .option('-u, --username <email>', 'Proton account email')
+    .option('-u, --username <email|username>', 'Proton account email or username')
     .option('--password-stdin', 'Read password from stdin (for scripts with special characters)')
     .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
     .action(async (options) => {
@@ -58,6 +58,35 @@ export function createLoginCommand(): Command {
           }
         }
 
+        // Session reuse: skip login if already authenticated as this user.
+        // If username is known, check if the session belongs to the same user.
+        // If the session belongs to a different user, fall through to re-login.
+        try {
+          if (username) {
+            if (await SessionManager.isSessionForUser(username)) {
+              if (!isQuiet()) {
+                console.log('Already authenticated. Log out first to log in again.');
+              } else {
+                outputResult('OK');
+              }
+              return;
+            }
+          } else {
+            // No username yet (will prompt interactively) — just check session exists
+            const authCheck = new AuthService();
+            if (await authCheck.isAuthenticated()) {
+              if (!isQuiet()) {
+                console.log('Already authenticated. Log out first to log in again.');
+              } else {
+                outputResult('OK');
+              }
+              return;
+            }
+          }
+        } catch {
+          // Session file corrupted or unreadable — fall through to login
+        }
+
         if (!username || !password) {
           // Check if we can prompt interactively
           if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -80,11 +109,11 @@ export function createLoginCommand(): Command {
             {
               type: 'input',
               name: 'username',
-              message: 'Email:',
+              message: 'Email or username:',
               when: !username,
               validate: (input: string) => {
-                if (!input || !input.includes('@')) {
-                  return 'Please enter a valid email address';
+                if (!input || input.trim().length === 0) {
+                  return 'Please enter your Proton email or username';
                 }
                 return true;
               },
@@ -135,65 +164,36 @@ export function createLoginCommand(): Command {
             spinner.stop();
           }
 
-          // Check if CAPTCHA is required
+          // CAPTCHA required — capture verification token
           if (error instanceof CaptchaError) {
-            console.log(chalk.yellow('\n⚠️  CAPTCHA verification required'));
+            if (isVerbose()) {
+              console.log(chalk.dim(`  Verification methods: ${error.verificationMethods.join(', ') || 'none'}`));
+              console.log(chalk.dim(`  Challenge token: ${error.captchaToken}`));
+              console.log(chalk.dim(`  URL: ${error.captchaUrl}`));
+            }
 
-            // Use the CAPTCHA helper to get the token
             const verificationToken = await promptForToken(
               error.captchaUrl,
               error.captchaToken
             );
 
             if (!verificationToken) {
-              console.error(chalk.red('✗ Error: No verification token provided'));
+              console.error(chalk.red('No verification token received. Login cancelled.'));
               process.exit(1);
             }
 
-            // Handle browser workaround - retry without token
-            if (verificationToken === 'RETRY_WITHOUT_TOKEN') {
-              const retrySpinner = ora('Retrying authentication (IP may be allowlisted now)...').start();
-              try {
-                await authService.login(finalUsername.trim(), finalPassword);
-                retrySpinner.succeed(chalk.green('Login successful!'));
-                console.log(chalk.dim('Session saved (tokens only). Use --password-stdin with subsequent commands.'));
-                console.log('\nYou can now use the CLI to upload files to Proton Drive.');
-                return;
-              } catch (retryError: unknown) {
-                retrySpinner.fail();
-                if (retryError instanceof CaptchaError) {
-                  console.error(chalk.red('\n✗ Still getting CAPTCHA challenge.'));
-                  console.error('The IP allowlisting may not have worked.');
-                  console.error('Try the manual token extraction method instead.');
-                }
-                throw retryError;
-              }
-            }
-
-            // Retry login with the verification token
+            // Retry login with the captured token
             const verifySpinner = ora('Retrying authentication with verification token...').start();
             try {
               await authService.login(finalUsername.trim(), finalPassword, verificationToken);
               verifySpinner.succeed(chalk.green('Login successful!'));
-              console.log(chalk.dim('Session saved (tokens only). Use --password-stdin with subsequent commands.'));
-              console.log('\nYou can now use the CLI to upload files to Proton Drive.');
+              if (isVerbose()) {
+                console.log(chalk.dim('Session saved (tokens only).'));
+              } else if (!isQuiet()) {
+                outputResult('OK');
+              }
             } catch (retryError: unknown) {
               verifySpinner.fail();
-              if (retryError instanceof CaptchaError) {
-                console.error(chalk.yellow('\n⚠️  Still getting CAPTCHA challenge'));
-                console.error('The token may be invalid or expired.');
-                console.error(chalk.dim('\nTry the alternative approach:'));
-                console.error('  1. Log in at https://account.proton.me in your browser');
-                console.error('  2. Complete any CAPTCHA there');
-                console.error('  3. Then try this CLI login again');
-              } else if (isAxiosError(retryError) && (retryError.response?.data as Record<string, unknown>)?.Code === 12087) {
-                console.error(chalk.yellow('\n⚠️  CAPTCHA validation failed (code 12087)'));
-                console.error('The token was not accepted by the server.');
-                console.error(chalk.dim('\nThis can happen if:'));
-                console.error('  - The CAPTCHA wasn\'t fully completed');
-                console.error('  - The token expired before we could use it');
-                console.error('  - The token format is incorrect');
-              }
               throw retryError;
             }
             return;

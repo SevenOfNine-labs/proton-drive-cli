@@ -149,3 +149,56 @@ describe('SessionManager.hasValidSession', () => {
     expect(await SessionManager.hasValidSession()).toBe(false);
   });
 });
+
+describe('SessionManager.hashUsername', () => {
+  it('produces consistent hash', () => {
+    const h1 = SessionManager.hashUsername('test@example.com');
+    const h2 = SessionManager.hashUsername('test@example.com');
+    expect(h1).toBe(h2);
+    expect(h1).toHaveLength(64); // SHA-256 hex
+  });
+
+  it('normalizes case and whitespace', () => {
+    expect(SessionManager.hashUsername('Test@Example.COM')).toBe(
+      SessionManager.hashUsername('test@example.com')
+    );
+    expect(SessionManager.hashUsername('  test@example.com  ')).toBe(
+      SessionManager.hashUsername('test@example.com')
+    );
+  });
+
+  it('produces different hashes for different users', () => {
+    expect(SessionManager.hashUsername('alice@example.com')).not.toBe(
+      SessionManager.hashUsername('bob@example.com')
+    );
+  });
+});
+
+describe('SessionManager.isSessionForUser', () => {
+  it('returns true when session has matching userHash', async () => {
+    const sessionWithHash = {
+      ...VALID_SESSION,
+      userHash: SessionManager.hashUsername('test@example.com'),
+    };
+    await SessionManager.saveSession(sessionWithHash);
+    expect(await SessionManager.isSessionForUser('test@example.com')).toBe(true);
+  });
+
+  it('returns false when session has different userHash', async () => {
+    const sessionWithHash = {
+      ...VALID_SESSION,
+      userHash: SessionManager.hashUsername('alice@example.com'),
+    };
+    await SessionManager.saveSession(sessionWithHash);
+    expect(await SessionManager.isSessionForUser('bob@example.com')).toBe(false);
+  });
+
+  it('returns true for legacy sessions without userHash', async () => {
+    await SessionManager.saveSession(VALID_SESSION);
+    expect(await SessionManager.isSessionForUser('anyone@example.com')).toBe(true);
+  });
+
+  it('returns false when no session exists', async () => {
+    expect(await SessionManager.isSessionForUser('test@example.com')).toBe(false);
+  });
+});

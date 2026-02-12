@@ -31,6 +31,9 @@ export interface SessionCredentials {
   passwordMode: number;
   // mailboxPassword is intentionally NOT persisted — it flows via stdin
   // from pass-cli on every invocation and stays in memory only.
+  // SHA-256 hash of the username (lowercase, trimmed) — used to detect
+  // when login is called with different credentials than the active session.
+  userHash?: string;
 }
 
 export interface SRPHandshake {

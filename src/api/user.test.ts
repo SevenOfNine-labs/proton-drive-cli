@@ -1,14 +1,14 @@
-import axios from 'axios';
+import { HttpClient } from './http-client';
 import { UserApiClient } from './user';
 import { SessionManager } from '../auth/session';
 
-jest.mock('axios');
+jest.mock('./http-client');
 jest.mock('../auth/session');
 
-const mockedAxios = axios as jest.Mocked<typeof axios>;
+const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
 const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
 
-let mockAxiosInstance: any;
+let mockHttpInstance: any;
 let requestInterceptorFulfill: Function;
 let responseInterceptorReject: Function;
 
@@ -19,29 +19,30 @@ const fakeSession = {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockAxiosInstance = {
+  mockHttpInstance = {
     interceptors: {
-      request: { use: jest.fn() },
-      response: { use: jest.fn() },
+      request: { use: jest.fn(), _handlers: [] },
+      response: { use: jest.fn(), _handlers: [] },
     },
     get: jest.fn(),
+    request: jest.fn(),
   };
-  mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+  MockedHttpClient.create = jest.fn().mockReturnValue(mockHttpInstance as any);
   mockedSessionManager.loadSession.mockResolvedValue(fakeSession as any);
 });
 
 function captureInterceptors() {
   [requestInterceptorFulfill] =
-    mockAxiosInstance.interceptors.request.use.mock.calls[0];
+    mockHttpInstance.interceptors.request.use.mock.calls[0];
   [, responseInterceptorReject] =
-    mockAxiosInstance.interceptors.response.use.mock.calls[0];
+    mockHttpInstance.interceptors.response.use.mock.calls[0];
 }
 
 describe('UserApiClient', () => {
   describe('constructor', () => {
-    test('creates axios instance with correct config', () => {
+    test('creates HTTP client with correct config', () => {
       new UserApiClient('https://test.example.com');
-      expect(mockedAxios.create).toHaveBeenCalledWith(
+      expect(MockedHttpClient.create).toHaveBeenCalledWith(
         expect.objectContaining({
           baseURL: 'https://test.example.com',
           timeout: 30000,
@@ -74,11 +75,19 @@ describe('UserApiClient', () => {
   });
 
   describe('response interceptor', () => {
-    test('throws session expired on 401', async () => {
+    test('throws session expired on 401 when refresh fails', async () => {
       new UserApiClient();
       captureInterceptors();
+      // Return null session so refresh cannot proceed
+      mockedSessionManager.loadSession.mockResolvedValue(null);
 
-      const error = { response: { status: 401, data: {} } };
+      const error = {
+        response: {
+          status: 401,
+          data: {},
+          config: { headers: {}, _retried: false },
+        },
+      };
       await expect(responseInterceptorReject(error)).rejects.toThrow(
         'Session expired'
       );
@@ -92,6 +101,7 @@ describe('UserApiClient', () => {
         response: {
           status: 422,
           data: { Code: 2000, Error: 'Something went wrong' },
+          config: { headers: {} },
         },
       };
       await expect(responseInterceptorReject(error)).rejects.toThrow(
@@ -103,12 +113,12 @@ describe('UserApiClient', () => {
   describe('getUser', () => {
     test('calls /core/v4/users and returns User', async () => {
       const client = new UserApiClient();
-      mockAxiosInstance.get.mockResolvedValue({
+      mockHttpInstance.get.mockResolvedValue({
         data: { Code: 1000, User: { ID: 'user-1', Name: 'Test' } },
       });
 
       const result = await client.getUser();
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/core/v4/users');
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/users');
       expect(result.ID).toBe('user-1');
     });
   });
@@ -116,7 +126,7 @@ describe('UserApiClient', () => {
   describe('getAddresses', () => {
     test('calls /core/v4/addresses and returns array', async () => {
       const client = new UserApiClient();
-      mockAxiosInstance.get.mockResolvedValue({
+      mockHttpInstance.get.mockResolvedValue({
         data: {
           Code: 1000,
           Addresses: [{ ID: 'addr-1', Email: 'user@proton.me' }],
@@ -124,7 +134,7 @@ describe('UserApiClient', () => {
       });
 
       const result = await client.getAddresses();
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/core/v4/addresses');
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/addresses');
       expect(result).toHaveLength(1);
       expect(result[0].Email).toBe('user@proton.me');
     });
@@ -133,7 +143,7 @@ describe('UserApiClient', () => {
   describe('getKeySalts', () => {
     test('calls /core/v4/keys/salts and returns salts', async () => {
       const client = new UserApiClient();
-      mockAxiosInstance.get.mockResolvedValue({
+      mockHttpInstance.get.mockResolvedValue({
         data: {
           Code: 1000,
           KeySalts: [{ ID: 'key-1', KeySalt: 'abcdef' }],
@@ -141,7 +151,7 @@ describe('UserApiClient', () => {
       });
 
       const result = await client.getKeySalts();
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/core/v4/keys/salts');
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/keys/salts');
       expect(result[0].KeySalt).toBe('abcdef');
     });
   });
