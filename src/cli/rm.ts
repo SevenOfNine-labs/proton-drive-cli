@@ -4,7 +4,7 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 /**
  * Create rm command
@@ -18,7 +18,7 @@ export function createRmCommand(): Command {
     .argument('<path>', 'Path to the file or folder to remove (e.g., /Documents/file.pdf)')
     .option('--permanent', 'Permanently delete (skip trash)')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (targetPath: string, options) => {
       try {
         const password = await resolvePassword(options);

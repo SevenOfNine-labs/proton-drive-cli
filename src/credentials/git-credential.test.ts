@@ -1,4 +1,9 @@
-import { gitCredentialFill, gitCredentialApprove, gitCredentialReject } from './git-credential';
+import {
+  gitCredentialFill,
+  gitCredentialApprove,
+  gitCredentialReject,
+  GitCredentialProvider,
+} from './git-credential';
 import * as childProcess from 'child_process';
 
 jest.mock('child_process');
@@ -31,6 +36,8 @@ function simulateExecFileError(message: string) {
   });
 }
 
+// ─── Standalone function tests ─────────────────────────────────────
+
 describe('gitCredentialFill', () => {
   beforeEach(() => {
     jest.resetAllMocks();
@@ -38,13 +45,13 @@ describe('gitCredentialFill', () => {
 
   it('parses valid credential output', async () => {
     simulateExecFile(
-      'protocol=https\nhost=drive.proton.me\nusername=user@proton.me\npassword=secret123\n',
+      'protocol=https\nhost=proton.me\nusername=user@proton.me\npassword=secret123\n',
     );
 
     const result = await gitCredentialFill();
     expect(result).toEqual({
       protocol: 'https',
-      host: 'drive.proton.me',
+      host: 'proton.me',
       username: 'user@proton.me',
       password: 'secret123',
     });
@@ -58,7 +65,6 @@ describe('gitCredentialFill', () => {
     const result = await gitCredentialFill('custom.host');
     expect(result.host).toBe('custom.host');
 
-    // Verify stdin input included the custom host
     const stdinWrite = mockExecFile.mock.results[0]?.value?.stdin?.write;
     if (stdinWrite) {
       const input = stdinWrite.mock.calls[0][0];
@@ -67,12 +73,12 @@ describe('gitCredentialFill', () => {
   });
 
   it('throws if username is missing', async () => {
-    simulateExecFile('protocol=https\nhost=drive.proton.me\npassword=secret\n');
+    simulateExecFile('protocol=https\nhost=proton.me\npassword=secret\n');
     await expect(gitCredentialFill()).rejects.toThrow('did not return username and password');
   });
 
   it('throws if password is missing', async () => {
-    simulateExecFile('protocol=https\nhost=drive.proton.me\nusername=user@proton.me\n');
+    simulateExecFile('protocol=https\nhost=proton.me\nusername=user@proton.me\n');
     await expect(gitCredentialFill()).rejects.toThrow('did not return username and password');
   });
 
@@ -93,7 +99,7 @@ describe('gitCredentialFill', () => {
 
   it('uses execFile with correct arguments', async () => {
     simulateExecFile(
-      'protocol=https\nhost=drive.proton.me\nusername=user@proton.me\npassword=pass\n',
+      'protocol=https\nhost=proton.me\nusername=user@proton.me\npassword=pass\n',
     );
 
     await gitCredentialFill();
@@ -108,7 +114,7 @@ describe('gitCredentialFill', () => {
 
   it('handles lines with = in the value', async () => {
     simulateExecFile(
-      'protocol=https\nhost=drive.proton.me\nusername=user@proton.me\npassword=pass=word=123\n',
+      'protocol=https\nhost=proton.me\nusername=user@proton.me\npassword=pass=word=123\n',
     );
 
     const result = await gitCredentialFill();
@@ -117,7 +123,7 @@ describe('gitCredentialFill', () => {
 
   it('handles Windows-style line endings', async () => {
     simulateExecFile(
-      'protocol=https\r\nhost=drive.proton.me\r\nusername=user@proton.me\r\npassword=secret\r\n',
+      'protocol=https\r\nhost=proton.me\r\nusername=user@proton.me\r\npassword=secret\r\n',
     );
 
     const result = await gitCredentialFill();
@@ -136,7 +142,7 @@ describe('gitCredentialApprove', () => {
 
     await gitCredentialApprove({
       protocol: 'https',
-      host: 'drive.proton.me',
+      host: 'proton.me',
       username: 'user@proton.me',
       password: 'secret',
     });
@@ -154,7 +160,7 @@ describe('gitCredentialApprove', () => {
     await expect(
       gitCredentialApprove({
         protocol: 'https',
-        host: 'drive.proton.me',
+        host: 'proton.me',
         username: 'user',
         password: 'pass',
       }),
@@ -172,7 +178,7 @@ describe('gitCredentialReject', () => {
 
     await gitCredentialReject({
       protocol: 'https',
-      host: 'drive.proton.me',
+      host: 'proton.me',
       username: 'user@proton.me',
       password: 'wrong-pass',
     });
@@ -183,5 +189,97 @@ describe('gitCredentialReject', () => {
       expect.any(Object),
       expect.any(Function),
     );
+  });
+});
+
+// ─── Class-based provider tests ────────────────────────────────────
+
+describe('GitCredentialProvider', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('resolves credentials via fill', async () => {
+    simulateExecFile(
+      'protocol=https\nhost=proton.me\nusername=user@proton.me\npassword=s3cret\n',
+    );
+
+    const provider = new GitCredentialProvider();
+    const creds = await provider.resolve();
+
+    expect(creds).toEqual({
+      username: 'user@proton.me',
+      password: 's3cret',
+    });
+  });
+
+  it('prefers username from options over fill result', async () => {
+    simulateExecFile(
+      'protocol=https\nhost=proton.me\nusername=fill@proton.me\npassword=pass\n',
+    );
+
+    const provider = new GitCredentialProvider();
+    const creds = await provider.resolve({ username: 'override@proton.me' });
+
+    expect(creds.username).toBe('override@proton.me');
+  });
+
+  it('isAvailable returns true when fill succeeds', async () => {
+    simulateExecFile(
+      'protocol=https\nhost=proton.me\nusername=user@proton.me\npassword=pass\n',
+    );
+
+    const provider = new GitCredentialProvider();
+    expect(await provider.isAvailable()).toBe(true);
+  });
+
+  it('isAvailable returns false when fill fails', async () => {
+    simulateExecFileError('no helper configured');
+
+    const provider = new GitCredentialProvider();
+    expect(await provider.isAvailable()).toBe(false);
+  });
+
+  it('stores credentials via approve', async () => {
+    simulateExecFile('');
+
+    const provider = new GitCredentialProvider();
+    await provider.store('user@proton.me', 'password');
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['credential', 'approve'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('removes credentials via reject', async () => {
+    simulateExecFile('');
+
+    const provider = new GitCredentialProvider();
+    await provider.remove('user@proton.me');
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['credential', 'reject'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('uses custom host', async () => {
+    simulateExecFile(
+      'protocol=https\nhost=custom.host\nusername=user\npassword=pass\n',
+    );
+
+    const provider = new GitCredentialProvider('custom.host');
+    await provider.resolve();
+
+    const stdinWrite = mockExecFile.mock.results[0]?.value?.stdin?.write;
+    if (stdinWrite) {
+      const input = stdinWrite.mock.calls[0][0];
+      expect(input).toContain('host=custom.host');
+    }
   });
 });

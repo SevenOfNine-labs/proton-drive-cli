@@ -1,8 +1,8 @@
 /**
- * Git Credential Manager integration.
+ * Git Credential Manager provider.
  *
- * Uses `git credential fill/approve/reject` to resolve credentials
- * from the system's configured credential helper (macOS Keychain,
+ * Wraps `git credential fill/approve/reject` to resolve, store, and remove
+ * credentials via the system's configured credential helper (macOS Keychain,
  * Windows Credential Manager, Linux Secret Service, etc.).
  *
  * Security:
@@ -13,6 +13,9 @@
 
 import { execFile } from 'child_process';
 
+import { PROTON_CREDENTIAL_HOST } from '../constants';
+import type { CredentialProvider, Credentials } from './types';
+
 export interface GitCredential {
   protocol: string;
   host: string;
@@ -20,7 +23,6 @@ export interface GitCredential {
   password: string;
 }
 
-const DEFAULT_HOST = 'drive.proton.me';
 const DEFAULT_PROTOCOL = 'https';
 const TIMEOUT_MS = 10_000;
 
@@ -81,19 +83,15 @@ function runGitCredential(
   });
 }
 
+// ─── Standalone functions (backward compat) ────────────────────────
+
 /**
  * Resolve credentials using `git credential fill`.
- *
- * Writes `protocol=https\nhost=<host>\n\n` to stdin of
- * `git credential fill` and parses the key=value output.
- *
- * @param host - Credential host (default: drive.proton.me)
- * @returns Resolved credential with username and password
  */
 export async function gitCredentialFill(host?: string): Promise<GitCredential> {
   const input = formatCredentialInput({
     protocol: DEFAULT_PROTOCOL,
-    host: host || DEFAULT_HOST,
+    host: host || PROTON_CREDENTIAL_HOST,
   });
 
   const output = await runGitCredential('fill', input);
@@ -108,7 +106,7 @@ export async function gitCredentialFill(host?: string): Promise<GitCredential> {
 
   return {
     protocol: parsed.protocol || DEFAULT_PROTOCOL,
-    host: parsed.host || host || DEFAULT_HOST,
+    host: parsed.host || host || PROTON_CREDENTIAL_HOST,
     username: parsed.username,
     password: parsed.password,
   };
@@ -116,9 +114,6 @@ export async function gitCredentialFill(host?: string): Promise<GitCredential> {
 
 /**
  * Store credentials using `git credential approve`.
- *
- * Call this after a successful authentication to persist
- * credentials in the configured credential helper.
  */
 export async function gitCredentialApprove(cred: GitCredential): Promise<void> {
   const input = formatCredentialInput(cred);
@@ -127,11 +122,55 @@ export async function gitCredentialApprove(cred: GitCredential): Promise<void> {
 
 /**
  * Remove credentials using `git credential reject`.
- *
- * Call this when credentials are known to be invalid so the
- * credential helper can remove them from its store.
  */
 export async function gitCredentialReject(cred: GitCredential): Promise<void> {
   const input = formatCredentialInput(cred);
   await runGitCredential('reject', input);
+}
+
+// ─── Class-based provider ──────────────────────────────────────────
+
+export class GitCredentialProvider implements CredentialProvider {
+  readonly name = 'git-credential' as const;
+  private readonly host: string;
+
+  constructor(host?: string) {
+    this.host = host || PROTON_CREDENTIAL_HOST;
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      await gitCredentialFill(this.host);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async resolve(options?: { username?: string }): Promise<Credentials> {
+    const cred = await gitCredentialFill(this.host);
+    return { username: options?.username || cred.username, password: cred.password };
+  }
+
+  async store(username: string, password: string): Promise<void> {
+    await gitCredentialApprove({
+      protocol: DEFAULT_PROTOCOL,
+      host: this.host,
+      username,
+      password,
+    });
+  }
+
+  async remove(username: string): Promise<void> {
+    await gitCredentialReject({
+      protocol: DEFAULT_PROTOCOL,
+      host: this.host,
+      username,
+      password: '',
+    });
+  }
+
+  async verify(): Promise<boolean> {
+    return this.isAvailable();
+  }
 }

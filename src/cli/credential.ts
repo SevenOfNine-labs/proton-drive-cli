@@ -1,38 +1,54 @@
 /**
  * `proton-drive credential` subcommand.
  *
- * Manages credentials in the system's Git credential store
- * (macOS Keychain, Windows Credential Manager, Linux Secret Service, etc.).
+ * Manages credentials via a configurable provider:
+ *   --provider git-credential  (default) — macOS Keychain, Windows Credential Manager, etc.
+ *   --provider pass-cli        — Proton Pass CLI
  *
  * Subcommands:
- *   store  - Store credentials in the git credential helper
- *   remove - Remove credentials from the git credential helper
+ *   store  - Store credentials in the configured provider
+ *   remove - Remove credentials from the configured provider
  *   verify - Verify that credentials can be resolved
  */
 
 import { Command } from 'commander';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { gitCredentialFill, gitCredentialApprove, gitCredentialReject } from '../utils/git-credential';
-import { readPasswordFromStdin } from '../utils/password';
+import {
+  createProvider,
+  normalizeProviderName,
+  readPasswordFromStdin,
+  gitCredentialFill,
+  gitCredentialApprove,
+  gitCredentialReject,
+} from '../credentials';
+import type { ProviderName } from '../credentials';
 import { handleError } from '../errors/handler';
 import { isQuiet, outputResult } from '../utils/output';
+import { PROTON_CREDENTIAL_HOST } from '../constants';
 
-const DEFAULT_HOST = 'drive.proton.me';
+function getProviderName(options: { provider?: string }): ProviderName {
+  if (options.provider) {
+    return normalizeProviderName(options.provider);
+  }
+  return 'git-credential';
+}
 
 export function createCredentialCommand(): Command {
   const cmd = new Command('credential');
-  cmd.description('Manage credentials in the git credential store');
+  cmd.description('Manage credentials (git-credential or pass-cli)');
 
   // --- store ---
   cmd
     .command('store')
-    .description('Store Proton credentials in the git credential helper')
-    .option('-u, --username <email>', 'Proton account email')
+    .description('Store Proton credentials')
+    .option('-u, --username <account>', 'Proton email or username')
     .option('--password-stdin', 'Read password from stdin')
-    .option('--host <host>', 'Credential host', DEFAULT_HOST)
+    .option('--host <host>', 'Credential host', PROTON_CREDENTIAL_HOST)
+    .option('--provider <type>', 'Credential provider: git-credential (default), pass-cli')
     .action(async (options) => {
       try {
+        const providerName = getProviderName(options);
         let username = options.username;
         let password: string | undefined;
 
@@ -53,9 +69,9 @@ export function createCredentialCommand(): Command {
             {
               type: 'input',
               name: 'username',
-              message: 'Proton email:',
+              message: 'Proton email or username:',
               when: !username,
-              validate: (input: string) => input.includes('@') || 'Enter a valid email',
+              validate: (input: string) => input.length > 0 || 'Email or username is required',
             },
             {
               type: 'password',
@@ -71,15 +87,22 @@ export function createCredentialCommand(): Command {
           password = password || answers.password;
         }
 
-        await gitCredentialApprove({
-          protocol: 'https',
-          host: options.host,
-          username: username!,
-          password: password!,
-        });
+        // Use provider-specific store
+        const provider = createProvider(providerName, { host: options.host });
+        if (provider.store) {
+          await provider.store(username!, password!);
+        } else {
+          // Fallback for providers that don't support store directly
+          await gitCredentialApprove({
+            protocol: 'https',
+            host: options.host,
+            username: username!,
+            password: password!,
+          });
+        }
 
         if (!isQuiet()) {
-          outputResult(`Credentials stored for ${username} at ${options.host}`);
+          outputResult(`Credentials stored for ${username} via ${providerName}`);
         }
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
@@ -90,11 +113,13 @@ export function createCredentialCommand(): Command {
   // --- remove ---
   cmd
     .command('remove')
-    .description('Remove Proton credentials from the git credential helper')
-    .option('-u, --username <email>', 'Proton account email')
-    .option('--host <host>', 'Credential host', DEFAULT_HOST)
+    .description('Remove Proton credentials')
+    .option('-u, --username <account>', 'Proton email or username')
+    .option('--host <host>', 'Credential host', PROTON_CREDENTIAL_HOST)
+    .option('--provider <type>', 'Credential provider: git-credential (default), pass-cli')
     .action(async (options) => {
       try {
+        const providerName = getProviderName(options);
         let username = options.username;
 
         if (!username) {
@@ -107,22 +132,27 @@ export function createCredentialCommand(): Command {
             {
               type: 'input',
               name: 'username',
-              message: 'Proton email to remove:',
-              validate: (input: string) => input.includes('@') || 'Enter a valid email',
+              message: 'Proton email or username to remove:',
+              validate: (input: string) => input.length > 0 || 'Email or username is required',
             },
           ]);
           username = answers.username;
         }
 
-        await gitCredentialReject({
-          protocol: 'https',
-          host: options.host,
-          username,
-          password: '', // password not needed for reject
-        });
+        const provider = createProvider(providerName, { host: options.host });
+        if (provider.remove) {
+          await provider.remove(username);
+        } else {
+          await gitCredentialReject({
+            protocol: 'https',
+            host: options.host,
+            username,
+            password: '',
+          });
+        }
 
         if (!isQuiet()) {
-          outputResult(`Credentials removed for ${username} at ${options.host}`);
+          outputResult(`Credentials removed for ${username} via ${providerName}`);
         }
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
@@ -133,15 +163,27 @@ export function createCredentialCommand(): Command {
   // --- verify ---
   cmd
     .command('verify')
-    .description('Verify that credentials can be resolved from the git credential helper')
-    .option('--host <host>', 'Credential host', DEFAULT_HOST)
+    .description('Verify that credentials can be resolved')
+    .option('--host <host>', 'Credential host', PROTON_CREDENTIAL_HOST)
+    .option('--provider <type>', 'Credential provider: git-credential (default), pass-cli')
     .action(async (options) => {
       try {
-        const cred = await gitCredentialFill(options.host);
+        const providerName = getProviderName(options);
+        const provider = createProvider(providerName, { host: options.host });
+
+        if (provider.verify) {
+          const ok = await provider.verify();
+          if (!ok) {
+            console.error(chalk.red(`No credentials found via ${providerName}`));
+            process.exit(1);
+          }
+        }
+
+        // Resolve to show details
+        const cred = await provider.resolve();
 
         if (!isQuiet()) {
-          console.log(chalk.green('Credentials found:'));
-          console.log(`  ${chalk.dim('Host:')}     ${cred.host}`);
+          console.log(chalk.green(`Credentials found via ${providerName}:`));
           console.log(`  ${chalk.dim('Username:')} ${cred.username}`);
           console.log(`  ${chalk.dim('Password:')} ${'*'.repeat(20)}`);
         }

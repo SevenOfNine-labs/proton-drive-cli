@@ -33,7 +33,7 @@ import {
   errorToStatusCode,
   oidToPath,
 } from '../bridge/validators';
-import { gitCredentialFill } from '../utils/git-credential';
+import { createProvider, normalizeProviderName } from '../credentials';
 
 /**
  * Write JSON response to stdout (single line, no extra output)
@@ -106,8 +106,8 @@ export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, errorToS
 // formatCaptchaError is exported directly from this module (above)
 
 /**
- * Resolve credentials from request, falling back to git-credential
- * when credentialProvider === 'git-credential'.
+ * Resolve credentials from request, using the unified credential provider
+ * when credentialProvider is set (git-credential, pass-cli, etc.).
  */
 async function resolveRequestCredentials(request: BridgeRequest): Promise<{ username?: string; password?: string }> {
   if (request.username && request.password) {
@@ -116,8 +116,10 @@ async function resolveRequestCredentials(request: BridgeRequest): Promise<{ user
   if (request.password) {
     return { password: request.password };
   }
-  if (request.credentialProvider === 'git-credential') {
-    const cred = await gitCredentialFill();
+  if (request.credentialProvider) {
+    const name = normalizeProviderName(request.credentialProvider);
+    const provider = createProvider(name);
+    const cred = await provider.resolve({ username: request.username });
     return { username: cred.username, password: cred.password };
   }
   return {};

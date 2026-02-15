@@ -4,7 +4,7 @@ import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 /**
  * Create mkdir command
@@ -18,7 +18,7 @@ export function createMkdirCommand(): Command {
     .argument('<path>', 'Path where to create the folder (e.g., /Documents)')
     .argument('<folder-name>', 'Name of the folder to create')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (path: string, folderName: string, options) => {
       try {
         // Resolve password for key decryption

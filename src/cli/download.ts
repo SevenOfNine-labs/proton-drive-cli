@@ -7,7 +7,7 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 /**
  * Create the download command
@@ -19,7 +19,7 @@ export function createDownloadCommand(): Command {
     .argument('<output>', 'Output path on local filesystem (e.g., ./file.pdf)')
     .option('--skip-verification', 'Skip manifest signature verification (not recommended)')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(downloadCommand);
 }
 

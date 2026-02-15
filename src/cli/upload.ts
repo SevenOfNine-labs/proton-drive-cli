@@ -19,7 +19,7 @@ import {
   getParentPath,
 } from '../utils/stdin';
 import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 /**
  * Create the upload command
@@ -34,7 +34,7 @@ export function createUploadCommand(): Command {
     .option('--no-progress', 'Disable progress output')
     .option('--name <filename>', 'Filename to use when uploading from stdin')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (file: string, destination: string, options) => {
       const startTime = Date.now();
       let uploadCancelled = false;

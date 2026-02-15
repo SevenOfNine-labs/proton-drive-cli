@@ -1,9 +1,17 @@
 import { createCredentialCommand } from './credential';
 
-jest.mock('../utils/git-credential', () => ({
+jest.mock('../credentials/git-credential', () => ({
   gitCredentialFill: jest.fn(),
   gitCredentialApprove: jest.fn(),
   gitCredentialReject: jest.fn(),
+  GitCredentialProvider: jest.fn().mockImplementation(() => ({
+    name: 'git-credential',
+    isAvailable: jest.fn().mockResolvedValue(true),
+    resolve: jest.fn().mockResolvedValue({ username: 'user', password: 'pass' }),
+    store: jest.fn(),
+    remove: jest.fn(),
+    verify: jest.fn().mockResolvedValue(true),
+  })),
 }));
 
 describe('createCredentialCommand', () => {
@@ -26,6 +34,7 @@ describe('createCredentialCommand', () => {
     expect(optionNames).toContain('--username');
     expect(optionNames).toContain('--password-stdin');
     expect(optionNames).toContain('--host');
+    expect(optionNames).toContain('--provider');
   });
 
   it('remove subcommand has expected options', () => {
@@ -36,6 +45,7 @@ describe('createCredentialCommand', () => {
     const optionNames = remove!.options.map((o: any) => o.long);
     expect(optionNames).toContain('--username');
     expect(optionNames).toContain('--host');
+    expect(optionNames).toContain('--provider');
   });
 
   it('verify subcommand has expected options', () => {
@@ -45,5 +55,6 @@ describe('createCredentialCommand', () => {
 
     const optionNames = verify!.options.map((o: any) => o.long);
     expect(optionNames).toContain('--host');
+    expect(optionNames).toContain('--provider');
   });
 });

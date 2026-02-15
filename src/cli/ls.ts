@@ -7,7 +7,7 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 function formatSize(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -40,7 +40,7 @@ export function createLsCommand(): Command {
     .argument('[path]', 'Path to list (defaults to root "/")', '/')
     .option('-l, --long', 'Use long listing format with details')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (path: string, options) => {
       try {
         // Resolve password for key decryption

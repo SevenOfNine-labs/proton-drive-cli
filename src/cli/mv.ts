@@ -5,7 +5,7 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid, ensureFolderPath } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../utils/password';
+import { resolvePassword } from '../credentials';
 
 /**
  * Create mv command
@@ -19,7 +19,7 @@ export function createMvCommand(): Command {
     .argument('<source>', 'Source path (e.g., /Documents/old-name.pdf)')
     .argument('<destination>', 'Destination path (e.g., /Archive/new-name.pdf)')
     .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential provider: git (use git credential manager)')
+    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (source: string, destination: string, options) => {
       try {
         const password = await resolvePassword(options);

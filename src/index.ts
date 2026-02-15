@@ -2,7 +2,7 @@
 import { program } from 'commander';
 import chalk from 'chalk';
 import { version as pkgVersion } from '../package.json';
-import { createLoginCommand, createLogoutCommand, createStatusCommand } from './cli/login';
+import { createLoginCommand, createLogoutCommand, createStatusCommand, createSessionRefreshCommand } from './cli/login';
 import { createLsCommand } from './cli/ls';
 import { createUploadCommand } from './cli/upload';
 import { createDownloadCommand } from './cli/download';
@@ -79,6 +79,7 @@ program
 program.addCommand(createLoginCommand());
 program.addCommand(createLogoutCommand());
 program.addCommand(createStatusCommand());
+program.addCommand(createSessionRefreshCommand());
 
 // Add drive commands
 program.addCommand(createLsCommand());
@@ -101,16 +102,24 @@ program.addCommand(createCredentialCommand());
 // Custom help
 program.on('--help', () => {
   console.log('');
+  console.log(chalk.bold('Command Groups:'));
+  console.log('');
+  console.log(`  ${chalk.cyan('Authentication')}  login, logout, status, session refresh`);
+  console.log(`  ${chalk.cyan('Credentials')}    credential store/remove/verify`);
+  console.log(`  ${chalk.cyan('Drive')}          ls, upload, download, mkdir, rm, mv, cat, info`);
+  console.log(`  ${chalk.cyan('Git LFS')}        bridge`);
+  console.log('');
+  console.log(chalk.bold('Credential Providers:'));
+  console.log(`  ${chalk.dim('--credential-provider git-credential')}  macOS Keychain / Windows Credential Manager`);
+  console.log(`  ${chalk.dim('--credential-provider pass-cli')}        Proton Pass CLI`);
+  console.log('');
   console.log(chalk.bold('Examples:'));
   console.log('  $ proton-drive login');
+  console.log('  $ proton-drive login --credential-provider pass-cli');
+  console.log('  $ proton-drive credential store --provider pass-cli');
+  console.log('  $ proton-drive credential verify --provider git-credential');
   console.log('  $ proton-drive upload ./file.pdf /Documents');
   console.log('  $ proton-drive ls /Documents');
-  console.log('  $ proton-drive download /Documents/file.pdf ./downloads/');
-  console.log('  $ proton-drive mkdir /Documents NewFolder');
-  console.log('  $ proton-drive rm /Documents/old-file.pdf');
-  console.log('  $ proton-drive mv /Documents/file.pdf /Archive/file.pdf');
-  console.log('  $ proton-drive cat /Documents/notes.txt');
-  console.log('  $ proton-drive info /Documents/file.pdf');
   console.log('');
   console.log(chalk.dim('For more information on a specific command:'));
   console.log('  $ proton-drive <command> --help');

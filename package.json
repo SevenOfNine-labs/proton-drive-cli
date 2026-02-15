@@ -50,8 +50,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SevenOfNine-ai/proton-git-lfs.git",
-    "directory": "submodules/proton-drive-cli"
+    "url": "git+https://github.com/SevenOfNine-ai/proton-drive-cli.git"
   },
   "bugs": {
     "url": "https://github.com/SevenOfNine-ai/proton-git-lfs/issues"
