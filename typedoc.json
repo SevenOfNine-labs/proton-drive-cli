@@ -1,0 +1,42 @@
+{
+  "entryPoints": [
+    "src/cli/index.ts",
+    "src/cli/bridge.ts",
+    "src/auth/index.ts",
+    "src/auth/session.ts",
+    "src/drive/operations.ts",
+    "src/utils/retry.ts",
+    "src/utils/circuit-breaker.ts",
+    "src/errors/types.ts"
+  ],
+  "out": "docs/api",
+  "name": "Proton Drive CLI API Documentation",
+  "includeVersion": true,
+  "readme": "README.md",
+  "plugin": [],
+  "entryPointStrategy": "expand",
+  "navigationLinks": {
+    "GitHub": "https://github.com/SevenOfNine-ai/proton-drive-cli"
+  },
+  "categorizeByGroup": true,
+  "categoryOrder": [
+    "CLI Commands",
+    "Authentication",
+    "Drive Operations",
+    "Utilities",
+    "Error Handling",
+    "*"
+  ],
+  "sort": ["kind", "instance-first", "alphabetical"],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/node_modules/**"
+  ],
+  "excludePrivate": false,
+  "excludeProtected": false,
+  "excludeInternal": false,
+  "hideGenerator": false,
+  "searchInComments": true,
+  "cleanOutputDir": true
+}

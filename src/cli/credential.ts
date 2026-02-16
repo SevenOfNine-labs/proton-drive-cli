@@ -34,6 +34,103 @@ function getProviderName(options: { provider?: string }): ProviderName {
   return 'git-credential';
 }
 
+/**
+ * Create the credential command for the CLI.
+ *
+ * Manages Proton Drive credentials via configurable credential providers.
+ * Supports storing, removing, and verifying credentials in secure system stores
+ * like macOS Keychain, Windows Credential Manager, Linux Secret Service, or Proton Pass.
+ *
+ * # Credential Providers
+ *
+ * **git-credential** (default): Uses Git Credential Manager
+ * - macOS: Stores in Keychain
+ * - Windows: Stores in Credential Manager
+ * - Linux: Stores in Secret Service (libsecret)
+ * - Protocol: https://account.proton.me
+ *
+ * **pass-cli**: Uses Proton Pass CLI
+ * - Searches all vaults for proton.me login entry
+ * - Supports multi-vault setups
+ * - Requires pass-cli to be installed and authenticated
+ *
+ * # Subcommands
+ *
+ * **store**: Store credentials in the configured provider
+ * ```bash
+ * proton-drive credential store -u user@proton.me
+ * echo "password" | proton-drive credential store -u user@proton.me --password-stdin
+ * ```
+ *
+ * **remove**: Remove credentials from the configured provider
+ * ```bash
+ * proton-drive credential remove -u user@proton.me
+ * ```
+ *
+ * **verify**: Verify that credentials can be resolved
+ * ```bash
+ * proton-drive credential verify --provider git-credential
+ * proton-drive credential verify --provider pass-cli
+ * ```
+ *
+ * # Security Features
+ *
+ * - Passwords never accepted via CLI flags (only --password-stdin or interactive)
+ * - Credentials stored in OS-native secure stores
+ * - No plaintext credentials in config files or environment variables
+ * - Password masking in interactive prompts
+ *
+ * # Exit Codes
+ *
+ * - 0: Operation successful
+ * - 1: Operation failed (provider error, credential not found, network error, etc.)
+ *
+ * @returns Commander Command instance configured for credential management
+ * @throws {AppError} CREDENTIAL_NOT_FOUND - If credentials don't exist (verify)
+ * @throws {AppError} PROVIDER_ERROR - If credential provider fails
+ * @throws {AppError} INVALID_INPUT - If required parameters missing
+ *
+ * @example
+ * ```bash
+ * # Store credentials via git-credential (default)
+ * proton-drive credential store -u user@proton.me
+ * # (prompts for password interactively)
+ *
+ * # Store with piped password (for scripts)
+ * echo "password" | proton-drive credential store -u user@proton.me --password-stdin
+ *
+ * # Store via Proton Pass CLI
+ * proton-drive credential store --provider pass-cli
+ *
+ * # Verify credentials exist
+ * proton-drive credential verify
+ * # Output: Credentials found via git-credential:
+ * #   Username: user@proton.me
+ * #   Password: ********************
+ *
+ * # Remove credentials
+ * proton-drive credential remove -u user@proton.me
+ *
+ * # Verify with specific provider
+ * proton-drive credential verify --provider pass-cli
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createCredentialCommand } from './cli/credential';
+ *
+ * const program = new Command();
+ * program.addCommand(createCredentialCommand());
+ * await program.parseAsync(['credential', 'store', '-u', 'user@proton.me'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLoginCommand} for authentication
+ * @see {@link createProvider} for provider implementations
+ * @see {@link gitCredentialFill} for git-credential resolution
+ * @since 0.1.0
+ */
 export function createCredentialCommand(): Command {
   const cmd = new Command('credential');
   cmd.description('Manage credentials (git-credential or pass-cli)');

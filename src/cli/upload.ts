@@ -22,7 +22,94 @@ import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../util
 import { resolvePassword } from '../credentials';
 
 /**
- * Create the upload command
+ * Create the upload command for the CLI.
+ *
+ * Uploads a local file or stdin data to Proton Drive with end-to-end encryption.
+ * The file is encrypted locally before being sent to the server using OpenPGP.
+ * Supports both regular file uploads and streaming from stdin for pipeline integration.
+ *
+ * # Upload Modes
+ *
+ * **File Upload**: Provide a local file path as the source
+ * ```bash
+ * proton-drive upload ./document.pdf /Documents
+ * ```
+ *
+ * **Stdin Upload**: Use "-" as the source to read from stdin
+ * ```bash
+ * cat file.txt | proton-drive upload - /Documents/file.txt
+ * echo "data" | proton-drive upload - /Documents --name file.txt
+ * ```
+ *
+ * # Destination Path Behavior
+ *
+ * - **Folder destination**: `/Documents` → Uses original filename
+ * - **Full path destination**: `/Documents/newname.pdf` → Uses specified filename
+ * - **Stdin with --name**: Filename specified via flag
+ * - **Stdin without --name**: Filename extracted from destination path
+ *
+ * # Progress Reporting
+ *
+ * - **Verbose mode**: Shows detailed progress (percentage, speed, ETA)
+ * - **Quiet mode**: Outputs only the node UID on success
+ * - **Normal mode**: Outputs node UID without progress details
+ * - **--no-progress**: Disables progress reporting
+ *
+ * # Security Features
+ *
+ * - End-to-end encryption using OpenPGP before upload
+ * - Password resolved via credential provider (never logged)
+ * - Temporary files (stdin) cleaned up on both success and failure
+ * - Graceful shutdown handling (SIGINT, SIGTERM) cleans up temp files
+ *
+ * # Exit Codes
+ *
+ * - 0: Upload successful
+ * - 1: Upload failed (file not found, network error, encryption error, etc.)
+ *
+ * @returns Commander Command instance configured for upload
+ * @throws {AppError} FILE_NOT_FOUND - If local file doesn't exist
+ * @throws {AppError} FILE_TOO_LARGE - If file exceeds maximum size limit
+ * @throws {AppError} INVALID_FILE - If stdin input is missing or invalid
+ * @throws {AppError} NETWORK_ERROR - If upload to Proton API fails
+ * @throws {AppError} ENCRYPTION_ERROR - If file encryption fails
+ *
+ * @example
+ * ```bash
+ * # Upload file to folder (keeps original filename)
+ * proton-drive upload ./photo.jpg /Photos
+ *
+ * # Upload file with new name
+ * proton-drive upload ./photo.jpg /Photos/vacation.jpg
+ *
+ * # Upload from stdin with filename in destination
+ * cat large.bin | proton-drive upload - /Backups/large.bin
+ *
+ * # Upload from stdin with --name flag
+ * tar czf - ./project | proton-drive upload - /Archives --name project.tar.gz
+ *
+ * # Disable progress output (for scripts)
+ * proton-drive upload file.pdf /Documents --no-progress
+ *
+ * # Upload with git-credential provider
+ * proton-drive upload file.pdf /Documents --credential-provider git-credential
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createUploadCommand } from './cli/upload';
+ *
+ * const program = new Command();
+ * program.addCommand(createUploadCommand());
+ * await program.parseAsync(['upload', './file.pdf', '/Documents'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createDownloadCommand} for downloading files
+ * @see {@link validateFilePath} for file validation logic
+ * @see {@link ensureFolderPath} for folder resolution
+ * @since 0.1.0
  */
 export function createUploadCommand(): Command {
   const cmd = new Command('upload');

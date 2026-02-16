@@ -27,6 +27,8 @@ describe('HTTPClientAdapter', () => {
     jest.clearAllMocks();
     adapter = new HTTPClientAdapter();
 
+    // Mock both getValidSession (for auth header injection) and loadSession (for refresh flow)
+    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(fakeSession);
     (SessionManager.loadSession as jest.Mock).mockResolvedValue(fakeSession);
     mockFetch.mockResolvedValue(new Response('{"Code": 1000}', { status: 200 }));
   });
@@ -94,7 +96,7 @@ describe('HTTPClientAdapter', () => {
     });
 
     it('skips auth headers when no session exists', async () => {
-      (SessionManager.loadSession as jest.Mock).mockResolvedValue(null);
+      (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
       const headers = new Headers();
 
       await adapter.fetchJson({
@@ -156,7 +158,9 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       });
 
-      expect(headers.get('x-pm-appversion')).toBe('web-drive@5.2.0');
+      // Expect official Proton Drive app version (platform-specific)
+      const appVersion = headers.get('x-pm-appversion');
+      expect(appVersion).toMatch(/^(macos-drive@2\.10\.1|windows-drive@1\.12\.4)$/);
     });
 
     it('preserves existing x-pm-appversion', async () => {
@@ -187,10 +191,14 @@ describe('HTTPClientAdapter', () => {
         }),
       }));
 
-      (SessionManager.loadSession as jest.Mock)
+      // Mock getValidSession for auth header injection
+      (SessionManager.getValidSession as jest.Mock)
         .mockResolvedValueOnce(fakeSession)   // initial auth injection
-        .mockResolvedValueOnce(fakeSession)   // refresh load
-        .mockResolvedValueOnce(refreshedSession); // retry auth injection
+        .mockResolvedValueOnce(refreshedSession); // retry auth injection after refresh
+
+      // Mock loadSession for refresh flow
+      (SessionManager.loadSession as jest.Mock)
+        .mockResolvedValueOnce(fakeSession);   // refresh load
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',

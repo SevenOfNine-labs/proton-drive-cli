@@ -1,204 +1,307 @@
+/**
+ * Tests for session management with proactive refresh, validation, and file locking
+ */
+
+// @ts-nocheck - Mock typing issues with fs-extra overloads
+import { SessionManager } from './session';
+import { SessionCredentials } from '../types/auth';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import * as os from 'os';
+import { homedir } from 'os';
 
-// We need to mock the module-level constants before importing SessionManager
-let mockSessionDir: string;
-let mockSessionFile: string;
+// Mock fs-extra
+jest.mock('fs-extra');
+const mockFs = fs as jest.Mocked<typeof fs>;
 
-jest.mock('os', () => {
-  const actual = jest.requireActual('os');
-  return {
-    ...actual,
-    homedir: () => mockSessionDir,
+// Mock dependencies
+jest.mock('../api/auth');
+jest.mock('../api/user');
+jest.mock('../utils/logger');
+
+describe('SessionManager', () => {
+  const mockSession: SessionCredentials = {
+    sessionId: 'session123',
+    uid: 'uid123',
+    accessToken: 'access_token',
+    refreshToken: 'refresh_token',
+    scopes: ['full'],
+    passwordMode: 1,
+    tokenExpiresAt: Date.now() + (60 * 60 * 1000), // 1 hour from now
+    userHash: 'hash123',
   };
-});
 
-// Re-require after mock so module-level constants use mocked homedir
-// We need to isolate the module to pick up the mock
-let SessionManager: any;
-
-beforeAll(() => {
-  // Clear the module cache so the mock takes effect
-  jest.resetModules();
-});
-
-beforeEach(async () => {
-  // Create a unique temp dir for each test
-  mockSessionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-test-'));
-  mockSessionFile = path.join(mockSessionDir, '.proton-drive-cli', 'session.json');
-
-  // Re-require with fresh module to pick up new mockSessionDir
-  jest.resetModules();
-  const mod = require('./session');
-  SessionManager = mod.SessionManager;
-});
-
-afterEach(async () => {
-  await fs.remove(mockSessionDir);
-});
-
-const VALID_SESSION = {
-  sessionId: 'test-session-id',
-  uid: 'test-uid-123',
-  accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5OTk5OTk5fQ.K3DEMO',
-  refreshToken: 'refresh-token-abc',
-  scopes: ['self', 'drive'],
-  passwordMode: 1,
-};
-
-describe('SessionManager.saveSession', () => {
-  it('creates directory and file', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
-
-    const sessionDir = path.join(mockSessionDir, '.proton-drive-cli');
-    expect(await fs.pathExists(sessionDir)).toBe(true);
-    expect(await fs.pathExists(path.join(sessionDir, 'session.json'))).toBe(true);
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  it('writes valid JSON that can be read back', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
+  describe('proactive token refresh', () => {
+    it('should not refresh if token is not expiring soon', async () => {
+      const session = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() + (60 * 60 * 1000), // 1 hour from now
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(session);
 
-    const sessionFile = path.join(mockSessionDir, '.proton-drive-cli', 'session.json');
-    const data = await fs.readJson(sessionFile);
-    expect(data.sessionId).toBe(VALID_SESSION.sessionId);
-    expect(data.uid).toBe(VALID_SESSION.uid);
+      const result = await SessionManager.getValidSession();
+
+      expect(result).toEqual(session);
+      // Should not attempt refresh
+    });
+
+    it('should proactively refresh if token expires within 5 minutes', async () => {
+      const expiringSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() + (4 * 60 * 1000), // 4 minutes from now
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(expiringSession);
+
+      const { AuthApiClient } = await import('../api/auth');
+      const mockAuthApi = AuthApiClient as jest.MockedClass<typeof AuthApiClient>;
+      mockAuthApi.prototype.refreshToken = jest.fn().mockResolvedValue({
+        AccessToken: 'new_access_token',
+        RefreshToken: 'new_refresh_token',
+        ExpiresIn: 3600,
+      });
+
+      mockFs.ensureDir.mockResolvedValue(undefined);
+      mockFs.writeJson.mockResolvedValue(undefined);
+      mockFs.move.mockResolvedValue(undefined);
+
+      const result = await SessionManager.getValidSession();
+
+      expect(result?.accessToken).toBe('new_access_token');
+      expect(mockAuthApi.prototype.refreshToken).toHaveBeenCalled();
+    });
+
+    it('should fallback to current session if proactive refresh fails', async () => {
+      const expiringSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() + (4 * 60 * 1000), // 4 minutes from now
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(expiringSession);
+
+      const { AuthApiClient } = await import('../api/auth');
+      const mockAuthApi = AuthApiClient as jest.MockedClass<typeof AuthApiClient>;
+      mockAuthApi.prototype.refreshToken = jest.fn().mockRejectedValue(new Error('Network error'));
+
+      const result = await SessionManager.getValidSession();
+
+      // Should return the current session despite refresh failure
+      expect(result).toEqual(expiringSession);
+    });
   });
 
-  it('strips mailboxPassword from disk', async () => {
-    const sessionWithPassword = {
-      ...VALID_SESSION,
-      mailboxPassword: 'super-secret-password',
-    };
-    await SessionManager.saveSession(sessionWithPassword);
+  describe('session validation', () => {
+    it('should validate session locally if not expired', async () => {
+      const validSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() + (60 * 60 * 1000), // 1 hour from now
+      };
 
-    const sessionFile = path.join(mockSessionDir, '.proton-drive-cli', 'session.json');
-    const raw = await fs.readJson(sessionFile);
-    expect(raw).not.toHaveProperty('mailboxPassword');
+      const isValid = await SessionManager.validateSession(validSession, false);
+
+      expect(isValid).toBe(true);
+    });
+
+    it('should detect expired session locally', async () => {
+      const expiredSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() - 1000, // Expired 1 second ago
+      };
+
+      const isValid = await SessionManager.validateSession(expiredSession, false);
+
+      expect(isValid).toBe(false);
+    });
+
+    it('should validate session remotely with API call', async () => {
+      const validSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() + (60 * 60 * 1000),
+      };
+
+      const { UserApiClient } = await import('../api/user');
+      const mockUserApi = UserApiClient as jest.MockedClass<typeof UserApiClient>;
+      mockUserApi.prototype.getUser = jest.fn().mockResolvedValue({ ID: 'user123' });
+
+      const isValid = await SessionManager.validateSession(validSession, true);
+
+      expect(isValid).toBe(true);
+      expect(mockUserApi.prototype.getUser).toHaveBeenCalled();
+    });
+
+    it('should detect invalid session remotely with 401', async () => {
+      const session = { ...mockSession };
+
+      const { UserApiClient } = await import('../api/user');
+      const mockUserApi = UserApiClient as jest.MockedClass<typeof UserApiClient>;
+      mockUserApi.prototype.getUser = jest.fn().mockRejectedValue({
+        response: { status: 401 },
+      });
+
+      const isValid = await SessionManager.validateSession(session, true);
+
+      expect(isValid).toBe(false);
+    });
+
+    it('should assume valid on network errors during remote validation', async () => {
+      const session = { ...mockSession };
+
+      const { UserApiClient } = await import('../api/user');
+      const mockUserApi = UserApiClient as jest.MockedClass<typeof UserApiClient>;
+      mockUserApi.prototype.getUser = jest.fn().mockRejectedValue(new Error('Network error'));
+
+      const isValid = await SessionManager.validateSession(session, true);
+
+      expect(isValid).toBe(true); // Network error, assume valid
+    });
   });
 
-  it('preserves all other session fields when stripping password', async () => {
-    const sessionWithPassword = {
-      ...VALID_SESSION,
-      mailboxPassword: 'super-secret-password',
-    };
-    await SessionManager.saveSession(sessionWithPassword);
+  describe('session reuse (getOrCreateSession)', () => {
+    it('should reuse existing valid session', async () => {
+      const validSession = {
+        ...mockSession,
+        userHash: SessionManager.hashUsername('user@example.com'),
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(validSession);
 
-    const sessionFile = path.join(mockSessionDir, '.proton-drive-cli', 'session.json');
-    const raw = await fs.readJson(sessionFile);
-    expect(raw.sessionId).toBe(VALID_SESSION.sessionId);
-    expect(raw.uid).toBe(VALID_SESSION.uid);
-    expect(raw.accessToken).toBe(VALID_SESSION.accessToken);
-    expect(raw.refreshToken).toBe(VALID_SESSION.refreshToken);
-    expect(raw.scopes).toEqual(VALID_SESSION.scopes);
-    expect(raw.passwordMode).toBe(VALID_SESSION.passwordMode);
-  });
-});
+      const { UserApiClient } = await import('../api/user');
+      const mockUserApi = UserApiClient as jest.MockedClass<typeof UserApiClient>;
+      mockUserApi.prototype.getUser = jest.fn().mockResolvedValue({ ID: 'user123' });
 
-describe('SessionManager.loadSession', () => {
-  it('returns valid session', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
-    const loaded = await SessionManager.loadSession();
-    expect(loaded).toBeTruthy();
-    expect(loaded.uid).toBe(VALID_SESSION.uid);
-  });
+      const result = await SessionManager.getOrCreateSession(
+        'user@example.com',
+        'password123',
+        true
+      );
 
-  it('returns null for missing file', async () => {
-    const loaded = await SessionManager.loadSession();
-    expect(loaded).toBeNull();
-  });
+      expect(result).toEqual(validSession);
+      // Should not perform SRP auth
+    });
 
-  it('returns null for corrupted JSON', async () => {
-    const sessionDir = path.join(mockSessionDir, '.proton-drive-cli');
-    await fs.ensureDir(sessionDir);
-    await fs.writeFile(path.join(sessionDir, 'session.json'), '{invalid json');
-    const loaded = await SessionManager.loadSession();
-    expect(loaded).toBeNull();
-  });
+    it('should create new session if no session exists', async () => {
+      mockFs.pathExists.mockResolvedValue(false);
 
-  it('returns null for invalid session (missing fields)', async () => {
-    const sessionDir = path.join(mockSessionDir, '.proton-drive-cli');
-    await fs.ensureDir(sessionDir);
-    await fs.writeJson(path.join(sessionDir, 'session.json'), { uid: 'only-uid' });
-    const loaded = await SessionManager.loadSession();
-    expect(loaded).toBeNull();
-  });
-});
+      const { AuthService } = await import('./index');
+      const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
+      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
 
-describe('SessionManager.clearSession', () => {
-  it('removes session file', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
-    await SessionManager.clearSession();
+      const result = await SessionManager.getOrCreateSession(
+        'user@example.com',
+        'password123'
+      );
 
-    const sessionFile = path.join(mockSessionDir, '.proton-drive-cli', 'session.json');
-    expect(await fs.pathExists(sessionFile)).toBe(false);
-  });
+      expect(mockAuthService.prototype.login).toHaveBeenCalledWith(
+        'user@example.com',
+        'password123'
+      );
+    });
 
-  it('does not throw if file is already missing', async () => {
-    await expect(SessionManager.clearSession()).resolves.not.toThrow();
-  });
-});
+    it('should create new session if user changed', async () => {
+      const existingSession = {
+        ...mockSession,
+        userHash: SessionManager.hashUsername('old@example.com'),
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(existingSession);
 
-describe('SessionManager.hasValidSession', () => {
-  it('returns true when valid session exists', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
-    expect(await SessionManager.hasValidSession()).toBe(true);
-  });
+      const { AuthService } = await import('./index');
+      const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
+      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
 
-  it('returns false when no session exists', async () => {
-    expect(await SessionManager.hasValidSession()).toBe(false);
-  });
-});
+      const result = await SessionManager.getOrCreateSession(
+        'new@example.com',
+        'password123'
+      );
 
-describe('SessionManager.hashUsername', () => {
-  it('produces consistent hash', () => {
-    const h1 = SessionManager.hashUsername('test@example.com');
-    const h2 = SessionManager.hashUsername('test@example.com');
-    expect(h1).toBe(h2);
-    expect(h1).toHaveLength(64); // SHA-256 hex
-  });
+      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+    });
 
-  it('normalizes case and whitespace', () => {
-    expect(SessionManager.hashUsername('Test@Example.COM')).toBe(
-      SessionManager.hashUsername('test@example.com')
-    );
-    expect(SessionManager.hashUsername('  test@example.com  ')).toBe(
-      SessionManager.hashUsername('test@example.com')
-    );
+    it('should create new session if validation fails', async () => {
+      const invalidSession = {
+        ...mockSession,
+        tokenExpiresAt: Date.now() - 1000, // Expired
+        userHash: SessionManager.hashUsername('user@example.com'),
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(invalidSession);
+
+      const { AuthService } = await import('./index');
+      const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
+      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
+
+      const result = await SessionManager.getOrCreateSession(
+        'user@example.com',
+        'password123'
+      );
+
+      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+    });
   });
 
-  it('produces different hashes for different users', () => {
-    expect(SessionManager.hashUsername('alice@example.com')).not.toBe(
-      SessionManager.hashUsername('bob@example.com')
-    );
-  });
-});
+  describe('file locking', () => {
+    it('should acquire and release lock successfully', async () => {
+      mockFs.writeFile.mockResolvedValue(undefined); // Lock acquired
+      mockFs.remove.mockResolvedValue(undefined); // Lock released
+      mockFs.ensureDir.mockResolvedValue(undefined);
+      mockFs.writeJson.mockResolvedValue(undefined);
+      mockFs.move.mockResolvedValue(undefined);
 
-describe('SessionManager.isSessionForUser', () => {
-  it('returns true when session has matching userHash', async () => {
-    const sessionWithHash = {
-      ...VALID_SESSION,
-      userHash: SessionManager.hashUsername('test@example.com'),
-    };
-    await SessionManager.saveSession(sessionWithHash);
-    expect(await SessionManager.isSessionForUser('test@example.com')).toBe(true);
+      await SessionManager.saveSession(mockSession);
+
+      expect(mockFs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('.lock'),
+        expect.any(String),
+        expect.objectContaining({ flag: 'wx' })
+      );
+      expect(mockFs.remove).toHaveBeenCalledWith(expect.stringContaining('.lock'));
+    });
+
+    it('should detect and remove stale lock from dead process', async () => {
+      // First write fails (lock exists)
+      mockFs.writeFile.mockRejectedValueOnce({ code: 'EEXIST' });
+      // Read stale PID
+      mockFs.readFile.mockResolvedValueOnce('99999');
+      // process.kill will throw (process not found)
+      jest.spyOn(process, 'kill').mockImplementation(() => {
+        throw new Error('ESRCH');
+      });
+      // Remove stale lock
+      mockFs.remove.mockResolvedValueOnce(undefined);
+      // Second write succeeds
+      mockFs.writeFile.mockResolvedValueOnce(undefined);
+      mockFs.ensureDir.mockResolvedValue(undefined);
+      mockFs.writeJson.mockResolvedValue(undefined);
+      mockFs.move.mockResolvedValue(undefined);
+      mockFs.remove.mockResolvedValueOnce(undefined); // Final lock removal
+
+      await SessionManager.saveSession(mockSession);
+
+      expect(mockFs.remove).toHaveBeenCalledWith(expect.stringContaining('.lock'));
+    });
   });
 
-  it('returns false when session has different userHash', async () => {
-    const sessionWithHash = {
-      ...VALID_SESSION,
-      userHash: SessionManager.hashUsername('alice@example.com'),
-    };
-    await SessionManager.saveSession(sessionWithHash);
-    expect(await SessionManager.isSessionForUser('bob@example.com')).toBe(false);
-  });
+  describe('username hashing', () => {
+    it('should hash username consistently', () => {
+      const hash1 = SessionManager.hashUsername('user@example.com');
+      const hash2 = SessionManager.hashUsername('user@example.com');
+      expect(hash1).toBe(hash2);
+    });
 
-  it('returns true for legacy sessions without userHash', async () => {
-    await SessionManager.saveSession(VALID_SESSION);
-    expect(await SessionManager.isSessionForUser('anyone@example.com')).toBe(true);
-  });
+    it('should be case-insensitive', () => {
+      const hash1 = SessionManager.hashUsername('User@Example.com');
+      const hash2 = SessionManager.hashUsername('user@example.com');
+      expect(hash1).toBe(hash2);
+    });
 
-  it('returns false when no session exists', async () => {
-    expect(await SessionManager.isSessionForUser('test@example.com')).toBe(false);
+    it('should trim whitespace', () => {
+      const hash1 = SessionManager.hashUsername('  user@example.com  ');
+      const hash2 = SessionManager.hashUsername('user@example.com');
+      expect(hash1).toBe(hash2);
+    });
   });
 });

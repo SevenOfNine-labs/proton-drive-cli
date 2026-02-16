@@ -35,10 +35,10 @@ jobs:
             docs/**/*.md
 
   deploy:
-    name: Build and deploy to GitHub Pages
+    name: Build and deploy unified docs to GitHub Pages
     needs: docs-quality
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
 
     permissions:
@@ -54,16 +54,156 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout SDK submodule (non-recursive)
+        run: |
+          git submodule update --init --depth 1 submodules/sdk
+          cd submodules/sdk && git submodule update --init --depth 1 js/sdk
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "25"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build SDK (uses npm - external Proton project)
+        run: |
+          cd submodules/sdk/js/sdk
+          npm install
+          npm run build
+
+      - name: Generate TypeDoc API documentation
+        run: yarn docs
 
       - name: Install honkit
         run: npm install -g honkit@6
 
-      - name: Build docs
+      - name: Build markdown docs with honkit
         run: honkit build
+
+      - name: Create unified documentation structure
+        run: |
+          mkdir -p docs-build/unified
+
+          # Copy honkit markdown docs to guides/
+          cp -r _book docs-build/unified/guides
+
+          # Copy TypeDoc API docs to typescript/
+          cp -r docs/api docs-build/unified/typescript
+
+          # Create landing page
+          cat > docs-build/unified/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Proton Drive CLI Documentation</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                line-height: 1.6;
+                color: #333;
+              }
+              h1 {
+                border-bottom: 3px solid #6d4aff;
+                padding-bottom: 10px;
+                color: #1a1a1a;
+              }
+              .section {
+                margin: 30px 0;
+                padding: 25px;
+                background: #f8f9fa;
+                border-radius: 8px;
+                border-left: 4px solid #6d4aff;
+              }
+              .section h2 {
+                margin-top: 0;
+                color: #6d4aff;
+              }
+              a {
+                color: #6d4aff;
+                text-decoration: none;
+                font-weight: 500;
+              }
+              a:hover {
+                text-decoration: underline;
+              }
+              .badge {
+                display: inline-block;
+                padding: 4px 10px;
+                background: #6d4aff;
+                color: white;
+                border-radius: 4px;
+                font-size: 0.85em;
+                margin-left: 10px;
+                font-weight: 600;
+              }
+              ul {
+                margin: 15px 0;
+                padding-left: 20px;
+              }
+              li {
+                margin: 8px 0;
+              }
+              footer {
+                margin-top: 60px;
+                padding-top: 20px;
+                border-top: 1px solid #ddd;
+                text-align: center;
+                color: #666;
+                font-size: 0.9em;
+              }
+            </style>
+          </head>
+          <body>
+            <h1>📚 Proton Drive CLI Documentation</h1>
+            <p>Comprehensive documentation for the Proton Drive CLI and TypeScript bridge.</p>
+
+            <div class="section">
+              <h2>📘 API Reference <span class="badge">TypeScript</span></h2>
+              <p>Complete TypeScript API documentation generated from TSDoc comments.</p>
+              <ul>
+                <li><a href="typescript/index.html">API Documentation Home</a></li>
+                <li><a href="typescript/modules.html">All Modules</a></li>
+                <li>Coverage: CLI Commands, Authentication, Drive Operations, Bridge Protocol, Utilities</li>
+              </ul>
+            </div>
+
+            <div class="section">
+              <h2>📗 Architecture & Guides <span class="badge">Markdown</span></h2>
+              <p>High-level architecture, setup guides, and operational documentation.</p>
+              <ul>
+                <li><a href="guides/index.html">Documentation Home</a></li>
+                <li><a href="guides/docs/architecture/overview.html">Architecture Overview</a></li>
+                <li><a href="guides/docs/security/credentials.html">Credential Security</a></li>
+                <li><a href="guides/docs/operations/configuration.html">Configuration Guide</a></li>
+              </ul>
+            </div>
+
+            <div class="section">
+              <h2>🔗 Quick Links</h2>
+              <ul>
+                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli">GitHub Repository</a></li>
+                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli/blob/main/README.md">README</a></li>
+                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli/blob/main/docs/DOCUMENTATION_GUIDE.md">Documentation Guide</a></li>
+                <li><a href="https://github.com/SevenOfNine-ai/proton-git-lfs">Main Project: proton-git-lfs</a></li>
+              </ul>
+            </div>
+
+            <footer>
+              <p>Generated with TypeDoc and Honkit | <a href="https://github.com/SevenOfNine-ai/proton-drive-cli">proton-drive-cli on GitHub</a></p>
+            </footer>
+          </body>
+          </html>
+          EOF
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -71,7 +211,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: _book
+          path: docs-build/unified
 
       - name: Deploy to GitHub Pages
         id: deployment

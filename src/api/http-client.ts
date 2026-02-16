@@ -192,6 +192,45 @@ export class HttpClient {
             }
 
             if (!res.ok) {
+                // Detect rate-limiting before creating generic error
+                const protonCode = data?.Code;
+                if (res.status === 429 || protonCode === 2028 || protonCode === 85131) {
+                    // Extract retry-after header if present
+                    const retryAfterHeader = res.headers.get('retry-after');
+                    const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+
+                    const error = new HttpClientError(
+                        data?.Error || `Rate limit exceeded (HTTP ${res.status}, Proton Code ${protonCode})`,
+                        {
+                            response: {
+                                data: { ...data, isRateLimit: true },
+                                status: res.status,
+                                headers: responseHeaders,
+                                config: mergedConfig,
+                            },
+                            code: 'RATE_LIMITED',
+                        }
+                    );
+                    // Store retry metadata for downstream error handling
+                    (error as any).retryAfter = retryAfter;
+                    (error as any).protonCode = protonCode;
+
+                    // Run response error interceptors
+                    let handled: any = error;
+                    for (const handler of this.interceptors.response._handlers) {
+                        if (handler.rejected) {
+                            try {
+                                handled = await handler.rejected(handled);
+                                // If interceptor resolved, treat as success
+                                return handled;
+                            } catch (interceptorErr) {
+                                handled = interceptorErr;
+                            }
+                        }
+                    }
+                    throw handled;
+                }
+
                 const error = new HttpClientError(
                     `Request failed with status ${res.status}`,
                     {

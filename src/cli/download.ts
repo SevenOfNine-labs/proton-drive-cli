@@ -10,7 +10,84 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { resolvePassword } from '../credentials';
 
 /**
- * Create the download command
+ * Create the download command for the CLI.
+ *
+ * Downloads a file from Proton Drive to the local filesystem with end-to-end encryption.
+ * The file is decrypted locally after being downloaded from the server using OpenPGP.
+ * Supports progress reporting and manifest signature verification for integrity checking.
+ *
+ * # Download Process
+ *
+ * 1. Resolves source path to node UID via Drive API
+ * 2. Retrieves encrypted file chunks from Proton servers
+ * 3. Verifies manifest signature (unless --skip-verification)
+ * 4. Decrypts chunks locally using user's private key
+ * 5. Writes decrypted data to output file
+ *
+ * # Signature Verification
+ *
+ * By default, the command verifies the file's manifest signature to ensure
+ * integrity and authenticity. The `--skip-verification` flag disables this check
+ * but is NOT recommended except for debugging or performance testing.
+ *
+ * # Progress Reporting
+ *
+ * - **Verbose mode**: Shows detailed progress (percentage, speed, ETA)
+ * - **Quiet mode**: Outputs only the output path on success
+ * - **Normal mode**: Outputs output path without progress details
+ *
+ * # Security Features
+ *
+ * - End-to-end decryption using OpenPGP after download
+ * - Manifest signature verification (default enabled)
+ * - Password resolved via credential provider (never logged)
+ * - Secure stream processing (no full file in memory)
+ *
+ * # Exit Codes
+ *
+ * - 0: Download successful
+ * - 1: Download failed (file not found, network error, decryption error, etc.)
+ *
+ * @returns Commander Command instance configured for download
+ * @throws {AppError} FILE_NOT_FOUND - If source file doesn't exist in Drive
+ * @throws {AppError} NETWORK_ERROR - If download from Proton API fails
+ * @throws {AppError} DECRYPTION_ERROR - If file decryption fails
+ * @throws {AppError} SIGNATURE_VERIFICATION_FAILED - If manifest signature is invalid
+ * @throws {AppError} PERMISSION_DENIED - If user lacks read access to file
+ *
+ * @example
+ * ```bash
+ * # Download file from Drive
+ * proton-drive download /Documents/file.pdf ./file.pdf
+ *
+ * # Download with verbose progress
+ * proton-drive download /Photos/vacation.jpg ./vacation.jpg --verbose
+ *
+ * # Download without signature verification (not recommended)
+ * proton-drive download /Backups/data.bin ./data.bin --skip-verification
+ *
+ * # Download with git-credential provider
+ * proton-drive download /Documents/file.pdf ./file.pdf --credential-provider git-credential
+ *
+ * # Quiet mode (for scripts)
+ * proton-drive download /file.txt ./file.txt --quiet
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createDownloadCommand } from './cli/download';
+ *
+ * const program = new Command();
+ * program.addCommand(createDownloadCommand());
+ * await program.parseAsync(['download', '/Documents/file.pdf', './file.pdf'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createUploadCommand} for uploading files
+ * @see {@link resolvePathToNodeUid} for path resolution logic
+ * @see {@link createSDKClient} for SDK client initialization
+ * @since 0.1.0
  */
 export function createDownloadCommand(): Command {
   return new Command('download')

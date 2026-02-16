@@ -18,6 +18,7 @@ import { logger } from '../utils/logger';
 
 const SESSION_DIR = path.join(homedir(), '.proton-drive-cli');
 const SESSION_FILE = path.join(SESSION_DIR, 'session.json');
+const SESSION_LOCK_FILE = path.join(SESSION_DIR, 'session.json.lock');
 const CRYPTO_CACHE_FILE = path.join(SESSION_DIR, 'crypto-cache.json');
 
 export interface CryptoCache {
@@ -29,8 +30,87 @@ export interface CryptoCache {
 }
 
 export class SessionManager {
+  // Proactively refresh tokens when within 5 minutes of expiry
+  private static readonly REFRESH_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+  // Lock acquisition timeout (prevents deadlocks)
+  private static readonly LOCK_TIMEOUT_MS = 5000; // 5 seconds
+  // Lock poll interval
+  private static readonly LOCK_POLL_INTERVAL_MS = 100; // 100ms
+
   /**
-   * Save session credentials to disk
+   * Acquire a file lock for session operations.
+   * Uses a .lock file with timeout to prevent deadlocks.
+   * Retries with exponential backoff until timeout.
+   *
+   * @param fn - Function to execute while holding the lock
+   * @returns Result of the function
+   * @throws Error if lock cannot be acquired within timeout
+   */
+  private static async withFileLock<T>(fn: () => Promise<T>): Promise<T> {
+    const maxWaitMs = this.LOCK_TIMEOUT_MS;
+    const pollIntervalMs = this.LOCK_POLL_INTERVAL_MS;
+    let waited = 0;
+    let lockAcquired = false;
+
+    // Try to acquire lock
+    while (waited < maxWaitMs) {
+      try {
+        // Create lock file exclusively (fails if exists)
+        await fs.writeFile(SESSION_LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 });
+        lockAcquired = true;
+        break;
+      } catch (error: any) {
+        if (error.code === 'EEXIST') {
+          // Lock file exists — check if it's stale (process no longer exists)
+          try {
+            const lockPid = parseInt(await fs.readFile(SESSION_LOCK_FILE, 'utf-8'), 10);
+            if (lockPid && !isNaN(lockPid)) {
+              try {
+                // Check if process exists (throws if not)
+                process.kill(lockPid, 0);
+                // Process exists — wait and retry
+              } catch {
+                // Process doesn't exist — remove stale lock
+                logger.debug(`Removing stale lock file (PID ${lockPid} not found)`);
+                await fs.remove(SESSION_LOCK_FILE).catch(() => {});
+                continue; // Retry immediately
+              }
+            }
+          } catch {
+            // Can't read lock file — try to remove it
+            await fs.remove(SESSION_LOCK_FILE).catch(() => {});
+            continue;
+          }
+
+          // Lock is held by another process — wait
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          waited += pollIntervalMs;
+          continue;
+        }
+        // Other error (e.g., permission denied)
+        throw error;
+      }
+    }
+
+    if (!lockAcquired) {
+      throw new Error('Failed to acquire session file lock within timeout');
+    }
+
+    // Execute function with lock held
+    try {
+      return await fn();
+    } finally {
+      // Always release lock
+      try {
+        await fs.remove(SESSION_LOCK_FILE);
+      } catch (error) {
+        logger.warn('Failed to remove lock file:', error);
+      }
+    }
+  }
+
+  /**
+   * Save session credentials to disk with file locking.
    * @param session - Session credentials to save
    */
   static async saveSession(session: SessionCredentials): Promise<void> {
@@ -42,18 +122,20 @@ export class SessionManager {
       // The password flows via stdin on every bridge invocation (from pass-cli).
       const { mailboxPassword, ...safeSession } = session as SessionCredentials & { mailboxPassword?: string };
 
-      // Write atomically: unique temp file with restrictive mode, then rename.
-      // Unique suffix prevents corruption from concurrent saveSession calls.
-      const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
-      const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
-      try {
-        await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
-        await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
-      } catch (writeErr) {
-        // Clean up temp file on error to avoid leaking session data
-        await fs.remove(tmpFile).catch(() => {});
-        throw writeErr;
-      }
+      // Use file lock to prevent concurrent writes
+      await this.withFileLock(async () => {
+        // Write atomically: unique temp file with restrictive mode, then rename.
+        const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+        const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
+        try {
+          await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
+          await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
+        } catch (writeErr) {
+          // Clean up temp file on error to avoid leaking session data
+          await fs.remove(tmpFile).catch(() => {});
+          throw writeErr;
+        }
+      });
     } catch (error) {
       throw new Error(`Failed to save session: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -179,6 +261,164 @@ export class SessionManager {
    */
   static getSessionFilePath(): string {
     return SESSION_FILE;
+  }
+
+  /**
+   * Check if a session token is expiring soon (within REFRESH_THRESHOLD_MS).
+   * @param session - Session to check
+   * @returns True if token expires within the threshold
+   */
+  private static isExpiringSoon(session: SessionCredentials): boolean {
+    if (!session.tokenExpiresAt) return false;
+    const now = Date.now();
+    const timeUntilExpiry = session.tokenExpiresAt - now;
+    return timeUntilExpiry < this.REFRESH_THRESHOLD_MS && timeUntilExpiry > 0;
+  }
+
+  /**
+   * Refresh session tokens using the refresh token.
+   * Updates the session file with new tokens and expiration time.
+   * @param session - Current session to refresh
+   * @returns Updated session with new tokens
+   */
+  private static async refreshSessionTokens(session: SessionCredentials): Promise<SessionCredentials> {
+    // Import AuthApiClient here to avoid circular dependencies
+    const { AuthApiClient } = await import('../api/auth');
+    const authApi = new AuthApiClient();
+
+    logger.debug(`Refreshing tokens for session ${session.uid}`);
+    const result = await authApi.refreshToken(session.uid, session.refreshToken);
+
+    const updatedSession: SessionCredentials = {
+      ...session,
+      accessToken: result.AccessToken,
+      refreshToken: result.RefreshToken,
+      tokenExpiresAt: result.ExpiresIn ? Date.now() + (result.ExpiresIn * 1000) : undefined,
+    };
+
+    await this.saveSession(updatedSession);
+    logger.info('Token refreshed successfully (proactive)');
+    return updatedSession;
+  }
+
+  /**
+   * Get a valid session, proactively refreshing tokens if they are expiring soon.
+   * This method should be called before operations to ensure the token is valid
+   * for the duration of the operation (preventing mid-operation expiration).
+   *
+   * @returns Valid session or null if no session exists
+   */
+  static async getValidSession(): Promise<SessionCredentials | null> {
+    const session = await this.loadSession();
+    if (!session) return null;
+
+    // Check if token is expiring soon and proactively refresh
+    if (this.isExpiringSoon(session)) {
+      logger.info('Token expiring soon, proactively refreshing...');
+      try {
+        return await this.refreshSessionTokens(session);
+      } catch (error) {
+        logger.warn('Proactive refresh failed, token may expire during operation:', error);
+        // Continue with current session — will retry on 401
+        // The operation may still succeed if the token hasn't expired yet
+        return session;
+      }
+    }
+
+    // Token is not expiring soon, return as-is
+    return session;
+  }
+
+  /**
+   * Validate a session by checking token expiration and optionally making a lightweight API call.
+   * @param session - Session to validate
+   * @param remoteCheck - If true, makes an API call to verify the session is valid on the server
+   * @returns True if session is valid
+   */
+  static async validateSession(session: SessionCredentials, remoteCheck: boolean = false): Promise<boolean> {
+    // Quick local validation: check if token is expired
+    if (session.tokenExpiresAt && Date.now() >= session.tokenExpiresAt) {
+      logger.debug('Session expired locally (tokenExpiresAt)');
+      return false;
+    }
+
+    // Also check JWT expiry as a backup
+    try {
+      const decoded = jwtDecode<{ exp?: number }>(session.accessToken);
+      if (decoded.exp) {
+        const now = Math.floor(Date.now() / 1000);
+        if (decoded.exp <= now) {
+          logger.debug('Session expired locally (JWT exp)');
+          return false;
+        }
+      }
+    } catch {
+      // Token isn't a JWT or can't be decoded — assume valid for now
+    }
+
+    // Remote validation: lightweight API call to verify session
+    if (remoteCheck) {
+      try {
+        // Import UserApiClient here to avoid circular dependencies
+        const { UserApiClient } = await import('../api/user');
+        const userApi = new UserApiClient();
+        await userApi.getUser(); // Lightweight endpoint
+        logger.debug('Session validated remotely (API call succeeded)');
+        return true;
+      } catch (error: any) {
+        if (error?.response?.status === 401 || error?.response?.status === 403) {
+          logger.debug('Session invalid remotely (401/403)');
+          return false;
+        }
+        // Network error or other issue — assume session is valid
+        // The actual operation will retry if the session is truly invalid
+        logger.warn('Session validation failed due to network error, assuming valid');
+        return true;
+      }
+    }
+
+    // Local validation passed
+    return true;
+  }
+
+  /**
+   * Get an existing session or create a new one via SRP authentication.
+   * This method implements session reuse: if a valid session exists, it is returned
+   * immediately without performing SRP auth. This significantly reduces auth overhead.
+   *
+   * @param username - Username for authentication (if new session needed)
+   * @param password - Password for authentication (if new session needed)
+   * @param remoteCheck - If true, validates existing session with an API call
+   * @returns Valid session (existing or newly created)
+   */
+  static async getOrCreateSession(
+    username: string,
+    password: string,
+    remoteCheck: boolean = false
+  ): Promise<SessionCredentials> {
+    const existing = await this.loadSession();
+
+    if (existing) {
+      // Check if the session belongs to the same user
+      const expectedHash = this.hashUsername(username);
+      if (existing.userHash && existing.userHash !== expectedHash) {
+        logger.info('Existing session belongs to different user, creating new session...');
+      } else {
+        logger.debug('Found existing session, validating...');
+        const isValid = await this.validateSession(existing, remoteCheck);
+        if (isValid) {
+          logger.info('Reusing existing valid session (skipping SRP auth)');
+          return existing;
+        }
+        logger.info('Existing session invalid, creating new session...');
+      }
+    }
+
+    // No session or invalid session — perform full SRP auth
+    logger.info('Performing SRP authentication...');
+    const { AuthService } = await import('./index');
+    const authService = new AuthService();
+    return await authService.login(username, password);
   }
 
   // ─── Crypto-init cache ──────────────────────────────────────────────

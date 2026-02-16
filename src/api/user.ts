@@ -2,6 +2,11 @@ import { HttpClient } from './http-client';
 import { User, Address } from '../types/crypto';
 import { SessionManager } from '../auth/session';
 
+// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
+const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
+const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
+const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
+
 /**
  * User API client for fetching user keys and addresses.
  *
@@ -28,7 +33,7 @@ export class UserApiClient {
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': 'web-drive@5.2.0',
+        'x-pm-appversion': APP_VERSION,
       },
     });
 

@@ -11,16 +11,68 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { readPasswordFromStdin, resolveCredentials, normalizeProviderName, createProvider } from '../credentials';
 
 /**
- * Create the login command for the CLI
- * Handles user authentication with Proton Drive
+ * Create the login command for the CLI.
  *
- * Credential sources (in priority order):
- * 1. --credential-provider git (resolves both username + password via git credential)
- * 2. --password-stdin (piped password — safe from `ps` and /proc leaks)
- * 3. -u/--username flag (username only — not sensitive)
- * 4. Interactive prompts (if TTY is available)
+ * Authenticates with Proton Drive using the SRP (Secure Remote Password) protocol.
+ * The command supports multiple credential input methods and includes CAPTCHA handling
+ * for enhanced security. Successful authentication creates a session with access and
+ * refresh tokens stored in ~/.proton-drive-cli/session.json.
  *
- * Passwords are NEVER accepted via CLI flags or environment variables.
+ * Credential sources are prioritized in this order:
+ * 1. `--credential-provider git` - Resolves both username and password via Git Credential Manager
+ * 2. `--credential-provider pass-cli` - Resolves credentials from Proton Pass vault
+ * 3. `--password-stdin` - Reads password from stdin (safe from process listing leaks)
+ * 4. `-u/--username` flag - Username only (password must come from another source)
+ * 5. Interactive prompts - If TTY is available, prompts for missing credentials
+ *
+ * # Security Features
+ *
+ * - Passwords are NEVER accepted via CLI flags or environment variables
+ * - Session reuse: Skips login if already authenticated as the same user
+ * - CAPTCHA support: Automatically prompts for verification token when required
+ * - Secure storage: Only session tokens are persisted (never passwords)
+ * - Process isolation: Credentials passed via stdin to child processes
+ *
+ * # Exit Codes
+ *
+ * - 0: Login successful or already authenticated
+ * - 1: Authentication failed (invalid credentials, network error, CAPTCHA failed)
+ *
+ * @returns Commander Command instance configured for login
+ *
+ * @example
+ * ```bash
+ * # Interactive login (prompts for username and password)
+ * proton-drive login
+ *
+ * # Login with username flag (prompts for password)
+ * proton-drive login -u user@proton.me
+ *
+ * # Login with piped password (for scripts)
+ * echo "password" | proton-drive login -u user@proton.me --password-stdin
+ *
+ * # Login via Git Credential Manager
+ * proton-drive login --credential-provider git-credential
+ *
+ * # Login via Proton Pass CLI
+ * proton-drive login --credential-provider pass-cli
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createLoginCommand } from './cli/login';
+ *
+ * const program = new Command();
+ * program.addCommand(createLoginCommand());
+ * program.parse(process.argv);
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLogoutCommand} for logging out
+ * @see {@link createStatusCommand} for checking authentication status
+ * @see {@link AuthService.login} for underlying authentication logic
+ * @since 0.1.0
  */
 export function createLoginCommand(): Command {
   const command = new Command('login');
@@ -213,8 +265,51 @@ export function createLoginCommand(): Command {
 }
 
 /**
- * Create the logout command for the CLI
- * Clears the current session
+ * Create the logout command for the CLI.
+ *
+ * Logs out from Proton Drive by clearing the current session. This removes the
+ * session file (~/.proton-drive-cli/session.json) containing access and refresh
+ * tokens. The command is idempotent and safe to run when not authenticated.
+ *
+ * # Behavior
+ *
+ * - If authenticated: Clears session file and displays success message
+ * - If not authenticated: Displays "Not currently logged in" warning and exits 0
+ * - Session is cleared locally only (no API call to revoke tokens)
+ *
+ * # Exit Codes
+ *
+ * - 0: Logout successful or already logged out
+ * - 1: Error deleting session file (permissions, I/O error, etc.)
+ *
+ * @returns Commander Command instance configured for logout
+ *
+ * @example
+ * ```bash
+ * # Logout from Proton Drive
+ * proton-drive logout
+ * # Output: ✓ Logged out successfully
+ *
+ * # Logout when not authenticated
+ * proton-drive logout
+ * # Output: Not currently logged in
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createLogoutCommand } from './cli/login';
+ *
+ * const program = new Command();
+ * program.addCommand(createLogoutCommand());
+ * program.parse(['logout'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLoginCommand} for logging in
+ * @see {@link createStatusCommand} for checking authentication status
+ * @see {@link AuthService.logout} for underlying logout logic
+ * @since 0.1.0
  */
 export function createLogoutCommand(): Command {
   const command = new Command('logout');
@@ -243,8 +338,62 @@ export function createLogoutCommand(): Command {
 }
 
 /**
- * Create the status command for the CLI
- * Shows current authentication status
+ * Create the status command for the CLI.
+ *
+ * Displays the current authentication status and session information. If authenticated,
+ * shows detailed session metadata including user ID, session ID (truncated for security),
+ * scopes, and password mode. If not authenticated, prompts user to login.
+ *
+ * # Session Information Displayed
+ *
+ * - **User ID**: Unique Proton user identifier (UID)
+ * - **Session ID**: Session identifier (first 20 characters shown)
+ * - **Scopes**: API scopes granted to the session (e.g., drive, calendar)
+ * - **Password Mode**: Single password (mode 1) or two-password mode (mode 2)
+ *
+ * # Exit Codes
+ *
+ * - 0: Status retrieved successfully (authenticated or not)
+ * - 1: Error reading session file (corrupted, I/O error, etc.)
+ *
+ * @returns Commander Command instance configured for status check
+ *
+ * @example
+ * ```bash
+ * # Check authentication status (authenticated)
+ * proton-drive status
+ * # Output:
+ * # ✓ Authenticated
+ * #
+ * # Session Information:
+ * #   User ID: abc123xyz
+ * #   Session ID: session123456789012...
+ * #   Scopes: drive, calendar
+ * #   Password Mode: Single
+ *
+ * # Check authentication status (not authenticated)
+ * proton-drive status
+ * # Output:
+ * # ✗ Not authenticated
+ * #
+ * # Run: proton-drive login
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createStatusCommand } from './cli/login';
+ *
+ * const program = new Command();
+ * program.addCommand(createStatusCommand());
+ * await program.parseAsync(['status'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLoginCommand} for logging in
+ * @see {@link createLogoutCommand} for logging out
+ * @see {@link AuthService.isAuthenticated} for authentication check logic
+ * @since 0.1.0
  */
 export function createStatusCommand(): Command {
   const command = new Command('status');
@@ -280,13 +429,71 @@ export function createStatusCommand(): Command {
 /**
  * Create the session refresh command.
  *
- * Designed for headless use by the system tray heartbeat:
- * - Silent on success (exit 0)
- * - Silent exit 0 if no session exists (nothing to refresh)
- * - Error message + exit 1 on failure
+ * Refreshes the access token using the refresh token stored in the session file.
+ * This command is designed for headless automation (e.g., system tray heartbeat)
+ * and operates silently to avoid interfering with user workflows.
  *
- * This calls POST /auth/v4/refresh (NOT a login attempt) —
- * it will never trigger CAPTCHA or rate-limiting.
+ * # Behavior
+ *
+ * - **If session exists**: Calls POST /auth/v4/refresh to get new access token
+ * - **If no session exists**: Exits silently with code 0 (nothing to refresh)
+ * - **On success**: Updates session file and exits silently with code 0
+ * - **On failure**: Exits with code 1 (optionally logs error if DEBUG=true)
+ *
+ * # Safety Features
+ *
+ * - Uses POST /auth/v4/refresh endpoint (NOT a login attempt)
+ * - Will never trigger CAPTCHA verification
+ * - Will never trigger rate-limiting (refresh tokens have separate limits)
+ * - Safe to call repeatedly (e.g., every 5 minutes by system tray)
+ *
+ * # Exit Codes
+ *
+ * - 0: Token refreshed successfully, or no session exists
+ * - 1: Token refresh failed (expired refresh token, network error, etc.)
+ *
+ * @returns Commander Command instance configured for session refresh
+ *
+ * @example
+ * ```bash
+ * # Refresh session token (silent on success)
+ * proton-drive session refresh
+ * echo $?
+ * # Output: 0
+ *
+ * # Refresh with debug output
+ * DEBUG=true proton-drive session refresh
+ * # Output: (error details if refresh fails)
+ *
+ * # Use in system tray heartbeat (every 5 minutes)
+ * # Cron: Run every 5 minutes
+ * 5 * * * * /usr/local/bin/proton-drive session refresh
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage in system tray
+ * import { createSessionRefreshCommand } from './cli/login';
+ *
+ * const program = new Command();
+ * program.addCommand(createSessionRefreshCommand());
+ *
+ * // Heartbeat loop
+ * setInterval(async () => {
+ *   try {
+ *     await program.parseAsync(['session', 'refresh'], { from: 'user' });
+ *     console.log('Token refreshed');
+ *   } catch (error) {
+ *     console.error('Refresh failed:', error);
+ *   }
+ * }, 5 * 60 * 1000); // 5 minutes
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLoginCommand} for initial authentication
+ * @see {@link AuthService.refreshSession} for underlying refresh logic
+ * @see {@link SessionManager.getValidSession} for proactive token refresh
+ * @since 0.1.0
  */
 export function createSessionRefreshCommand(): Command {
   const command = new Command('session');

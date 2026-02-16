@@ -11,6 +11,7 @@ import type { ProtonDriveHTTPClient } from '@protontech/drive-sdk';
 import { SessionManager } from '../auth/session';
 import { AuthApiClient } from '../api/auth';
 import { logger } from '../utils/logger';
+import { RateLimitError } from '../errors/types';
 
 // Inline request types to avoid deep import issues
 interface HTTPClientBaseRequest {
@@ -32,24 +33,36 @@ interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
 
 const API_BASE_URL = 'https://drive-api.proton.me';
 
+// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
+const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
+const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
+const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
+
 // Proton API error codes that indicate the access token needs refresh
 const AUTH_REFRESH_ERROR_CODES = new Set([
   9101,   // Insufficient scope (HTTP 403)
   10013,  // Invalid access token
 ]);
 
+// Proton API error codes that indicate rate-limiting or anti-abuse
+const RATE_LIMIT_ERROR_CODES = new Set([
+  2028,   // Rate-limiting
+  85131,  // Anti-abuse
+]);
+
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   private refreshInProgress: Promise<void> | null = null;
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
-    const session = await SessionManager.loadSession();
+    // Use getValidSession() to proactively refresh tokens if expiring soon
+    const session = await SessionManager.getValidSession();
     if (session) {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
     }
-    // Required by Proton API — must match the value used during auth
+    // Use official Proton Drive desktop app version string
     if (!headers.has('x-pm-appversion')) {
-      headers.set('x-pm-appversion', 'web-drive@5.2.0');
+      headers.set('x-pm-appversion', APP_VERSION);
     }
   }
 
@@ -59,6 +72,42 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
       return `${API_BASE_URL}${url}`;
     }
     return url;
+  }
+
+  /**
+   * Check if a response indicates rate-limiting.
+   * Throws RateLimitError if rate-limiting is detected.
+   */
+  private async checkRateLimit(response: Response): Promise<void> {
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get('retry-after');
+      const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+      throw new RateLimitError(
+        `Rate limit exceeded (HTTP 429)`,
+        { retryAfter }
+      );
+    }
+
+    // Check Proton error codes for rate-limiting
+    if (!response.ok) {
+      try {
+        const clone = response.clone();
+        const body: any = await clone.json();
+        if (body?.Code && RATE_LIMIT_ERROR_CODES.has(body.Code)) {
+          logger.warn(`Proton API rate-limit error ${body.Code}: ${body.Error || 'unknown'}`);
+          throw new RateLimitError(
+            body.Error || `Rate limit exceeded (Proton code ${body.Code})`,
+            { protonCode: body.Code }
+          );
+        }
+      } catch (err) {
+        // Re-throw if it's already a RateLimitError
+        if (err instanceof RateLimitError) {
+          throw err;
+        }
+        // Response body isn't JSON or parsing failed — not a rate-limit error
+      }
+    }
   }
 
   /**
@@ -103,15 +152,25 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const session = await SessionManager.loadSession();
         if (!session) throw new Error('No session to refresh');
 
+        // Store original access token to detect cross-process updates
+        const originalAccessToken = session.accessToken;
+
         const authApi = new AuthApiClient();
         try {
           const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
+
+          // Calculate token expiration time
+          const tokenExpiresAt = refreshResult.ExpiresIn
+            ? Date.now() + (refreshResult.ExpiresIn * 1000)
+            : undefined;
+
           await SessionManager.saveSession({
             ...session,
             accessToken: refreshResult.AccessToken,
             refreshToken: refreshResult.RefreshToken,
+            tokenExpiresAt,
           });
-          logger.info('Token refreshed successfully');
+          logger.info('Token refreshed successfully (reactive, after 401)');
         } catch (refreshErr) {
           // Refresh token may have been consumed by another subprocess.
           // Re-read the session file — another process may have already
@@ -120,13 +179,14 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
           const updatedSession = await SessionManager.loadSession();
           if (
             updatedSession &&
-            updatedSession.accessToken !== session.accessToken
+            updatedSession.accessToken !== originalAccessToken
           ) {
             // Another process already refreshed — use the new tokens
             logger.info('Session refreshed by another process, using updated tokens');
             return;
           }
           // Session unchanged — the refresh truly failed
+          logger.warn('Token refresh failed and no cross-process update detected');
           throw refreshErr;
         }
       } finally {
@@ -158,12 +218,23 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     try {
       let response = await fetch(url, fetchOpts);
 
+      // Check for rate-limiting BEFORE attempting token refresh
+      // (rate-limit errors should not trigger refresh attempts)
+      await this.checkRateLimit(response);
+
       if (await this.needsTokenRefresh(response)) {
         try {
           await this.refreshTokenIfNeeded();
           await this.injectAuthHeaders(headers);
           response = await fetch(url, fetchOpts);
+
+          // Check rate-limiting on retry response as well
+          await this.checkRateLimit(response);
         } catch (refreshErr) {
+          // Re-throw rate-limit errors immediately
+          if (refreshErr instanceof RateLimitError) {
+            throw refreshErr;
+          }
           logger.warn(`Token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`);
           // Return the original error response so the caller gets the API error
         }

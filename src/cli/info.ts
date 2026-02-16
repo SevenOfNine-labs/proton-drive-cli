@@ -7,8 +7,84 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { resolvePassword } from '../credentials';
 
 /**
- * Create info command
- * Show metadata for a file or folder in Proton Drive
+ * Create the info command for the CLI.
+ *
+ * Displays detailed metadata for a file or folder in Proton Drive. The metadata
+ * is decrypted locally using the user's private key before being displayed. Useful
+ * for inspecting file properties, verification, and debugging.
+ *
+ * # Metadata Displayed
+ *
+ * - **Name**: Decrypted node name
+ * - **Type**: "file" or "folder"
+ * - **Size**: Total storage size in bytes (encrypted size)
+ * - **UID**: Unique node identifier
+ * - **Created**: Creation timestamp (ISO 8601 format)
+ * - **Modified**: Last modification timestamp (ISO 8601 format)
+ *
+ * # Output Modes
+ *
+ * **Verbose mode**: Human-readable formatted display with labels
+ * ```
+ * Info: /Documents/file.pdf
+ *
+ *   Name:     file.pdf
+ *   Type:     file
+ *   Size:     1024000 bytes
+ *   UID:      abc123xyz
+ *   Created:  2024-01-15T10:30:00.000Z
+ *   Modified: 2024-01-16T14:22:15.000Z
+ * ```
+ *
+ * **Normal mode**: JSON output (for scripting/parsing)
+ * ```json
+ * {"name":"file.pdf","type":"file","size":1024000,"uid":"abc123xyz","created":"2024-01-15T10:30:00.000Z","modified":"2024-01-16T14:22:15.000Z"}
+ * ```
+ *
+ * # Exit Codes
+ *
+ * - 0: Metadata retrieved successfully
+ * - 1: Operation failed (path not found, permission denied, network error, etc.)
+ *
+ * @returns Commander Command instance configured for metadata display
+ * @throws {AppError} FILE_NOT_FOUND - If path doesn't exist
+ * @throws {AppError} NETWORK_ERROR - If API request fails
+ * @throws {AppError} DECRYPTION_ERROR - If metadata decryption fails
+ * @throws {AppError} PERMISSION_DENIED - If user lacks read access
+ *
+ * @example
+ * ```bash
+ * # Show file metadata (verbose mode)
+ * proton-drive info /Documents/report.pdf --verbose
+ *
+ * # Show folder metadata
+ * proton-drive info /Photos
+ *
+ * # JSON output for parsing (normal mode)
+ * proton-drive info /file.txt | jq .size
+ *
+ * # Use with git-credential provider
+ * proton-drive info /Documents/file.pdf --credential-provider git-credential
+ *
+ * # Quiet mode (no output)
+ * proton-drive info /file.txt --quiet
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createInfoCommand } from './cli/info';
+ *
+ * const program = new Command();
+ * program.addCommand(createInfoCommand());
+ * await program.parseAsync(['info', '/Documents/file.pdf'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLsCommand} for listing directory contents
+ * @see {@link resolvePathToNodeUid} for path resolution
+ * @see {@link createSDKClient} for SDK client initialization
+ * @since 0.1.0
  */
 export function createInfoCommand(): Command {
   const info = new Command('info');

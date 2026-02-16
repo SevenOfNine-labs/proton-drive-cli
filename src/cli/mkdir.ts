@@ -7,8 +7,76 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { resolvePassword } from '../credentials';
 
 /**
- * Create mkdir command
- * Creates a new folder in Proton Drive
+ * Create the mkdir command for the CLI.
+ *
+ * Creates a new folder in Proton Drive with end-to-end encryption. The folder
+ * name and metadata are encrypted locally before being sent to the server using
+ * OpenPGP. Similar to the Unix `mkdir` command but for cloud storage.
+ *
+ * # Folder Creation Process
+ *
+ * 1. Resolves parent path to folder UID via Drive API
+ * 2. Creates folder metadata (name, keys) and encrypts locally
+ * 3. Sends encrypted folder node to Proton servers
+ * 4. Returns the new folder's UID
+ *
+ * # Path Behavior
+ *
+ * - Parent path must exist (does not create parent directories automatically)
+ * - To create nested folders, use multiple mkdir calls or create parent first
+ * - Folder names are case-sensitive
+ * - Duplicate folder names are allowed (Proton Drive supports duplicates)
+ *
+ * # Security Features
+ *
+ * - Folder name encrypted with parent's encryption key
+ * - New folder receives its own encryption key
+ * - All metadata encrypted before transmission
+ * - Password resolved via credential provider (never logged)
+ *
+ * # Exit Codes
+ *
+ * - 0: Folder created successfully
+ * - 1: Creation failed (parent not found, permission denied, network error, etc.)
+ *
+ * @returns Commander Command instance configured for folder creation
+ * @throws {AppError} FILE_NOT_FOUND - If parent path doesn't exist
+ * @throws {AppError} NOT_A_FOLDER - If parent path points to a file
+ * @throws {AppError} NETWORK_ERROR - If API request fails
+ * @throws {AppError} ENCRYPTION_ERROR - If folder metadata encryption fails
+ * @throws {AppError} PERMISSION_DENIED - If user lacks write access to parent
+ * @throws {AppError} QUOTA_EXCEEDED - If storage quota is full
+ *
+ * @example
+ * ```bash
+ * # Create folder in root
+ * proton-drive mkdir / Documents
+ *
+ * # Create nested folder (parent must exist)
+ * proton-drive mkdir /Documents Projects
+ *
+ * # Create folder with git-credential provider
+ * proton-drive mkdir /Photos Vacation --credential-provider git-credential
+ *
+ * # Quiet mode (outputs only folder UID)
+ * proton-drive mkdir /Backups 2024 --quiet
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createMkdirCommand } from './cli/mkdir';
+ *
+ * const program = new Command();
+ * program.addCommand(createMkdirCommand());
+ * await program.parseAsync(['mkdir', '/Documents', 'Projects'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createLsCommand} for listing folders
+ * @see {@link createRmCommand} for deleting folders
+ * @see {@link ensureFolderPath} for parent path resolution
+ * @since 0.1.0
  */
 export function createMkdirCommand(): Command {
   const mkdir = new Command('mkdir');

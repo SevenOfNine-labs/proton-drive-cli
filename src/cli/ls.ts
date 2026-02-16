@@ -30,7 +30,85 @@ function getNodeIcon(type: string): string {
 }
 
 /**
- * Create the ls command
+ * Create the ls command for the CLI.
+ *
+ * Lists files and folders in Proton Drive, similar to the Unix `ls` command.
+ * Supports both simple and detailed (long) listing formats. Files are decrypted
+ * locally to reveal their names and metadata before displaying.
+ *
+ * # Listing Modes
+ *
+ * **Simple mode** (default): Displays icon and name only
+ * ```
+ * 📁  Documents
+ * 📁  Photos
+ * 📄  readme.txt
+ * ```
+ *
+ * **Long mode** (`-l` flag): Displays table with type, name, size, and modification time
+ * ```
+ * Type  Name        Size      Modified
+ * 📁    Documents   -         2024-01-15 10:30:00
+ * 📄    file.pdf    2.5 MB    2024-01-16 14:22:15
+ * ```
+ *
+ * # Sorting Behavior
+ *
+ * - Folders listed before files
+ * - Items within each group sorted alphabetically (case-insensitive)
+ * - Mimics standard Unix ls behavior
+ *
+ * # Output Modes
+ *
+ * - **Verbose mode**: Shows table/list with icons and summary
+ * - **Quiet mode**: Outputs names only (one per line, no formatting)
+ * - **Normal mode**: Shows icons and names
+ *
+ * # Exit Codes
+ *
+ * - 0: Listing successful (includes empty folders)
+ * - 1: Listing failed (path not found, permission denied, network error, etc.)
+ *
+ * @returns Commander Command instance configured for directory listing
+ * @throws {AppError} FILE_NOT_FOUND - If path doesn't exist in Drive
+ * @throws {AppError} NOT_A_FOLDER - If path points to a file instead of folder
+ * @throws {AppError} NETWORK_ERROR - If API request fails
+ * @throws {AppError} DECRYPTION_ERROR - If folder metadata decryption fails
+ * @throws {AppError} PERMISSION_DENIED - If user lacks read access to folder
+ *
+ * @example
+ * ```bash
+ * # List root directory
+ * proton-drive ls
+ *
+ * # List specific folder
+ * proton-drive ls /Documents
+ *
+ * # Long listing format with details
+ * proton-drive ls /Photos -l
+ *
+ * # Quiet mode (names only, for scripts)
+ * proton-drive ls /Documents --quiet
+ *
+ * # List with git-credential provider
+ * proton-drive ls / --credential-provider git-credential
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Programmatic usage
+ * import { createLsCommand } from './cli/ls';
+ *
+ * const program = new Command();
+ * program.addCommand(createLsCommand());
+ * await program.parseAsync(['ls', '/Documents', '-l'], { from: 'user' });
+ * ```
+ *
+ * @category CLI Commands
+ * @see {@link createMkdirCommand} for creating folders
+ * @see {@link resolvePathToNodeUid} for path resolution logic
+ * @see {@link createSDKClient} for SDK client initialization
+ * @since 0.1.0
  */
 export function createLsCommand(): Command {
   const cmd = new Command('ls');

@@ -15,6 +15,7 @@ export interface AuthResponse {
   Scopes: string[];
   ServerProof: string;       // For verification
   PasswordMode: number;      // 1 = single password, 2 = two password
+  ExpiresIn?: number;        // Seconds until token expires (only present in refresh responses)
   '2FA': {
     Enabled: number;
     FIDO2: { RegisteredKeys: Array<{ keyHandle: string; publicKey: string }> };
@@ -29,6 +30,8 @@ export interface SessionCredentials {
   refreshToken: string;
   scopes: string[];
   passwordMode: number;
+  // Unix timestamp (ms) when the access token expires (for proactive refresh)
+  tokenExpiresAt?: number;
   // mailboxPassword is intentionally NOT persisted — it flows via stdin
   // from pass-cli on every invocation and stays in memory only.
   // SHA-256 hash of the username (lowercase, trimmed) — used to detect

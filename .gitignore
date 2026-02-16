@@ -5,6 +5,10 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+coverage/
+
+# Generated documentation
+docs/api/
 
 # Yarn 4
 .yarn/*

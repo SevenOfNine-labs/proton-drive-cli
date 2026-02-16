@@ -56,7 +56,20 @@ export class AuthService {
         throw new Error('Server authentication failed: invalid server proof');
       }
 
-      // Step 5: Create session credentials (password is NOT stored)
+      // Step 5: Calculate token expiration time
+      // Initial login response doesn't include ExpiresIn, so decode JWT to get expiry
+      let tokenExpiresAt: number | undefined;
+      try {
+        const decoded = jwtDecode<{ exp?: number }>(authResponse.AccessToken);
+        if (decoded.exp) {
+          tokenExpiresAt = decoded.exp * 1000; // Convert seconds to milliseconds
+          logger.debug(`Token expires at: ${new Date(tokenExpiresAt).toISOString()}`);
+        }
+      } catch (err) {
+        logger.debug('Could not decode JWT for expiry time (non-JWT token?)');
+      }
+
+      // Step 6: Create session credentials (password is NOT stored)
       const session: SessionCredentials = {
         sessionId: authResponse.UID,
         uid: authResponse.UID,
@@ -64,10 +77,11 @@ export class AuthService {
         refreshToken: authResponse.RefreshToken,
         scopes: authResponse.Scopes,
         passwordMode: authResponse.PasswordMode,
+        tokenExpiresAt,
         userHash: SessionManager.hashUsername(username),
       };
 
-      // Step 6: Save session
+      // Step 7: Save session
       await SessionManager.saveSession(session);
       logger.info('Authentication successful');
       logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
@@ -155,11 +169,22 @@ export class AuthService {
         currentSession.refreshToken
       );
 
-      // Update session with new tokens
+      // Calculate token expiration time
+      // Refresh response includes ExpiresIn field
+      const tokenExpiresAt = refreshResponse.ExpiresIn
+        ? Date.now() + (refreshResponse.ExpiresIn * 1000)
+        : undefined;
+
+      if (tokenExpiresAt) {
+        logger.debug(`New token expires at: ${new Date(tokenExpiresAt).toISOString()}`);
+      }
+
+      // Update session with new tokens and expiration
       const updatedSession: SessionCredentials = {
         ...currentSession,
         accessToken: refreshResponse.AccessToken,
         refreshToken: refreshResponse.RefreshToken,
+        tokenExpiresAt,
       };
 
       await SessionManager.saveSession(updatedSession);
