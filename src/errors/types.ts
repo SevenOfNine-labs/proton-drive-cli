@@ -7,6 +7,7 @@ export enum ErrorCode {
   SESSION_EXPIRED = 'SESSION_EXPIRED',
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
   TWO_FACTOR_REQUIRED = 'TWO_FACTOR_REQUIRED',
+  DATA_PASSWORD_REQUIRED = 'DATA_PASSWORD_REQUIRED',
 
   // Network errors
   NETWORK_ERROR = 'NETWORK_ERROR',
@@ -74,6 +75,12 @@ export class AppError extends Error {
 
       case ErrorCode.INVALID_CREDENTIALS:
         return 'Invalid email or password. Please check your credentials.';
+
+      case ErrorCode.TWO_FACTOR_REQUIRED:
+        return 'Two-factor authentication is required.';
+
+      case ErrorCode.DATA_PASSWORD_REQUIRED:
+        return 'Mailbox/data password required for this two-password Proton account.';
 
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
@@ -148,6 +155,12 @@ export class AppError extends Error {
       case ErrorCode.AUTH_FAILED:
       case ErrorCode.SESSION_EXPIRED:
         return 'Run: proton-drive login';
+
+      case ErrorCode.TWO_FACTOR_REQUIRED:
+        return 'Run: proton-drive login interactively, or provide a TOTP code through the bridge request';
+
+      case ErrorCode.DATA_PASSWORD_REQUIRED:
+        return 'Provide the mailbox/data password for key decryption';
 
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.TIMEOUT:

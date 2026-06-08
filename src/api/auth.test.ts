@@ -26,6 +26,30 @@ describe('AuthApiClient', () => {
     jest.restoreAllMocks();
   });
 
+  describe('constructor', () => {
+    test('uses external app version header by default', () => {
+      expect(MockedHttpClient.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-pm-appversion': 'external-drive-proton-lfs-cli@0.1.2',
+          }),
+        })
+      );
+    });
+
+    test('allows app version override', () => {
+      new AuthApiClient('https://test-api.proton.me', 'external-drive-custom@9.9.9');
+
+      expect(MockedHttpClient.create).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-pm-appversion': 'external-drive-custom@9.9.9',
+          }),
+        })
+      );
+    });
+  });
+
   describe('getAuthInfo', () => {
     test('sends username to /auth/v4/info', async () => {
       const mockResponse = {
@@ -179,6 +203,36 @@ describe('AuthApiClient', () => {
       } catch (error: any) {
         expect(error).toBeInstanceOf(CaptchaError);
       }
+    });
+  });
+
+  describe('complete2FA', () => {
+    test('sends TOTP code to /auth/v4/2fa with auth headers', async () => {
+      mockPost.mockResolvedValue({ data: { Code: 1000 } });
+
+      await client.complete2FA('uid-123', 'access-token', { TwoFactorCode: '123456' });
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/auth/v4/2fa',
+        { TwoFactorCode: '123456' },
+        {
+          headers: {
+            Authorization: 'Bearer access-token',
+            'x-pm-uid': 'uid-123',
+          },
+        }
+      );
+    });
+
+    test('rejects empty 2FA requests before calling the API', async () => {
+      await expect(client.complete2FA('uid-123', 'access-token', {}))
+        .rejects.toThrow('TwoFactorCode or FIDO2 assertion is required');
+
+      expect(mockPost).not.toHaveBeenCalledWith(
+        '/auth/v4/2fa',
+        expect.anything(),
+        expect.anything()
+      );
     });
   });
 

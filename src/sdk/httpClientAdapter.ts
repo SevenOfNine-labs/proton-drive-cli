@@ -9,9 +9,9 @@
 
 import type { ProtonDriveHTTPClient } from '@protontech/drive-sdk';
 import { SessionManager } from '../auth/session';
-import { AuthApiClient } from '../api/auth';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
+import { getProtonAppVersion } from '../constants';
 
 // Inline request types to avoid deep import issues
 interface HTTPClientBaseRequest {
@@ -33,11 +33,6 @@ interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
 
 const API_BASE_URL = 'https://drive-api.proton.me';
 
-// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
-const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
-const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
-const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
-
 // Proton API error codes that indicate the access token needs refresh
 const AUTH_REFRESH_ERROR_CODES = new Set([
   9101,   // Insufficient scope (HTTP 403)
@@ -53,6 +48,8 @@ const RATE_LIMIT_ERROR_CODES = new Set([
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   private refreshInProgress: Promise<void> | null = null;
 
+  constructor(private readonly appVersion: string = getProtonAppVersion()) {}
+
   private async injectAuthHeaders(headers: Headers): Promise<void> {
     // Use getValidSession() to proactively refresh tokens if expiring soon
     const session = await SessionManager.getValidSession();
@@ -60,9 +57,8 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
     }
-    // Use official Proton Drive desktop app version string
     if (!headers.has('x-pm-appversion')) {
-      headers.set('x-pm-appversion', APP_VERSION);
+      headers.set('x-pm-appversion', this.appVersion);
     }
   }
 
@@ -155,21 +151,8 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         // Store original access token to detect cross-process updates
         const originalAccessToken = session.accessToken;
 
-        const authApi = new AuthApiClient();
         try {
-          const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
-
-          // Calculate token expiration time
-          const tokenExpiresAt = refreshResult.ExpiresIn
-            ? Date.now() + (refreshResult.ExpiresIn * 1000)
-            : undefined;
-
-          await SessionManager.saveSession({
-            ...session,
-            accessToken: refreshResult.AccessToken,
-            refreshToken: refreshResult.RefreshToken,
-            tokenExpiresAt,
-          });
+          await SessionManager.refreshSession(session);
           logger.info('Token refreshed successfully (reactive, after 401)');
         } catch (refreshErr) {
           // Refresh token may have been consumed by another subprocess.

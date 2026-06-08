@@ -1,0 +1,182 @@
+const mockDriveCryptoInitialize = jest.fn();
+const mockAuthLogin = jest.fn();
+
+jest.mock('@protontech/drive-sdk', () => ({
+  ProtonDriveClient: jest.fn().mockImplementation((args) => ({ args })),
+  MemoryCache: jest.fn().mockImplementation(() => ({})),
+  OpenPGPCryptoWithCryptoProxy: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('./cryptoProxy', () => ({
+  ProtonOpenPGPCryptoProxy: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('./httpClientAdapter', () => ({
+  HTTPClientAdapter: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('./accountAdapter', () => ({
+  AccountAdapter: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('./srpAdapter', () => ({
+  SRPModuleAdapter: jest.fn().mockImplementation(() => ({})),
+}));
+
+jest.mock('../crypto/drive-crypto', () => ({
+  DriveCryptoService: jest.fn().mockImplementation(() => ({
+    initialize: mockDriveCryptoInitialize,
+  })),
+}));
+
+jest.mock('../auth', () => ({
+  AuthService: jest.fn().mockImplementation(() => ({
+    login: mockAuthLogin,
+  })),
+}));
+
+jest.mock('../auth/session', () => ({
+  SessionManager: {
+    loadSession: jest.fn(),
+    hasValidSession: jest.fn(),
+    saveSession: jest.fn(),
+    refreshSession: jest.fn(),
+  },
+}));
+
+jest.mock('../api/auth', () => ({
+  AuthApiClient: jest.fn().mockImplementation(() => ({
+    refreshToken: jest.fn(),
+  })),
+}));
+
+jest.mock('../utils/logger', () => ({
+  logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+}));
+
+import { ErrorCode } from '../errors/types';
+import { SessionManager } from '../auth/session';
+import { createSDKClient } from './client';
+
+const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
+
+describe('createSDKClient', () => {
+  const singlePasswordSession = {
+    sessionId: 'uid-1',
+    uid: 'uid-1',
+    accessToken: 'access',
+    refreshToken: 'refresh',
+    scopes: ['full'],
+    passwordMode: 1,
+  };
+
+  const twoPasswordSession = {
+    ...singlePasswordSession,
+    passwordMode: 2,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedSessionManager.loadSession.mockResolvedValue(null);
+    mockedSessionManager.hasValidSession.mockResolvedValue(false);
+    mockedSessionManager.saveSession.mockResolvedValue(undefined);
+    mockedSessionManager.refreshSession.mockResolvedValue(singlePasswordSession as any);
+    mockDriveCryptoInitialize.mockResolvedValue(undefined);
+    mockAuthLogin.mockResolvedValue(singlePasswordSession);
+  });
+
+  it('uses the provided data password to unlock an existing session', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(singlePasswordSession as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+
+    await createSDKClient({
+      dataPassword: 'mailbox-password',
+      allowLogin: false,
+    });
+
+    expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to SRP login when key unlock fails for an existing session', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(singlePasswordSession as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+    mockDriveCryptoInitialize.mockRejectedValue(new Error('Failed to decrypt any keys'));
+
+    await expect(createSDKClient({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'wrong-data-password',
+    })).rejects.toThrow('Failed to decrypt any keys');
+
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it('uses login password for SRP and data password for key unlock', async () => {
+    mockAuthLogin.mockResolvedValue(twoPasswordSession);
+
+    await createSDKClient({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: '123456',
+    });
+
+    expect(mockAuthLogin).toHaveBeenCalledWith('user@proton.me', 'login-password', {
+      secondFactorCode: '123456',
+    });
+    expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
+  });
+
+  it('requires explicit data password after login for two-password accounts', async () => {
+    mockAuthLogin.mockResolvedValue(twoPasswordSession);
+
+    await expect(createSDKClient({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+    })).rejects.toMatchObject({
+      code: ErrorCode.DATA_PASSWORD_REQUIRED,
+    });
+
+    expect(mockAuthLogin).toHaveBeenCalled();
+    expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit data password for existing two-password sessions in options mode', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(twoPasswordSession as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+
+    await expect(createSDKClient({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+    })).rejects.toMatchObject({
+      code: ErrorCode.DATA_PASSWORD_REQUIRED,
+    });
+
+    expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it('uses SessionManager.refreshSession for expired saved sessions', async () => {
+    const expiredSession = {
+      ...singlePasswordSession,
+      accessToken: 'old-access',
+    };
+    const refreshedSession = {
+      ...singlePasswordSession,
+      accessToken: 'new-access',
+    };
+    mockedSessionManager.loadSession.mockResolvedValue(expiredSession as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(false);
+    mockedSessionManager.refreshSession.mockResolvedValue(refreshedSession as any);
+
+    await createSDKClient({
+      dataPassword: 'mailbox-password',
+      allowLogin: false,
+    });
+
+    expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(expiredSession);
+    expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+});

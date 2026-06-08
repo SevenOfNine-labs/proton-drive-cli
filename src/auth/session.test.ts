@@ -75,6 +75,33 @@ describe('SessionManager', () => {
       expect(mockAuthApi.prototype.refreshToken).toHaveBeenCalled();
     });
 
+    it('returns already-refreshed session without consuming refresh token', async () => {
+      const staleSession = {
+        ...mockSession,
+        accessToken: 'old_access_token',
+        refreshToken: 'old_refresh_token',
+        tokenExpiresAt: Date.now() + (4 * 60 * 1000),
+      };
+      const refreshedByOtherProcess = {
+        ...mockSession,
+        accessToken: 'new_access_token',
+        refreshToken: 'new_refresh_token',
+        tokenExpiresAt: Date.now() + (60 * 60 * 1000),
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(refreshedByOtherProcess);
+      mockFs.ensureDir.mockResolvedValue(undefined);
+
+      const { AuthApiClient } = await import('../api/auth');
+      const mockAuthApi = AuthApiClient as jest.MockedClass<typeof AuthApiClient>;
+      mockAuthApi.prototype.refreshToken = jest.fn();
+
+      const result = await SessionManager.refreshSession(staleSession);
+
+      expect(result).toEqual(refreshedByOtherProcess);
+      expect(mockAuthApi.prototype.refreshToken).not.toHaveBeenCalled();
+    });
+
     it('should fallback to current session if proactive refresh fails', async () => {
       const expiringSession = {
         ...mockSession,

@@ -49,7 +49,7 @@ export function createProvider(name: ProviderName, options?: ProviderOptions): C
     case 'git-credential':
       return new GitCredentialProvider(options?.host);
     case 'pass-cli':
-      return new PassCliProvider();
+      return new PassCliProvider(options?.host);
     case 'stdin':
       return new StdinProvider();
     case 'interactive':

@@ -1,11 +1,20 @@
 import { AuthApiClient } from '../api/auth';
 import { SRPClient } from './srp';
 import { SessionManager } from './session';
-import { SessionCredentials } from '../types/auth';
+import { AuthResponse, SessionCredentials } from '../types/auth';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { isHttpClientError } from '../api/http-client';
 import { jwtDecode } from 'jwt-decode';
 import { logger } from '../utils/logger';
+
+interface LoginOptions {
+  captchaToken?: string;
+  secondFactorCode?: string;
+}
+
+const TWO_FACTOR_TOTP = 1;
+const TWO_FACTOR_FIDO2 = 2;
+const TWO_FACTOR_FIDO2_AND_TOTP = 3;
 
 /**
  * Main authentication service
@@ -23,10 +32,15 @@ export class AuthService {
    * Single attempt — no automatic retries. Rate-limit and CAPTCHA errors
    * are surfaced to the caller so the user controls when to retry.
    */
-  async login(username: string, password: string, captchaToken?: string): Promise<SessionCredentials> {
+  async login(
+    username: string,
+    password: string,
+    optionsOrCaptchaToken?: LoginOptions | string
+  ): Promise<SessionCredentials> {
+    const options = this.normalizeLoginOptions(optionsOrCaptchaToken);
     try {
       // Step 1: Get auth info (send CAPTCHA token if available)
-      const authInfo = await this.authApi.getAuthInfo(username, captchaToken);
+      const authInfo = await this.authApi.getAuthInfo(username, options.captchaToken);
 
       // Step 2: Compute SRP handshake
       const handshake = await SRPClient.computeHandshake(
@@ -45,7 +59,7 @@ export class AuthService {
         handshake.clientEphemeral,
         handshake.clientProof,
         authInfo.SRPSession,
-        captchaToken
+        options.captchaToken
       );
 
       // Step 4: Verify server proof
@@ -56,7 +70,10 @@ export class AuthService {
         throw new Error('Server authentication failed: invalid server proof');
       }
 
-      // Step 5: Calculate token expiration time
+      // Step 5: Complete mandatory 2FA before persisting any session.
+      await this.completeTwoFactorIfRequired(authResponse, options.secondFactorCode);
+
+      // Step 6: Calculate token expiration time
       // Initial login response doesn't include ExpiresIn, so decode JWT to get expiry
       let tokenExpiresAt: number | undefined;
       try {
@@ -69,7 +86,7 @@ export class AuthService {
         logger.debug('Could not decode JWT for expiry time (non-JWT token?)');
       }
 
-      // Step 6: Create session credentials (password is NOT stored)
+      // Step 7: Create session credentials (password is NOT stored)
       const session: SessionCredentials = {
         sessionId: authResponse.UID,
         uid: authResponse.UID,
@@ -81,13 +98,17 @@ export class AuthService {
         userHash: SessionManager.hashUsername(username),
       };
 
-      // Step 7: Save session
+      // Step 8: Save session
       await SessionManager.saveSession(session);
       logger.info('Authentication successful');
       logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
 
       return session;
     } catch (error: unknown) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+
       if (error instanceof CaptchaError) {
         throw error;
       }
@@ -112,6 +133,50 @@ export class AuthService {
       }
       throw new Error('Login failed: Unknown error');
     }
+  }
+
+  private normalizeLoginOptions(optionsOrCaptchaToken?: LoginOptions | string): LoginOptions {
+    if (typeof optionsOrCaptchaToken === 'string') {
+      return { captchaToken: optionsOrCaptchaToken };
+    }
+    return optionsOrCaptchaToken || {};
+  }
+
+  private async completeTwoFactorIfRequired(
+    authResponse: AuthResponse,
+    secondFactorCode?: string
+  ): Promise<void> {
+    const twoFactorStatus = authResponse['2FA']?.Enabled || 0;
+    if (twoFactorStatus === 0) return;
+
+    const totpAllowed =
+      twoFactorStatus === TWO_FACTOR_TOTP ||
+      twoFactorStatus === TWO_FACTOR_FIDO2_AND_TOTP;
+
+    if (totpAllowed && secondFactorCode) {
+      await this.authApi.complete2FA(
+        authResponse.UID,
+        authResponse.AccessToken,
+        { TwoFactorCode: secondFactorCode }
+      );
+      return;
+    }
+
+    const factorType = twoFactorStatus === TWO_FACTOR_FIDO2 ? 'fido2' : 'totp';
+    const message = factorType === 'fido2'
+      ? 'FIDO2 two-factor authentication is required'
+      : 'Two-factor authentication code required';
+
+    throw new AppError(
+      message,
+      ErrorCode.TWO_FACTOR_REQUIRED,
+      {
+        twoFactorType: factorType,
+        fido2Available: Boolean(authResponse['2FA']?.FIDO2?.RegisteredKeys?.length),
+        totpAllowed,
+      },
+      true
+    );
   }
 
   /**
@@ -158,38 +223,9 @@ export class AuthService {
    * @returns Updated session credentials
    */
   async refreshSession(): Promise<SessionCredentials> {
-    const currentSession = await SessionManager.loadSession();
-    if (!currentSession) {
-      throw new Error('No session found. Please login first.');
-    }
-
     try {
-      const refreshResponse = await this.authApi.refreshToken(
-        currentSession.uid,
-        currentSession.refreshToken
-      );
-
-      // Calculate token expiration time
-      // Refresh response includes ExpiresIn field
-      const tokenExpiresAt = refreshResponse.ExpiresIn
-        ? Date.now() + (refreshResponse.ExpiresIn * 1000)
-        : undefined;
-
-      if (tokenExpiresAt) {
-        logger.debug(`New token expires at: ${new Date(tokenExpiresAt).toISOString()}`);
-      }
-
-      // Update session with new tokens and expiration
-      const updatedSession: SessionCredentials = {
-        ...currentSession,
-        accessToken: refreshResponse.AccessToken,
-        refreshToken: refreshResponse.RefreshToken,
-        tokenExpiresAt,
-      };
-
-      await SessionManager.saveSession(updatedSession);
+      const updatedSession = await SessionManager.refreshSession();
       logger.info('Access token refreshed');
-
       return updatedSession;
     } catch (error) {
       if (error instanceof Error) {

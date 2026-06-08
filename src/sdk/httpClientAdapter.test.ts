@@ -1,10 +1,8 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
-import { AuthApiClient } from '../api/auth';
 
 // Mock dependencies
 jest.mock('../auth/session');
-jest.mock('../api/auth');
 jest.mock('../utils/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
@@ -30,6 +28,11 @@ describe('HTTPClientAdapter', () => {
     // Mock both getValidSession (for auth header injection) and loadSession (for refresh flow)
     (SessionManager.getValidSession as jest.Mock).mockResolvedValue(fakeSession);
     (SessionManager.loadSession as jest.Mock).mockResolvedValue(fakeSession);
+    (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+      ...fakeSession,
+      accessToken: 'new-access-token',
+      refreshToken: 'new-refresh-token',
+    });
     mockFetch.mockResolvedValue(new Response('{"Code": 1000}', { status: 200 }));
   });
 
@@ -158,9 +161,20 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       });
 
-      // Expect official Proton Drive app version (platform-specific)
-      const appVersion = headers.get('x-pm-appversion');
-      expect(appVersion).toMatch(/^(macos-drive@2\.10\.1|windows-drive@1\.12\.4)$/);
+      expect(headers.get('x-pm-appversion')).toBe('external-drive-proton-lfs-cli@0.1.2');
+    });
+
+    it('allows constructor app version override', async () => {
+      adapter = new HTTPClientAdapter('external-drive-custom@2.0.0');
+      const headers = new Headers();
+      await adapter.fetchJson({
+        url: '/api/endpoint',
+        method: 'GET',
+        headers,
+        timeoutMs: 30000,
+      });
+
+      expect(headers.get('x-pm-appversion')).toBe('external-drive-custom@2.0.0');
     });
 
     it('preserves existing x-pm-appversion', async () => {
@@ -184,13 +198,6 @@ describe('HTTPClientAdapter', () => {
         .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
         .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockResolvedValue({
-          AccessToken: 'new-access-token',
-          RefreshToken: 'new-refresh-token',
-        }),
-      }));
-
       // Mock getValidSession for auth header injection
       (SessionManager.getValidSession as jest.Mock)
         .mockResolvedValueOnce(fakeSession)   // initial auth injection
@@ -209,20 +216,13 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.saveSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          accessToken: 'new-access-token',
-          refreshToken: 'new-refresh-token',
-        })
-      );
+      expect(SessionManager.refreshSession).toHaveBeenCalledWith(fakeSession);
     });
 
     it('returns original 401 if refresh fails', async () => {
       mockFetch.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockRejectedValue(new Error('Refresh failed')),
-      }));
+      (SessionManager.refreshSession as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',
@@ -238,13 +238,6 @@ describe('HTTPClientAdapter', () => {
       mockFetch
         .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
         .mockResolvedValueOnce(new Response('blob-data', { status: 200 }));
-
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockResolvedValue({
-          AccessToken: 'new-access-token',
-          RefreshToken: 'new-refresh-token',
-        }),
-      }));
 
       const response = await adapter.fetchBlob({
         url: '/api/download',
@@ -264,14 +257,11 @@ describe('HTTPClientAdapter', () => {
         .mockResolvedValueOnce(new Response('OK', { status: 200 }))
         .mockResolvedValueOnce(new Response('OK', { status: 200 }));
 
-      const refreshMock = jest.fn().mockResolvedValue({
-        AccessToken: 'new-token',
-        RefreshToken: 'new-refresh',
+      const refreshMock = (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+        ...fakeSession,
+        accessToken: 'new-token',
+        refreshToken: 'new-refresh',
       });
-
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: refreshMock,
-      }));
 
       // Fire two requests concurrently
       const [res1, res2] = await Promise.all([
@@ -279,8 +269,7 @@ describe('HTTPClientAdapter', () => {
         adapter.fetchBlob({ url: '/b', method: 'GET', headers: new Headers(), timeoutMs: 30000 }),
       ]);
 
-      // refresh should have been called at most once due to deduplication
-      expect(refreshMock.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(refreshMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -298,17 +287,12 @@ describe('HTTPClientAdapter', () => {
         .mockResolvedValueOnce(make9101Response())
         .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockResolvedValue({
-          AccessToken: 'new-access-token',
-          RefreshToken: 'new-refresh-token',
-        }),
-      }));
-
       (SessionManager.loadSession as jest.Mock)
         .mockResolvedValueOnce(fakeSession)        // initial auth injection
         .mockResolvedValueOnce(fakeSession)        // refresh load
         .mockResolvedValueOnce(refreshedSession);  // retry auth injection
+
+      (SessionManager.refreshSession as jest.Mock).mockResolvedValue(refreshedSession);
 
       const response = await adapter.fetchJson({
         url: '/drive/v2/volumes',
@@ -319,12 +303,7 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.saveSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          accessToken: 'new-access-token',
-          refreshToken: 'new-refresh-token',
-        })
-      );
+      expect(SessionManager.refreshSession).toHaveBeenCalledWith(fakeSession);
     });
 
     it('refreshes on 403/9101 for fetchBlob too', async () => {
@@ -332,12 +311,11 @@ describe('HTTPClientAdapter', () => {
         .mockResolvedValueOnce(make9101Response())
         .mockResolvedValueOnce(new Response('blob-data', { status: 200 }));
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockResolvedValue({
-          AccessToken: 'refreshed-token',
-          RefreshToken: 'refreshed-refresh',
-        }),
-      }));
+      (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+        ...fakeSession,
+        accessToken: 'refreshed-token',
+        refreshToken: 'refreshed-refresh',
+      });
 
       const response = await adapter.fetchBlob({
         url: '/drive/v2/blocks/abc',
@@ -353,9 +331,7 @@ describe('HTTPClientAdapter', () => {
     it('returns original 403 if refresh fails', async () => {
       mockFetch.mockResolvedValue(make9101Response());
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockRejectedValue(new Error('Refresh failed')),
-      }));
+      (SessionManager.refreshSession as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',
@@ -377,12 +353,11 @@ describe('HTTPClientAdapter', () => {
         )
         .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
 
-      (AuthApiClient as jest.Mock).mockImplementation(() => ({
-        refreshToken: jest.fn().mockResolvedValue({
-          AccessToken: 'new-token',
-          RefreshToken: 'new-refresh',
-        }),
-      }));
+      (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+        ...fakeSession,
+        accessToken: 'new-token',
+        refreshToken: 'new-refresh',
+      });
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',

@@ -14,11 +14,19 @@
 
 import { execFile } from 'child_process';
 
+import { PROTON_CREDENTIAL_HOST } from '../constants';
 import type { CredentialProvider, Credentials } from './types';
 
 const TIMEOUT_MS = 15_000;
 const DEFAULT_BIN = 'pass-cli';
-const PROTON_URL_PATTERN = /proton\.me/i;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function credentialHostPattern(host: string = PROTON_CREDENTIAL_HOST): RegExp {
+  return new RegExp(escapeRegExp(host), 'i');
+}
 
 interface PassCliVault {
   id: string;
@@ -74,8 +82,11 @@ async function listVaults(): Promise<PassCliVault[]> {
   return vaults.map((v: any) => ({ id: v.vault_id || v.id || v.vaultId, name: v.name }));
 }
 
-/** Search a single vault for login items matching proton.me URL. */
-async function searchVault(vault: string): Promise<PassCliLoginItem[]> {
+/** Search a single vault for login items matching the requested credential host. */
+async function searchVault(
+  vault: string,
+  urlPattern: RegExp = credentialHostPattern()
+): Promise<PassCliLoginItem[]> {
   const output = await runPassCli([
     'item', 'list', vault,
     '--filter-type', 'login',
@@ -89,7 +100,7 @@ async function searchVault(vault: string): Promise<PassCliLoginItem[]> {
       // URLs live at content.content.Login.urls
       const login = item.content?.content?.Login;
       const urls: string[] = login?.urls || [];
-      return urls.some((url: string) => PROTON_URL_PATTERN.test(url));
+      return urls.some((url: string) => urlPattern.test(url));
     })
     .map((item: any) => {
       const login = item.content?.content?.Login || {};
@@ -104,10 +115,10 @@ async function searchVault(vault: string): Promise<PassCliLoginItem[]> {
 }
 
 /** Search all vaults for a Proton login entry. */
-async function searchProtonEntry(): Promise<PassCliLoginItem | null> {
+async function searchProtonEntry(urlPattern?: RegExp): Promise<PassCliLoginItem | null> {
   const vaults = await listVaults();
   for (const vault of vaults) {
-    const matches = await searchVault(vault.name);
+    const matches = await searchVault(vault.name, urlPattern);
     if (matches.length > 0) {
       return matches[0];
     }
@@ -117,6 +128,11 @@ async function searchProtonEntry(): Promise<PassCliLoginItem | null> {
 
 export class PassCliProvider implements CredentialProvider {
   readonly name = 'pass-cli' as const;
+  private readonly urlPattern: RegExp;
+
+  constructor(host: string = PROTON_CREDENTIAL_HOST) {
+    this.urlPattern = credentialHostPattern(host);
+  }
 
   async isAvailable(): Promise<boolean> {
     return passCliTest();
@@ -130,7 +146,7 @@ export class PassCliProvider implements CredentialProvider {
       );
     }
 
-    const entry = await searchProtonEntry();
+    const entry = await searchProtonEntry(this.urlPattern);
     if (!entry || !entry.password) {
       throw new Error(
         'No Proton login entry found in pass-cli vaults. ' +
@@ -164,7 +180,7 @@ export class PassCliProvider implements CredentialProvider {
 
   async remove(username: string): Promise<void> {
     // Find the entry first, then delete by name
-    const entry = await searchProtonEntry();
+    const entry = await searchProtonEntry(this.urlPattern);
     if (!entry) {
       throw new Error(`No Proton entry found for ${username}`);
     }
@@ -176,7 +192,7 @@ export class PassCliProvider implements CredentialProvider {
     try {
       const loggedIn = await passCliTest();
       if (!loggedIn) return false;
-      const entry = await searchProtonEntry();
+      const entry = await searchProtonEntry(this.urlPattern);
       return entry !== null && !!entry.password;
     } catch {
       return false;

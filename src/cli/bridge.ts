@@ -34,6 +34,7 @@ import {
   oidToPath,
 } from '../bridge/validators';
 import { createProvider, normalizeProviderName } from '../credentials';
+import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
 
 /**
@@ -49,6 +50,13 @@ function writeSuccess(payload: any = {}): void {
 
 function writeError(message: string, code: number = 500, details: string = ''): void {
   writeResponse({ ok: false, error: message, code, details });
+}
+
+function appErrorDetails(error: AppError): string {
+  return JSON.stringify({
+    errorCode: error.code,
+    ...(error.details || {}),
+  });
 }
 
 /**
@@ -72,7 +80,19 @@ function handleBridgeError(error: any, fallbackMessage: string = 'Operation fail
     const message = retryAfter
       ? `Rate limited by Proton API — wait ${retryAfter}s and retry`
       : 'Rate limited by Proton API — wait and retry';
-    writeError(message, 429);
+    writeError(message, 429, JSON.stringify({
+      errorCode: ErrorCode.RATE_LIMITED,
+      retryAfter,
+    }));
+    return;
+  }
+
+  if (error instanceof AppError) {
+    writeError(
+      error.message || fallbackMessage,
+      errorToStatusCode(error),
+      appErrorDetails(error)
+    );
     return;
   }
 
@@ -142,39 +162,61 @@ export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, errorToS
  * Resolve credentials from request, using the unified credential provider
  * when credentialProvider is set (git-credential, pass-cli, etc.).
  */
-async function resolveRequestCredentials(request: BridgeRequest): Promise<{ username?: string; password?: string }> {
+async function resolveRequestCredentials(request: BridgeRequest): Promise<{ username?: string; loginPassword?: string }> {
   if (request.username && request.password) {
-    return { username: request.username, password: request.password };
+    return { username: request.username, loginPassword: request.password };
   }
   if (request.password) {
-    return { password: request.password };
+    return { loginPassword: request.password };
   }
   if (request.credentialProvider) {
     const name = normalizeProviderName(request.credentialProvider);
     const provider = createProvider(name);
     const cred = await provider.resolve({ username: request.username });
-    return { username: cred.username, password: cred.password };
+    return { username: cred.username, loginPassword: cred.password };
+  }
+  if (request.dataPassword) {
+    return { username: request.username };
+  }
+  if (request.username) {
+    return { username: request.username };
   }
   return {};
 }
 
-/**
- * Initialize ProtonDriveClient (SDK), authenticating if necessary.
- * Password is always required — it flows via stdin from pass-cli,
- * or is resolved via git-credential when credentialProvider is set.
- */
-async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
-  const resolved = await resolveRequestCredentials(request);
-  const password = resolved.password;
-
-  if (!password) {
-    throw Object.assign(
-      new Error('No session found and credentials not provided'),
-      { code: ErrorCode.AUTH_FAILED }
-    );
+async function resolveDataPassword(request: BridgeRequest, username?: string): Promise<string | undefined> {
+  if (request.dataPassword) {
+    return request.dataPassword;
+  }
+  if (!request.dataCredentialProvider) {
+    return undefined;
   }
 
-  return createSDKClient(password, resolved.username);
+  const name = normalizeProviderName(request.dataCredentialProvider);
+  const provider = createProvider(name, {
+    host: request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST,
+  });
+  const cred = await provider.resolve({ username });
+  return cred.password;
+}
+
+/**
+ * Initialize ProtonDriveClient (SDK), authenticating if necessary.
+ * Full SRP login requires username + login password. Existing sessions can be
+ * unlocked with only the explicit/provider-backed mailbox data password.
+ */
+export async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
+  const resolved = await resolveRequestCredentials(request);
+  const loginPassword = resolved.loginPassword;
+  const dataPassword = await resolveDataPassword(request, resolved.username);
+
+  return createSDKClient({
+    username: resolved.username,
+    loginPassword,
+    dataPassword,
+    secondFactorCode: request.secondFactorCode,
+    allowLogin: Boolean(resolved.username && loginPassword),
+  });
 }
 
 /**
@@ -207,7 +249,7 @@ export function formatCaptchaError(error: CaptchaError): BridgeResponse {
 async function handleAuthCommand(request: BridgeRequest): Promise<void> {
   try {
     const resolved = await resolveRequestCredentials(request);
-    if (!resolved.username || !resolved.password) {
+    if (!resolved.username || !resolved.loginPassword) {
       writeError('username and password are required', 400);
       return;
     }
@@ -224,33 +266,12 @@ async function handleAuthCommand(request: BridgeRequest): Promise<void> {
 
     const authService = new AuthService();
 
-    await authService.login(resolved.username, resolved.password, undefined);
+    await authService.login(resolved.username, resolved.loginPassword, {
+      secondFactorCode: request.secondFactorCode,
+    });
     writeSuccess({ authenticated: true });
   } catch (error: any) {
-    // CAPTCHA required (use centralized detection)
-    if (isCaptchaError(error)) {
-      if (error instanceof CaptchaError) {
-        writeResponse(formatCaptchaError(error));
-      } else {
-        writeError('CAPTCHA verification required — run: proton-drive login', 407);
-      }
-      return;
-    }
-
-    // Rate-limit (use centralized detection)
-    if (isRateLimitError(error)) {
-      const retryAfter = (error as any).retryAfter;
-      const message = retryAfter
-        ? `Rate limited by Proton API — wait ${retryAfter}s and retry`
-        : 'Rate limited by Proton API — wait and retry';
-      writeError(message, 429);
-      return;
-    }
-
-    writeError(
-      error.message || 'Authentication failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Authentication failed');
   }
 }
 
@@ -391,10 +412,7 @@ async function handleListCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ files });
   } catch (error: any) {
-    writeError(
-      error.message || 'List failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'List failed');
   }
 }
 
@@ -414,10 +432,7 @@ async function handleExistsCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ oid, exists: !!nodeUid });
   } catch (error: any) {
-    writeError(
-      error.message || 'Exists check failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Exists check failed');
   }
 }
 
@@ -442,10 +457,7 @@ async function handleDeleteCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ oid, deleted: true });
   } catch (error: any) {
-    writeError(
-      error.message || 'Delete failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Delete failed');
   }
 }
 
@@ -455,10 +467,7 @@ async function handleRefreshCommand(request: BridgeRequest): Promise<void> {
     const session = await authService.refreshSession();
     writeSuccess({ refreshed: true, uid: session.uid });
   } catch (error: any) {
-    writeError(
-      error.message || 'Session refresh failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Session refresh failed');
   }
 }
 
@@ -471,10 +480,7 @@ async function handleInitCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ storageBase, path: basePath, initialized: true });
   } catch (error: any) {
-    writeError(
-      error.message || 'Init failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Init failed');
   }
 }
 
@@ -501,10 +507,7 @@ async function handleBatchExistsCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ results });
   } catch (error: any) {
-    writeError(
-      error.message || 'Batch exists failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Batch exists failed');
   }
 }
 
@@ -530,10 +533,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ results });
   } catch (error: any) {
-    writeError(
-      error.message || 'Batch delete failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Batch delete failed');
   }
 }
 
@@ -731,10 +731,7 @@ export function createBridgeCommand(): Command {
             writeError(`Unknown bridge command: ${command}`, 400);
         }
       } catch (error: any) {
-        writeError(
-          error.message || 'Bridge command failed',
-          errorToStatusCode(error)
-        );
+        handleBridgeError(error, 'Bridge command failed');
         process.exit(1);
       }
     });

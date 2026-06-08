@@ -72,6 +72,11 @@ describe('createProvider', () => {
     const provider = createProvider('git-credential', { host: 'custom.host' });
     expect(provider).toBeInstanceOf(GitCredentialProvider);
   });
+
+  it('passes host option to PassCliProvider', () => {
+    const provider = createProvider('pass-cli', { host: 'custom.host' });
+    expect(provider).toBeInstanceOf(PassCliProvider);
+  });
 });
 
 describe('resolvePassword', () => {

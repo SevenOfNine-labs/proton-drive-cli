@@ -9,6 +9,7 @@ import { createDownloadCommand } from './cli/download';
 import { createMkdirCommand } from './cli/mkdir';
 import { createBridgeCommand } from './cli/bridge';
 import { createCredentialCommand } from './cli/credential';
+import { createDoctorCommand } from './cli/doctor';
 import { createRmCommand } from './cli/rm';
 import { createMvCommand } from './cli/mv';
 import { createCatCommand } from './cli/cat';
@@ -99,6 +100,9 @@ program.addCommand(createBridgeCommand());
 // Add credential management command
 program.addCommand(createCredentialCommand());
 
+// Add offline preflight command
+program.addCommand(createDoctorCommand());
+
 // Custom help
 program.on('--help', () => {
   console.log('');
@@ -106,6 +110,7 @@ program.on('--help', () => {
   console.log('');
   console.log(`  ${chalk.cyan('Authentication')}  login, logout, status, session refresh`);
   console.log(`  ${chalk.cyan('Credentials')}    credential store/remove/verify`);
+  console.log(`  ${chalk.cyan('Preflight')}      doctor`);
   console.log(`  ${chalk.cyan('Drive')}          ls, upload, download, mkdir, rm, mv, cat, info`);
   console.log(`  ${chalk.cyan('Git LFS')}        bridge`);
   console.log('');
@@ -118,6 +123,7 @@ program.on('--help', () => {
   console.log('  $ proton-drive login --credential-provider pass-cli');
   console.log('  $ proton-drive credential store --provider pass-cli');
   console.log('  $ proton-drive credential verify --provider git-credential');
+  console.log('  $ proton-drive doctor --credential-provider git-credential');
   console.log('  $ proton-drive upload ./file.pdf /Documents');
   console.log('  $ proton-drive ls /Documents');
   console.log('');

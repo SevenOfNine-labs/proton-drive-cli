@@ -23,6 +23,11 @@ export interface AuthResponse {
   };
 }
 
+export interface Auth2FARequest {
+  TwoFactorCode?: string;
+  FIDO2?: unknown;
+}
+
 export interface SessionCredentials {
   sessionId: string;
   uid: string;

@@ -118,26 +118,30 @@ export class SessionManager {
       // Ensure directory exists with owner-only permissions
       await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
 
-      // Strip mailboxPassword — passwords are never persisted to disk.
-      // The password flows via stdin on every bridge invocation (from pass-cli).
-      const { mailboxPassword, ...safeSession } = session as SessionCredentials & { mailboxPassword?: string };
-
       // Use file lock to prevent concurrent writes
       await this.withFileLock(async () => {
-        // Write atomically: unique temp file with restrictive mode, then rename.
-        const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
-        const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
-        try {
-          await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
-          await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
-        } catch (writeErr) {
-          // Clean up temp file on error to avoid leaking session data
-          await fs.remove(tmpFile).catch(() => {});
-          throw writeErr;
-        }
+        await this.writeSessionFile(session);
       });
     } catch (error) {
       throw new Error(`Failed to save session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private static async writeSessionFile(session: SessionCredentials): Promise<void> {
+    // Strip mailboxPassword — passwords are never persisted to disk.
+    // The password flows via stdin on every bridge invocation (from pass-cli).
+    const { mailboxPassword, ...safeSession } = session as SessionCredentials & { mailboxPassword?: string };
+
+    // Write atomically: unique temp file with restrictive mode, then rename.
+    const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+    const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
+    try {
+      await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
+      await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
+    } catch (writeErr) {
+      // Clean up temp file on error to avoid leaking session data
+      await fs.remove(tmpFile).catch(() => {});
+      throw writeErr;
     }
   }
 
@@ -275,30 +279,74 @@ export class SessionManager {
     return timeUntilExpiry < this.REFRESH_THRESHOLD_MS && timeUntilExpiry > 0;
   }
 
+  private static calculateTokenExpiresAt(
+    accessToken: string,
+    expiresIn?: number,
+    fallback?: number,
+  ): number | undefined {
+    if (expiresIn) {
+      return Date.now() + (expiresIn * 1000);
+    }
+
+    try {
+      const decoded = jwtDecode<{ exp?: number }>(accessToken);
+      if (decoded.exp) return decoded.exp * 1000;
+    } catch {
+      // Non-JWT access token or malformed token — keep fallback if present.
+    }
+
+    return fallback;
+  }
+
   /**
    * Refresh session tokens using the refresh token.
    * Updates the session file with new tokens and expiration time.
-   * @param session - Current session to refresh
+   * @param expectedSession - Optional session observed before acquiring the lock
    * @returns Updated session with new tokens
    */
-  private static async refreshSessionTokens(session: SessionCredentials): Promise<SessionCredentials> {
-    // Import AuthApiClient here to avoid circular dependencies
-    const { AuthApiClient } = await import('../api/auth');
-    const authApi = new AuthApiClient();
+  static async refreshSession(expectedSession?: SessionCredentials): Promise<SessionCredentials> {
+    await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
 
-    logger.debug(`Refreshing tokens for session ${session.uid}`);
-    const result = await authApi.refreshToken(session.uid, session.refreshToken);
+    return this.withFileLock(async () => {
+      const latest = await this.loadSession();
+      const session = latest || expectedSession;
+      if (!session) {
+        throw new Error('No session to refresh');
+      }
 
-    const updatedSession: SessionCredentials = {
-      ...session,
-      accessToken: result.AccessToken,
-      refreshToken: result.RefreshToken,
-      tokenExpiresAt: result.ExpiresIn ? Date.now() + (result.ExpiresIn * 1000) : undefined,
-    };
+      if (
+        expectedSession &&
+        latest &&
+        (latest.accessToken !== expectedSession.accessToken ||
+          latest.refreshToken !== expectedSession.refreshToken) &&
+        await this.validateSession(latest, false)
+      ) {
+        logger.info('Session was already refreshed by another process');
+        return latest;
+      }
 
-    await this.saveSession(updatedSession);
-    logger.info('Token refreshed successfully (proactive)');
-    return updatedSession;
+      // Import AuthApiClient here to avoid circular dependencies.
+      const { AuthApiClient } = await import('../api/auth');
+      const authApi = new AuthApiClient();
+
+      logger.debug(`Refreshing tokens for session ${session.uid}`);
+      const result = await authApi.refreshToken(session.uid, session.refreshToken);
+
+      const updatedSession: SessionCredentials = {
+        ...session,
+        accessToken: result.AccessToken,
+        refreshToken: result.RefreshToken,
+        tokenExpiresAt: this.calculateTokenExpiresAt(
+          result.AccessToken,
+          result.ExpiresIn,
+          session.tokenExpiresAt,
+        ),
+      };
+
+      await this.writeSessionFile(updatedSession);
+      logger.info('Token refreshed successfully');
+      return updatedSession;
+    });
   }
 
   /**
@@ -316,7 +364,7 @@ export class SessionManager {
     if (this.isExpiringSoon(session)) {
       logger.info('Token expiring soon, proactively refreshing...');
       try {
-        return await this.refreshSessionTokens(session);
+        return await this.refreshSession(session);
       } catch (error) {
         logger.warn('Proactive refresh failed, token may expire during operation:', error);
         // Continue with current session — will retry on 401

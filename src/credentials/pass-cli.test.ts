@@ -277,6 +277,34 @@ describe('PassCliProvider', () => {
     expect(creds).toEqual({ username: 'user@proton.me', password: 's3cret' });
   });
 
+  it('resolve can use a custom credential host for data password entries', async () => {
+    simulateSequentialCalls(
+      // passCliTest
+      { stdout: '' },
+      // listVaults
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      // searchVault
+      { stdout: wrapItems([
+        makePassCliItem({
+          title: 'Proton Login',
+          email: 'user@proton.me',
+          password: 'login-password',
+          urls: ['https://proton.me'],
+        }),
+        makePassCliItem({
+          title: 'Proton Data Password',
+          email: 'user@proton.me',
+          password: 'mailbox-password',
+          urls: ['https://proton-data.proton-lfs-cli.local'],
+        }),
+      ]) },
+    );
+
+    const provider = new PassCliProvider('proton-data.proton-lfs-cli.local');
+    const creds = await provider.resolve();
+    expect(creds).toEqual({ username: 'user@proton.me', password: 'mailbox-password' });
+  });
+
   it('resolve prefers username field when email is empty', async () => {
     simulateSequentialCalls(
       { stdout: '' },

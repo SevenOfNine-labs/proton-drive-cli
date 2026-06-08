@@ -1,6 +1,23 @@
-import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError } from './bridge';
+const mockCreateSDKClient = jest.fn();
+const mockCredentialResolve = jest.fn();
+
+jest.mock('../sdk/client', () => ({
+  createSDKClient: mockCreateSDKClient,
+}));
+
+jest.mock('../credentials', () => ({
+  createProvider: jest.fn(() => ({
+    resolve: mockCredentialResolve,
+  })),
+  normalizeProviderName: jest.fn((name: string) => name),
+}));
+
+import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError, getInitializedClient } from './bridge';
 import { BridgeRequest } from '../bridge/validators';
+import { createProvider } from '../credentials';
 import { ErrorCode, CaptchaError } from '../errors/types';
+
+const mockCreateProvider = createProvider as jest.MockedFunction<typeof createProvider>;
 
 describe('validateOid', () => {
   const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
@@ -184,5 +201,147 @@ describe('formatCaptchaError', () => {
     expect(resp.code).toBe(407);
     const details = JSON.parse(resp.details!);
     expect(details.verificationMethods).toEqual([]);
+  });
+});
+
+describe('getInitializedClient', () => {
+  beforeEach(() => {
+    mockCreateSDKClient.mockReset();
+    mockCreateSDKClient.mockResolvedValue({} as any);
+    mockCredentialResolve.mockReset();
+    mockCreateProvider.mockClear();
+  });
+
+  it('does not turn login password into an explicit data password', async () => {
+    await getInitializedClient({
+      username: 'user@proton.me',
+      password: 'login-password',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: undefined,
+      secondFactorCode: undefined,
+      allowLogin: true,
+    });
+  });
+
+  it('passes explicit data password separately from login password', async () => {
+    await getInitializedClient({
+      username: 'user@proton.me',
+      password: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: '123456',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: '123456',
+      allowLogin: true,
+    });
+  });
+
+  it('supports data-password-only session unlock requests', async () => {
+    await getInitializedClient({
+      dataPassword: 'mailbox-password',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: undefined,
+      loginPassword: undefined,
+      dataPassword: 'mailbox-password',
+      secondFactorCode: undefined,
+      allowLogin: false,
+    });
+  });
+
+  it('resolves login credentials from provider while preserving explicit data password', async () => {
+    mockCredentialResolve.mockResolvedValue({
+      username: 'provider@proton.me',
+      password: 'login-password',
+    });
+
+    await getInitializedClient({
+      credentialProvider: 'git-credential',
+      dataPassword: 'mailbox-password',
+    });
+
+    expect(mockCredentialResolve).toHaveBeenCalledWith({ username: undefined });
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'provider@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: undefined,
+      allowLogin: true,
+    });
+  });
+
+  it('resolves data password from a separate credential provider and host', async () => {
+    mockCredentialResolve.mockResolvedValue({
+      username: 'user@proton.me',
+      password: 'mailbox-password',
+    });
+
+    await getInitializedClient({
+      username: 'user@proton.me',
+      dataCredentialProvider: 'git-credential',
+      dataCredentialHost: 'custom-data-host',
+    });
+
+    expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
+      host: 'custom-data-host',
+    });
+    expect(mockCredentialResolve).toHaveBeenCalledWith({ username: 'user@proton.me' });
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'user@proton.me',
+      loginPassword: undefined,
+      dataPassword: 'mailbox-password',
+      secondFactorCode: undefined,
+      allowLogin: false,
+    });
+  });
+
+  it('uses a distinct default host for provider-backed data passwords', async () => {
+    mockCredentialResolve.mockResolvedValue({
+      username: 'user@proton.me',
+      password: 'mailbox-password',
+    });
+
+    await getInitializedClient({
+      dataCredentialProvider: 'git-credential',
+    });
+
+    expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
+      host: 'proton-data.proton-lfs-cli.local',
+    });
+  });
+
+  it('combines login provider credentials with provider-backed data password', async () => {
+    mockCredentialResolve
+      .mockResolvedValueOnce({
+        username: 'provider@proton.me',
+        password: 'login-password',
+      })
+      .mockResolvedValueOnce({
+        username: 'provider@proton.me',
+        password: 'mailbox-password',
+      });
+
+    await getInitializedClient({
+      credentialProvider: 'git-credential',
+      dataCredentialProvider: 'git-credential',
+      dataCredentialHost: 'custom-data-host',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'provider@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: undefined,
+      allowLogin: true,
+    });
   });
 });

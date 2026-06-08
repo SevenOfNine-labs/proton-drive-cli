@@ -1,12 +1,8 @@
 import { HttpClient } from './http-client';
-import { AuthInfoResponse, AuthResponse } from '../types/auth';
+import { Auth2FARequest, AuthInfoResponse, AuthResponse } from '../types/auth';
 import { CaptchaError } from '../errors/types';
 import { logger } from '../utils/logger';
-
-// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
-const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
-const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
-const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
+import { getProtonAppVersion } from '../constants';
 
 /**
  * Authentication API client for Proton API
@@ -16,14 +12,17 @@ export class AuthApiClient {
   private client: HttpClient;
   private baseUrl: string;
 
-  constructor(baseUrl: string = 'https://drive-api.proton.me') {
+  constructor(
+    baseUrl: string = 'https://drive-api.proton.me',
+    appVersion: string = getProtonAppVersion()
+  ) {
     this.baseUrl = baseUrl;
     this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': APP_VERSION,
+        'x-pm-appversion': appVersion,
       },
     });
   }
@@ -113,6 +112,30 @@ export class AuthApiClient {
       }
       throw error;
     }
+  }
+
+  /**
+   * Complete second-factor authorization for an authenticated SRP session.
+   *
+   * This is a separate Proton API step after /auth/v4 when authResponse['2FA']
+   * reports TOTP or FIDO2 requirements. Non-interactive bridge flows should
+   * only call this when a single-use TOTP code was explicitly provided.
+   */
+  async complete2FA(
+    uid: string,
+    accessToken: string,
+    request: Auth2FARequest
+  ): Promise<void> {
+    if (!request.TwoFactorCode && !request.FIDO2) {
+      throw new Error('TwoFactorCode or FIDO2 assertion is required');
+    }
+
+    await this.client.post('/auth/v4/2fa', request, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'x-pm-uid': uid,
+      },
+    });
   }
 
   /**

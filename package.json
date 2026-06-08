@@ -32,9 +32,7 @@
     "docs:watch": "typedoc --watch",
     "docs:serve": "npx http-server docs/api -p 8080"
   },
-  "bin": {
-    "proton-drive-cli": "./dist/index.js"
-  },
+  "bin": "./dist/index.js",
   "files": [
     "dist/**/*",
     "!dist/**/*.test.*",

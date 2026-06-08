@@ -22,6 +22,77 @@ import { DriveCryptoService } from '../crypto/drive-crypto';
 import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
 import { logger } from '../utils/logger';
+import { AppError, ErrorCode } from '../errors/types';
+
+export interface CreateSDKClientOptions {
+  username?: string;
+  loginPassword?: string;
+  dataPassword?: string;
+  secondFactorCode?: string;
+  allowLogin?: boolean;
+}
+
+interface NormalizedCreateSDKClientOptions {
+  username?: string;
+  loginPassword?: string;
+  dataPassword?: string;
+  dataPasswordExplicit: boolean;
+  secondFactorCode?: string;
+  allowLogin: boolean;
+}
+
+function normalizeCreateSDKClientOptions(
+  passwordOrOptions: string | CreateSDKClientOptions,
+  username?: string,
+): NormalizedCreateSDKClientOptions {
+  if (typeof passwordOrOptions === 'string') {
+    return {
+      username,
+      loginPassword: username ? passwordOrOptions : undefined,
+      dataPassword: passwordOrOptions,
+      // Legacy createSDKClient(password) means "password for key decryption".
+      // Legacy createSDKClient(password, username) means "login password";
+      // two-password accounts must move to the options form with dataPassword.
+      dataPasswordExplicit: !username,
+      allowLogin: Boolean(username && passwordOrOptions),
+    };
+  }
+
+  return {
+    username: passwordOrOptions.username,
+    loginPassword: passwordOrOptions.loginPassword,
+    dataPassword: passwordOrOptions.dataPassword ?? passwordOrOptions.loginPassword,
+    dataPasswordExplicit: Boolean(passwordOrOptions.dataPassword),
+    secondFactorCode: passwordOrOptions.secondFactorCode,
+    allowLogin: passwordOrOptions.allowLogin ?? Boolean(passwordOrOptions.username && passwordOrOptions.loginPassword),
+  };
+}
+
+function getKeyUnlockPassword(
+  options: NormalizedCreateSDKClientOptions,
+  passwordMode?: number,
+): string {
+  if (passwordMode === 2 && !options.dataPasswordExplicit) {
+    throw new AppError(
+      'Mailbox/data password required for this two-password Proton account',
+      ErrorCode.DATA_PASSWORD_REQUIRED,
+      { passwordMode },
+      true,
+    );
+  }
+
+  const password = options.dataPassword;
+  if (!password) {
+    throw new AppError(
+      'Password required for key decryption',
+      ErrorCode.AUTH_FAILED,
+      undefined,
+      true,
+    );
+  }
+
+  return password;
+}
 
 /**
  * Create an authenticated ProtonDriveClient with all adapters.
@@ -41,30 +112,32 @@ import { logger } from '../utils/logger';
 export async function createSDKClient(
   password: string,
   username?: string,
+): Promise<ProtonDriveClient>;
+export async function createSDKClient(
+  options: CreateSDKClientOptions,
+): Promise<ProtonDriveClient>;
+export async function createSDKClient(
+  passwordOrOptions: string | CreateSDKClientOptions,
+  username?: string,
 ): Promise<ProtonDriveClient> {
+  const options = normalizeCreateSDKClientOptions(passwordOrOptions, username);
   const driveCrypto = new DriveCryptoService();
 
   let sessionReady = false;
+  let session = await SessionManager.loadSession();
 
   // Step 1: Try existing session
   try {
     if (await SessionManager.hasValidSession()) {
       // Access token is still valid — use it directly
       sessionReady = true;
+      session = await SessionManager.loadSession();
       logger.debug('SDK client: valid session found');
     } else {
       // Session may exist but token is expired — try proactive refresh
-      const session = await SessionManager.loadSession();
       if (session) {
         logger.debug('SDK client: session expired, attempting proactive refresh');
-        const { AuthApiClient } = await import('../api/auth');
-        const authApi = new AuthApiClient();
-        const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
-        await SessionManager.saveSession({
-          ...session,
-          accessToken: refreshResult.AccessToken,
-          refreshToken: refreshResult.RefreshToken,
-        });
+        session = await SessionManager.refreshSession(session);
         sessionReady = true;
         logger.debug('SDK client: proactive token refresh succeeded');
       }
@@ -75,6 +148,7 @@ export async function createSDKClient(
     try {
       if (await SessionManager.hasValidSession()) {
         sessionReady = true;
+        session = await SessionManager.loadSession();
         logger.debug('SDK client: session refreshed by another process');
       }
     } catch {
@@ -82,26 +156,27 @@ export async function createSDKClient(
     }
   }
 
-  // Step 2: Initialize crypto with the session, or fall back to full login
+  // Step 2: Initialize crypto with an existing session. If key unlock fails,
+  // stop here; do not convert a bad data password into another SRP login.
   if (sessionReady) {
     try {
-      await driveCrypto.initialize(password);
+      await driveCrypto.initialize(getKeyUnlockPassword(options, session?.passwordMode));
       logger.debug('SDK client: crypto initialized from session');
     } catch (cryptoErr) {
-      // Crypto init failed (API error during key fetch, bad password, etc.)
-      // Fall through to full login only if we have credentials
-      logger.debug(`SDK client: crypto init failed (${cryptoErr instanceof Error ? cryptoErr.message : cryptoErr}), will try full login`);
-      sessionReady = false;
+      logger.warn(`SDK client: crypto init failed (${cryptoErr instanceof Error ? cryptoErr.message : cryptoErr}); refusing automatic re-login`);
+      throw cryptoErr;
     }
   }
 
   if (!sessionReady) {
-    if (!username || !password) {
+    if (!options.allowLogin || !options.username || !options.loginPassword) {
       throw new Error('No session found and credentials not provided');
     }
     const authService = new AuthService();
-    await authService.login(username, password);
-    await driveCrypto.initialize(password);
+    const loginSession = await authService.login(options.username, options.loginPassword, {
+      secondFactorCode: options.secondFactorCode,
+    });
+    await driveCrypto.initialize(getKeyUnlockPassword(options, loginSession.passwordMode));
     logger.debug('SDK client: authenticated with full SRP login');
   }
 

@@ -5,10 +5,117 @@ import ora from 'ora';
 import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
 import { promptForToken } from '../auth/captcha-helper';
-import { CaptchaError } from '../errors/types';
+import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { readPasswordFromStdin, resolveCredentials, normalizeProviderName, createProvider } from '../credentials';
+import { readPasswordFromStdin, normalizeProviderName, createProvider } from '../credentials';
+
+interface LoginChallengeState {
+  captchaToken?: string;
+  secondFactorCode?: string;
+}
+
+function isInteractiveTotpChallenge(error: unknown): error is AppError {
+  return error instanceof AppError &&
+    error.code === ErrorCode.TWO_FACTOR_REQUIRED &&
+    error.details?.totpAllowed === true &&
+    error.details?.twoFactorType !== 'fido2';
+}
+
+async function promptForSecondFactorCode(): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new AppError(
+      'Two-factor authentication code required',
+      ErrorCode.TWO_FACTOR_REQUIRED,
+      { twoFactorType: 'totp', totpAllowed: true },
+      true
+    );
+  }
+
+  const answer = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'secondFactorCode',
+      message: 'Two-factor code:',
+      mask: '*',
+      validate: (input: string) => {
+        const code = input.trim();
+        if (!/^[0-9]{6,8}$/.test(code)) {
+          return 'Enter the 6-8 digit authenticator code';
+        }
+        return true;
+      },
+      filter: (input: string) => input.trim(),
+    },
+  ]);
+
+  return answer.secondFactorCode;
+}
+
+async function resolveCaptchaToken(error: CaptchaError): Promise<string> {
+  if (isVerbose()) {
+    console.log(chalk.dim(`  Verification methods: ${error.verificationMethods.join(', ') || 'none'}`));
+    console.log(chalk.dim(`  Challenge token: ${error.captchaToken}`));
+    console.log(chalk.dim(`  URL: ${error.captchaUrl}`));
+  }
+
+  const verificationToken = await promptForToken(
+    error.captchaUrl,
+    error.captchaToken
+  );
+
+  if (!verificationToken) {
+    throw new AppError(
+      'CAPTCHA verification cancelled',
+      ErrorCode.CAPTCHA_REQUIRED,
+      {
+        captchaUrl: error.captchaUrl,
+        captchaToken: error.captchaToken,
+      },
+      true
+    );
+  }
+
+  return verificationToken;
+}
+
+export async function loginWithInteractiveChallenges(
+  authService: AuthService,
+  username: string,
+  password: string,
+  initialState: LoginChallengeState = {},
+  onInteractiveChallenge?: () => void
+): Promise<void> {
+  const state: LoginChallengeState = { ...initialState };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await authService.login(username, password, { ...state });
+      return;
+    } catch (error: unknown) {
+      if (error instanceof CaptchaError && !state.captchaToken) {
+        onInteractiveChallenge?.();
+        state.captchaToken = await resolveCaptchaToken(error);
+        continue;
+      }
+
+      if (isInteractiveTotpChallenge(error) && !state.secondFactorCode) {
+        onInteractiveChallenge?.();
+        state.secondFactorCode = await promptForSecondFactorCode();
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError(
+    'Authentication challenge limit exceeded',
+    ErrorCode.AUTH_FAILED,
+    undefined,
+    true
+  );
+}
 
 /**
  * Create the login command for the CLI.
@@ -196,14 +303,25 @@ export function createLoginCommand(): Command {
         const finalPassword = password as string;
 
         // Authenticate with spinner
-        let spinner;
+        let spinner: ReturnType<typeof ora> | undefined;
         if (isVerbose()) {
           spinner = ora('Authenticating...').start();
         }
         const authService = new AuthService();
 
         try {
-          await authService.login(finalUsername.trim(), finalPassword);
+          await loginWithInteractiveChallenges(
+            authService,
+            finalUsername.trim(),
+            finalPassword,
+            {},
+            () => {
+              if (spinner) {
+                spinner.stop();
+                spinner = undefined;
+              }
+            }
+          );
           if (spinner) {
             spinner.succeed(chalk.green('Login successful!'));
           }
@@ -218,42 +336,7 @@ export function createLoginCommand(): Command {
             spinner.stop();
           }
 
-          // CAPTCHA required — capture verification token
-          if (error instanceof CaptchaError) {
-            if (isVerbose()) {
-              console.log(chalk.dim(`  Verification methods: ${error.verificationMethods.join(', ') || 'none'}`));
-              console.log(chalk.dim(`  Challenge token: ${error.captchaToken}`));
-              console.log(chalk.dim(`  URL: ${error.captchaUrl}`));
-            }
-
-            const verificationToken = await promptForToken(
-              error.captchaUrl,
-              error.captchaToken
-            );
-
-            if (!verificationToken) {
-              console.error(chalk.red('No verification token received. Login cancelled.'));
-              process.exit(1);
-            }
-
-            // Retry login with the captured token
-            const verifySpinner = ora('Retrying authentication with verification token...').start();
-            try {
-              await authService.login(finalUsername.trim(), finalPassword, verificationToken);
-              verifySpinner.succeed(chalk.green('Login successful!'));
-              if (isVerbose()) {
-                console.log(chalk.dim('Session saved (tokens only).'));
-              } else if (!isQuiet()) {
-                outputResult('OK');
-              }
-            } catch (retryError: unknown) {
-              verifySpinner.fail();
-              throw retryError;
-            }
-            return;
-          } else {
-            throw error;
-          }
+          throw error;
         }
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
