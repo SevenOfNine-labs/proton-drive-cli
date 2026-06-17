@@ -12,6 +12,7 @@ import * as readline from 'readline';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Readable, Writable } from 'stream';
+import { jwtDecode } from 'jwt-decode';
 import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
@@ -36,6 +37,7 @@ import {
 import { createProvider, normalizeProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
+import type { SessionCredentials } from '../types/auth';
 
 /**
  * Write JSON response to stdout (single line, no extra output)
@@ -200,6 +202,137 @@ async function resolveDataPassword(request: BridgeRequest, username?: string): P
   return cred.password;
 }
 
+export type BridgeAuthState =
+  | 'ready'
+  | 'login_available'
+  | 'needs_login'
+  | 'needs_data_password'
+  | 'session_expired'
+  | 'session_invalid'
+  | 'configuration_error';
+
+export interface BridgeAuthStatePayload {
+  state: BridgeAuthState;
+  hasSession: boolean;
+  sessionValid: boolean;
+  sessionExpired: boolean;
+  sessionUidPresent: boolean;
+  passwordMode?: number;
+  usernamePresent: boolean;
+  hasExplicitLoginPassword: boolean;
+  hasExplicitDataPassword: boolean;
+  loginCredentialProvider?: string;
+  dataCredentialProvider?: string;
+  dataCredentialHost?: string;
+  allowLogin: boolean;
+  willAttemptNetwork: false;
+  errors: string[];
+  actions: string[];
+}
+
+function normalizeProviderForAuthState(providerName: string | undefined, label: string, errors: string[]): string | undefined {
+  if (!providerName) return undefined;
+
+  try {
+    return normalizeProviderName(providerName);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Unknown ${label} provider`;
+    errors.push(message);
+    return undefined;
+  }
+}
+
+function isLocallyExpired(session: SessionCredentials | null): boolean {
+  if (!session) return false;
+  if (session.tokenExpiresAt && Date.now() >= session.tokenExpiresAt) return true;
+
+  try {
+    const decoded = jwtDecode<{ exp?: number }>(session.accessToken);
+    return Boolean(decoded.exp && decoded.exp <= Math.floor(Date.now() / 1000));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inspect bridge auth readiness without resolving credentials or contacting Proton.
+ *
+ * This is intentionally local-only: it reads the saved session, performs local
+ * expiry checks, and reports which credential sources would be needed by a
+ * later non-dry bridge command.
+ */
+export async function getBridgeAuthState(request: BridgeRequest): Promise<BridgeAuthStatePayload> {
+  const errors: string[] = [];
+  const loginCredentialProvider = normalizeProviderForAuthState(
+    request.credentialProvider,
+    'login credential',
+    errors,
+  );
+  const dataCredentialProvider = normalizeProviderForAuthState(
+    request.dataCredentialProvider,
+    'data credential',
+    errors,
+  );
+  const dataCredentialHost = dataCredentialProvider
+    ? request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST
+    : undefined;
+  const hasExplicitLoginPassword = Boolean(request.password);
+  const hasExplicitDataPassword = Boolean(request.dataPassword);
+  const hasExplicitLoginPair = Boolean(request.username && request.password);
+  const allowLogin = Boolean(hasExplicitLoginPair || loginCredentialProvider);
+  const session = await SessionManager.loadSession();
+  const hasSession = Boolean(session);
+  const sessionUidPresent = Boolean(session?.uid);
+  const sessionValid = session ? await SessionManager.validateSession(session, false) : false;
+  const sessionExpired = isLocallyExpired(session);
+  const actions: string[] = [];
+  let state: BridgeAuthState;
+
+  if (errors.length > 0) {
+    state = 'configuration_error';
+    actions.push('Fix the credential provider name before attempting login or transfer commands.');
+  } else if (!session) {
+    if (allowLogin) {
+      state = 'login_available';
+      actions.push('A full SRP login would be required; auth-state did not attempt it.');
+    } else {
+      state = 'needs_login';
+      actions.push('Run interactive proton-drive login after offline gates pass, or provide a login credential provider.');
+    }
+  } else if (!sessionValid) {
+    state = sessionExpired ? 'session_expired' : 'session_invalid';
+    actions.push('Refresh or replace the saved session after offline gates pass; auth-state did not refresh tokens.');
+  } else if (session.passwordMode === 2 && !hasExplicitDataPassword && !dataCredentialProvider) {
+    state = 'needs_data_password';
+    actions.push(`Configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+  } else if (session.passwordMode !== 1 && session.passwordMode !== 2) {
+    state = 'session_invalid';
+    actions.push(`Unexpected Proton password mode ${session.passwordMode}; replace the saved session before transfers.`);
+  } else {
+    state = 'ready';
+    actions.push('Local auth inputs are sufficient for SDK initialization; auth-state did not contact Proton.');
+  }
+
+  return {
+    state,
+    hasSession,
+    sessionValid,
+    sessionExpired,
+    sessionUidPresent,
+    passwordMode: session?.passwordMode,
+    usernamePresent: Boolean(request.username),
+    hasExplicitLoginPassword,
+    hasExplicitDataPassword,
+    loginCredentialProvider,
+    dataCredentialProvider,
+    dataCredentialHost,
+    allowLogin,
+    willAttemptNetwork: false,
+    errors,
+    actions,
+  };
+}
+
 /**
  * Initialize ProtonDriveClient (SDK), authenticating if necessary.
  * Full SRP login requires username + login password. Existing sessions can be
@@ -272,6 +405,14 @@ async function handleAuthCommand(request: BridgeRequest): Promise<void> {
     writeSuccess({ authenticated: true });
   } catch (error: any) {
     handleBridgeError(error, 'Authentication failed');
+  }
+}
+
+async function handleAuthStateCommand(request: BridgeRequest): Promise<void> {
+  try {
+    writeSuccess(await getBridgeAuthState(request));
+  } catch (error: any) {
+    handleBridgeError(error, 'Auth state inspection failed');
   }
 }
 
@@ -580,6 +721,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * # Supported Commands
  *
  * - **auth**: Authenticate with SRP, create session
+ * - **auth-state**: Inspect local auth readiness without network or credential lookup
  * - **upload**: Upload file to Drive (OID-based path, change token caching)
  * - **download**: Download file from Drive by OID
  * - **list**: List files in folder
@@ -688,7 +830,7 @@ export function createBridgeCommand(): Command {
     .description(
       'Bridge mode for Git LFS integration — reads JSON from stdin, writes JSON to stdout'
     )
-    .argument('<command>', 'Bridge command: auth, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
+    .argument('<command>', 'Bridge command: auth, auth-state, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
     .action(async (command: string) => {
       // Suppress all non-JSON output
       logger.setLevel(LogLevel.ERROR);
@@ -699,6 +841,9 @@ export function createBridgeCommand(): Command {
         switch (command.toLowerCase()) {
           case 'auth':
             await handleAuthCommand(request);
+            break;
+          case 'auth-state':
+            await handleAuthStateCommand(request);
             break;
           case 'upload':
             await handleUploadCommand(request);

@@ -1,5 +1,8 @@
 const mockCreateSDKClient = jest.fn();
 const mockCredentialResolve = jest.fn();
+const mockLoadSession = jest.fn();
+const mockValidateSession = jest.fn();
+const mockIsSessionForUser = jest.fn();
 
 jest.mock('../sdk/client', () => ({
   createSDKClient: mockCreateSDKClient,
@@ -12,12 +15,34 @@ jest.mock('../credentials', () => ({
   normalizeProviderName: jest.fn((name: string) => name),
 }));
 
-import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError, getInitializedClient } from './bridge';
+jest.mock('../auth/session', () => ({
+  SessionManager: {
+    loadSession: mockLoadSession,
+    validateSession: mockValidateSession,
+    isSessionForUser: mockIsSessionForUser,
+  },
+}));
+
+import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError, getBridgeAuthState, getInitializedClient } from './bridge';
 import { BridgeRequest } from '../bridge/validators';
 import { createProvider } from '../credentials';
 import { ErrorCode, CaptchaError } from '../errors/types';
+import type { SessionCredentials } from '../types/auth';
 
 const mockCreateProvider = createProvider as jest.MockedFunction<typeof createProvider>;
+
+function makeSession(overrides: Partial<SessionCredentials> = {}): SessionCredentials {
+  return {
+    sessionId: 'session-id',
+    uid: 'session-uid',
+    accessToken: 'access-token',
+    refreshToken: 'refresh-token',
+    scopes: ['drive'],
+    passwordMode: 1,
+    tokenExpiresAt: Date.now() + 60_000,
+    ...overrides,
+  };
+}
 
 describe('validateOid', () => {
   const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
@@ -171,6 +196,139 @@ describe('BridgeRequest credentialProvider field', () => {
     };
     expect(request.username).toBe('user@proton.me');
     expect(request.credentialProvider).toBe('git-credential');
+  });
+});
+
+describe('getBridgeAuthState', () => {
+  beforeEach(() => {
+    mockCreateSDKClient.mockReset();
+    mockCredentialResolve.mockReset();
+    mockCreateProvider.mockClear();
+    mockLoadSession.mockReset();
+    mockValidateSession.mockReset();
+    mockValidateSession.mockResolvedValue(true);
+  });
+
+  it('reports missing login without resolving credentials or creating a client', async () => {
+    mockLoadSession.mockResolvedValue(null);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'needs_login',
+      hasSession: false,
+      sessionValid: false,
+      allowLogin: false,
+      willAttemptNetwork: false,
+    });
+    expect(state.actions[0]).toContain('login');
+    expect(mockValidateSession).not.toHaveBeenCalled();
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('reports login availability for provider-backed login without resolving the provider', async () => {
+    mockLoadSession.mockResolvedValue(null);
+
+    const state = await getBridgeAuthState({
+      credentialProvider: 'git-credential',
+    });
+
+    expect(state).toMatchObject({
+      state: 'login_available',
+      hasSession: false,
+      sessionValid: false,
+      loginCredentialProvider: 'git-credential',
+      allowLogin: true,
+      willAttemptNetwork: false,
+    });
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('reports a valid single-password session as ready', async () => {
+    const session = makeSession({ passwordMode: 1 });
+    mockLoadSession.mockResolvedValue(session);
+    mockValidateSession.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      sessionUidPresent: true,
+      passwordMode: 1,
+      willAttemptNetwork: false,
+    });
+    expect(mockValidateSession).toHaveBeenCalledWith(session, false);
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('requires a mailbox/data password source for valid two-password sessions', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
+    mockValidateSession.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'needs_data_password',
+      hasSession: true,
+      sessionValid: true,
+      passwordMode: 2,
+      hasExplicitDataPassword: false,
+      dataCredentialProvider: undefined,
+      willAttemptNetwork: false,
+    });
+    expect(state.actions[0]).toContain('mailbox/data password');
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('accepts a provider-backed data password source without resolving it', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
+    mockValidateSession.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({
+      dataCredentialProvider: 'git-credential',
+    });
+
+    expect(state).toMatchObject({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      passwordMode: 2,
+      dataCredentialProvider: 'git-credential',
+      dataCredentialHost: 'proton-data.proton-lfs-cli.local',
+      willAttemptNetwork: false,
+    });
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('reports expired local sessions without refreshing them', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      tokenExpiresAt: Date.now() - 1_000,
+    }));
+    mockValidateSession.mockResolvedValue(false);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'session_expired',
+      hasSession: true,
+      sessionValid: false,
+      sessionExpired: true,
+      willAttemptNetwork: false,
+    });
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
   });
 });
 
