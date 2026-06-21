@@ -89,6 +89,8 @@ Reads password from stdin with a 5-second timeout. No shell history exposure.
 
 - Session directory: `0700` (owner-only)
 - Session file: `0600` (owner-only)
+- Rate-limit cooldown file: `0600`, no credentials, used only to avoid
+  repeated Proton API requests during enforced wait windows
 - Tokens refreshed automatically on HTTP 401 and Proton error code 9101
 - `proton-drive logout` clears all session data
 

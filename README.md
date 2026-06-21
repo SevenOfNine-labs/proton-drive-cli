@@ -98,7 +98,7 @@ proton-drive-cli logout
 
 ```
 
-Session tokens (no passwords) are stored in `~/.proton-drive-cli/session.json` with `0600` permissions. Tokens are refreshed automatically on HTTP 401 and Proton error code 9101.
+Session tokens (no passwords) are stored in `~/.proton-drive-cli/session.json` with `0600` permissions. Tokens are refreshed automatically on HTTP 401 and Proton error code 9101. Proton API rate-limit cooldowns are stored separately in `~/.proton-drive-cli/rate-limit-cooldown.json` so later commands wait locally instead of retrying too soon.
 
 **CAPTCHA:** If CAPTCHA verification is required during login, the CLI guides you through the semi-automated token extraction process.
 

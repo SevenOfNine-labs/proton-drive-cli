@@ -2,12 +2,15 @@
 
 ## Session Storage
 
-| Path                               | Permissions | Contents                                |
-| ---------------------------------- | ----------- | --------------------------------------- |
-| `~/.proton-drive-cli/`             | `0700`      | Session directory                       |
-| `~/.proton-drive-cli/session.json` | `0600`      | Access token, refresh token, session ID |
+| Path                                           | Permissions | Contents                                |
+| ---------------------------------------------- | ----------- | --------------------------------------- |
+| `~/.proton-drive-cli/`                         | `0700`      | Session directory                       |
+| `~/.proton-drive-cli/session.json`             | `0600`      | Access token, refresh token, session ID |
+| `~/.proton-drive-cli/rate-limit-cooldown.json` | `0600`      | Local Proton API cooldown timestamp     |
 
 Session tokens are the only data persisted to disk. Passwords are never stored.
+The cooldown file contains no credentials; it prevents repeated network
+requests while Proton has asked the client to wait.
 
 ## Environment Variables
 

@@ -1,5 +1,6 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
+import { RateLimitError } from '../errors/types';
 
 // Mock dependencies
 jest.mock('../auth/session');
@@ -32,6 +33,12 @@ describe('HTTPClientAdapter', () => {
       ...fakeSession,
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
+    });
+    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+    (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+      cooldownUntil: Date.now() + 60_000,
+      retryAfter: 60,
+      recordedAt: new Date().toISOString(),
     });
     mockFetch.mockResolvedValue(new Response('{"Code": 1000}', { status: 200 }));
   });
@@ -148,6 +155,71 @@ describe('HTTPClientAdapter', () => {
           body,
         })
       );
+    });
+  });
+
+  describe('rate-limit cooldown', () => {
+    it('fails fast during persisted cooldown without calling fetch', async () => {
+      (SessionManager.assertNotRateLimited as jest.Mock).mockRejectedValue(
+        new RateLimitError('Rate limited by Proton API', { retryAfter: 30 })
+      );
+
+      await expect(adapter.fetchJson({
+        url: '/drive/v2/volumes',
+        method: 'GET',
+        headers: new Headers(),
+        timeoutMs: 30000,
+      })).rejects.toThrow(RateLimitError);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('records cooldown on HTTP 429 before throwing', async () => {
+      (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+        cooldownUntil: Date.now() + 120_000,
+        retryAfter: 120,
+        recordedAt: new Date().toISOString(),
+      });
+      mockFetch.mockResolvedValue(new Response('Too Many Requests', {
+        status: 429,
+        headers: { 'retry-after': '120' },
+      }));
+
+      await expect(adapter.fetchJson({
+        url: '/drive/v2/volumes',
+        method: 'GET',
+        headers: new Headers(),
+        timeoutMs: 30000,
+      })).rejects.toMatchObject({ retryAfter: 120 });
+
+      expect(SessionManager.recordRateLimitCooldown).toHaveBeenCalledWith({
+        retryAfter: 120,
+        message: 'Rate limit exceeded (HTTP 429)',
+      });
+      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+    });
+
+    it('records cooldown on Proton rate-limit error codes before throwing', async () => {
+      mockFetch.mockResolvedValue(new Response(
+        JSON.stringify({ Code: 2028, Error: 'Too many recent attempts' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      ));
+
+      await expect(adapter.fetchBlob({
+        url: '/drive/v2/blocks/abc',
+        method: 'GET',
+        headers: new Headers(),
+        timeoutMs: 30000,
+      })).rejects.toMatchObject({
+        retryAfter: 60,
+        protonCode: 2028,
+      });
+
+      expect(SessionManager.recordRateLimitCooldown).toHaveBeenCalledWith({
+        protonCode: 2028,
+        message: 'Too many recent attempts',
+      });
+      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
     });
   });
 

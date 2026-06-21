@@ -54,6 +54,8 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   }
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
+    await SessionManager.assertNotRateLimited();
+
     // Use getValidSession() to proactively refresh tokens if expiring soon
     const session = await SessionManager.getValidSession(this.appVersion);
     if (session) {
@@ -81,9 +83,13 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get('retry-after');
       const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+      const cooldown = await SessionManager.recordRateLimitCooldown({
+        retryAfter,
+        message: 'Rate limit exceeded (HTTP 429)',
+      });
       throw new RateLimitError(
         `Rate limit exceeded (HTTP 429)`,
-        { retryAfter }
+        { retryAfter: cooldown.retryAfter }
       );
     }
 
@@ -94,9 +100,13 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const body: any = await clone.json();
         if (body?.Code && RATE_LIMIT_ERROR_CODES.has(body.Code)) {
           logger.warn(`Proton API rate-limit error ${body.Code}: ${body.Error || 'unknown'}`);
+          const cooldown = await SessionManager.recordRateLimitCooldown({
+            protonCode: body.Code,
+            message: body.Error,
+          });
           throw new RateLimitError(
             body.Error || `Rate limit exceeded (Proton code ${body.Code})`,
-            { protonCode: body.Code }
+            { retryAfter: cooldown.retryAfter, protonCode: body.Code }
           );
         }
       } catch (err) {

@@ -312,6 +312,73 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('rate-limit cooldown', () => {
+    const now = Date.UTC(2026, 5, 21, 12, 0, 0);
+    let nowSpy: jest.SpyInstance<number, []>;
+
+    beforeEach(() => {
+      nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockFs.ensureDir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+      mockFs.writeJson.mockResolvedValue(undefined);
+      mockFs.move.mockResolvedValue(undefined);
+      mockFs.remove.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      nowSpy.mockRestore();
+    });
+
+    it('records a persisted cooldown with restrictive permissions', async () => {
+      const cooldown = await SessionManager.recordRateLimitCooldown({
+        retryAfter: 120,
+        protonCode: 2028,
+        message: 'Too many requests',
+      });
+
+      expect(cooldown.retryAfter).toBe(120);
+      expect(cooldown.cooldownUntil).toBe(now + 120_000);
+      expect(mockFs.writeJson).toHaveBeenCalledWith(
+        expect.stringContaining('rate-limit-cooldown.json.tmp-'),
+        expect.objectContaining({
+          cooldownUntil: now + 120_000,
+          retryAfter: 120,
+          protonCode: 2028,
+          message: 'Too many requests',
+        }),
+        { spaces: 2, mode: 0o600 }
+      );
+    });
+
+    it('returns active cooldown with remaining retryAfter seconds', async () => {
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue({
+        cooldownUntil: now + 90_000,
+        retryAfter: 120,
+        recordedAt: new Date(now).toISOString(),
+      });
+
+      const cooldown = await SessionManager.getActiveRateLimitCooldown(now);
+
+      expect(cooldown?.retryAfter).toBe(90);
+      expect(mockFs.remove).not.toHaveBeenCalledWith(expect.stringContaining('rate-limit-cooldown.json'));
+    });
+
+    it('clears expired cooldowns', async () => {
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue({
+        cooldownUntil: now - 1,
+        retryAfter: 60,
+        recordedAt: new Date(now - 60_000).toISOString(),
+      });
+
+      const cooldown = await SessionManager.getActiveRateLimitCooldown(now);
+
+      expect(cooldown).toBeNull();
+      expect(mockFs.remove).toHaveBeenCalledWith(expect.stringContaining('rate-limit-cooldown.json'));
+    });
+  });
+
   describe('username hashing', () => {
     it('should hash username consistently', () => {
       const hash1 = SessionManager.hashUsername('user@example.com');

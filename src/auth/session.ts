@@ -20,6 +20,8 @@ const SESSION_DIR = path.join(homedir(), '.proton-drive-cli');
 const SESSION_FILE = path.join(SESSION_DIR, 'session.json');
 const SESSION_LOCK_FILE = path.join(SESSION_DIR, 'session.json.lock');
 const CRYPTO_CACHE_FILE = path.join(SESSION_DIR, 'crypto-cache.json');
+const RATE_LIMIT_COOLDOWN_FILE = path.join(SESSION_DIR, 'rate-limit-cooldown.json');
+const DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60;
 
 export interface CryptoCache {
   sessionUid: string;
@@ -27,6 +29,14 @@ export interface CryptoCache {
   user: any;
   addresses: any[];
   cachedAt: string;
+}
+
+export interface RateLimitCooldown {
+  cooldownUntil: number;
+  retryAfter: number;
+  protonCode?: number;
+  message?: string;
+  recordedAt: string;
 }
 
 export class SessionManager {
@@ -143,6 +153,94 @@ export class SessionManager {
       await fs.remove(tmpFile).catch(() => {});
       throw writeErr;
     }
+  }
+
+  private static async writeJsonFileAtomic(filePath: string, value: unknown): Promise<void> {
+    const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+    const tmpFile = `${filePath}.tmp-${suffix}`;
+    try {
+      await fs.writeJson(tmpFile, value, { spaces: 2, mode: 0o600 });
+      await fs.move(tmpFile, filePath, { overwrite: true });
+    } catch (writeErr) {
+      await fs.remove(tmpFile).catch(() => {});
+      throw writeErr;
+    }
+  }
+
+  private static normalizeRetryAfterSeconds(retryAfter?: number): number {
+    if (retryAfter && Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.ceil(retryAfter);
+    }
+    return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS;
+  }
+
+  static async recordRateLimitCooldown(options: {
+    retryAfter?: number;
+    protonCode?: number;
+    message?: string;
+  } = {}): Promise<RateLimitCooldown> {
+    const retryAfter = this.normalizeRetryAfterSeconds(options.retryAfter);
+    const now = Date.now();
+    const cooldown: RateLimitCooldown = {
+      cooldownUntil: now + retryAfter * 1000,
+      retryAfter,
+      ...(options.protonCode !== undefined && { protonCode: options.protonCode }),
+      ...(options.message && { message: options.message }),
+      recordedAt: new Date(now).toISOString(),
+    };
+
+    await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
+    await this.withFileLock(async () => {
+      await this.writeJsonFileAtomic(RATE_LIMIT_COOLDOWN_FILE, cooldown);
+    });
+
+    return cooldown;
+  }
+
+  static async getActiveRateLimitCooldown(now: number = Date.now()): Promise<RateLimitCooldown | null> {
+    try {
+      if (!await fs.pathExists(RATE_LIMIT_COOLDOWN_FILE)) return null;
+
+      const cooldown = await fs.readJson(RATE_LIMIT_COOLDOWN_FILE) as Partial<RateLimitCooldown>;
+      if (!cooldown || typeof cooldown.cooldownUntil !== 'number') {
+        await this.clearRateLimitCooldown();
+        return null;
+      }
+
+      if (cooldown.cooldownUntil <= now) {
+        await this.clearRateLimitCooldown();
+        return null;
+      }
+
+      return {
+        cooldownUntil: cooldown.cooldownUntil,
+        retryAfter: Math.max(1, Math.ceil((cooldown.cooldownUntil - now) / 1000)),
+        ...(cooldown.protonCode !== undefined && { protonCode: cooldown.protonCode }),
+        ...(cooldown.message && { message: cooldown.message }),
+        recordedAt: cooldown.recordedAt || new Date(cooldown.cooldownUntil).toISOString(),
+      };
+    } catch (error) {
+      logger.warn('Failed to load rate-limit cooldown:', error);
+      return null;
+    }
+  }
+
+  static async assertNotRateLimited(): Promise<void> {
+    const cooldown = await this.getActiveRateLimitCooldown();
+    if (!cooldown) return;
+
+    const { RateLimitError } = await import('../errors/types');
+    throw new RateLimitError(
+      cooldown.message || 'Rate limited by Proton API',
+      {
+        retryAfter: cooldown.retryAfter,
+        protonCode: cooldown.protonCode,
+      },
+    );
+  }
+
+  static async clearRateLimitCooldown(): Promise<void> {
+    await fs.remove(RATE_LIMIT_COOLDOWN_FILE).catch(() => {});
   }
 
   /**
