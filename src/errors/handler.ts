@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { AppError, ErrorCode } from './types';
 import { HttpClientError, isHttpClientError } from '../api/http-client';
+import { redactSensitive } from '../utils/redaction';
 
 /**
  * Map HTTP client errors to app errors
@@ -240,7 +241,7 @@ export function handleError(error: unknown, debug: boolean = false): void {
 
     if (appError.details && Object.keys(appError.details).length > 0) {
       console.error(chalk.dim('  Details:'));
-      console.error(chalk.dim(JSON.stringify(appError.details, null, 4)));
+      console.error(chalk.dim(JSON.stringify(redactSensitive(appError.details), null, 4)));
     }
 
     if (appError.stack) {

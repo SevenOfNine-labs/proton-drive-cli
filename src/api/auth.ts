@@ -2,6 +2,7 @@ import { HttpClient } from './http-client';
 import { Auth2FARequest, AuthInfoResponse, AuthResponse } from '../types/auth';
 import { CaptchaError } from '../errors/types';
 import { logger } from '../utils/logger';
+import { redactSensitive } from '../utils/redaction';
 import { getProtonAppVersion } from '../constants';
 
 /**
@@ -55,7 +56,7 @@ export class AuthApiClient {
     } catch (error: any) {
       this.throwIfHumanVerification(error, 'getAuthInfo');
       if (error.response) {
-        logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
+        logger.debug('API Error Response:', JSON.stringify(redactSensitive(error.response.data), null, 2));
         logger.debug('Status:', error.response.status);
       }
       throw error;
@@ -108,7 +109,7 @@ export class AuthApiClient {
     } catch (error: any) {
       this.throwIfHumanVerification(error, 'authenticate');
       if (error.response) {
-        logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
+        logger.debug('API Error Response:', JSON.stringify(redactSensitive(error.response.data), null, 2));
         logger.debug('Status:', error.response.status);
       }
       throw error;
@@ -152,7 +153,7 @@ export class AuthApiClient {
     const details = data.Details;
     if (details?.HumanVerificationToken) {
       logger.debug(`${context} human verification required (Code: ${data.Code}):`,
-        JSON.stringify(details, null, 2));
+        JSON.stringify(redactSensitive(details), null, 2));
       throw new CaptchaError({
         captchaUrl: details.WebUrl,
         captchaToken: details.HumanVerificationToken,

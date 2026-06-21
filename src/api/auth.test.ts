@@ -1,6 +1,8 @@
 import { HttpClient } from './http-client';
 import { AuthApiClient } from './auth';
 import { CaptchaError } from '../errors/types';
+import { LogLevel, logger } from '../utils/logger';
+import { REDACTED_VALUE } from '../utils/redaction';
 
 jest.mock('./http-client');
 const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
@@ -9,8 +11,10 @@ describe('AuthApiClient', () => {
   let client: AuthApiClient;
   let mockPost: jest.Mock;
   let mockDelete: jest.Mock;
+  let originalLogLevel: LogLevel;
 
   beforeEach(() => {
+    originalLogLevel = logger.getLevel();
     mockPost = jest.fn();
     mockDelete = jest.fn();
     MockedHttpClient.create = jest.fn().mockReturnValue({
@@ -23,6 +27,7 @@ describe('AuthApiClient', () => {
   });
 
   afterEach(() => {
+    logger.setLevel(originalLogLevel);
     jest.restoreAllMocks();
   });
 
@@ -114,6 +119,31 @@ describe('AuthApiClient', () => {
       }
     });
 
+    test('redacts human verification token in debug logs', async () => {
+      logger.setLevel(LogLevel.DEBUG);
+      const logSpy = jest.spyOn(console, 'log').mockImplementation();
+      mockPost.mockRejectedValue({
+        response: {
+          data: {
+            Code: 9001,
+            Details: {
+              WebUrl: 'https://verify.proton.me',
+              HumanVerificationToken: 'hvt-123',
+              HumanVerificationMethods: ['captcha'],
+            },
+          },
+        },
+      });
+
+      await expect(client.getAuthInfo('user@proton.me'))
+        .rejects.toThrow(CaptchaError);
+
+      const output = logSpy.mock.calls.flat().join('\n');
+      expect(output).toContain(REDACTED_VALUE);
+      expect(output).toContain('https://verify.proton.me');
+      expect(output).not.toContain('hvt-123');
+    });
+
     test('rethrows non-CAPTCHA errors', async () => {
       const apiError = new Error('Network Error');
       (apiError as any).response = {
@@ -124,6 +154,34 @@ describe('AuthApiClient', () => {
 
       await expect(client.getAuthInfo('user@proton.me'))
         .rejects.toThrow('Network Error');
+    });
+
+    test('redacts sensitive API error response fields in debug logs', async () => {
+      logger.setLevel(LogLevel.DEBUG);
+      const logSpy = jest.spyOn(console, 'log').mockImplementation();
+      const apiError = new Error('Network Error');
+      (apiError as any).response = {
+        status: 500,
+        data: {
+          Code: 1000,
+          Error: 'Internal Server Error',
+          AccessToken: 'access-token',
+          RefreshToken: 'refresh-token',
+          Details: {
+            WebUrl: 'https://verify.proton.me',
+          },
+        },
+      };
+      mockPost.mockRejectedValue(apiError);
+
+      await expect(client.getAuthInfo('user@proton.me'))
+        .rejects.toThrow('Network Error');
+
+      const output = logSpy.mock.calls.flat().join('\n');
+      expect(output).toContain(REDACTED_VALUE);
+      expect(output).toContain('https://verify.proton.me');
+      expect(output).not.toContain('access-token');
+      expect(output).not.toContain('refresh-token');
     });
   });
 
