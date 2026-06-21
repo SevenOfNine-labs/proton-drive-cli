@@ -51,12 +51,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SevenOfNine-ai/proton-drive-cli.git"
+    "url": "git+https://github.com/SevenOfNine-labs/proton-drive-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/SevenOfNine-ai/proton-git-lfs/issues"
+    "url": "https://github.com/SevenOfNine-labs/proton-drive-cli/issues"
   },
-  "homepage": "https://github.com/SevenOfNine-ai/proton-git-lfs/tree/main/submodules/proton-drive-cli#readme",
+  "homepage": "https://github.com/SevenOfNine-labs/proton-drive-cli#readme",
   "bundledDependencies": [
     "@protontech/drive-sdk"
   ],
@@ -99,5 +99,8 @@
     "mime-types": "^3.0.2",
     "openpgp": "npm:@protontech/openpgp@^6.2.2",
     "ora": "^9.0.0"
+  },
+  "resolutions": {
+    "lodash": "^4.18.1"
   }
 }
