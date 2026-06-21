@@ -297,6 +297,59 @@ describe('getBridgeAuthState', () => {
     expect(mockCreateSDKClient).not.toHaveBeenCalled();
   });
 
+  it('requires a data password source for browser-fork sessions without persisted key passwords', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: false,
+    }));
+    mockValidateSession.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'needs_data_password',
+      hasSession: true,
+      sessionValid: true,
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: false,
+      hasExplicitDataPassword: false,
+      willAttemptNetwork: false,
+    });
+    expect(state.actions[0]).toContain('Browser-fork sessions');
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('accepts a data password source for browser-fork sessions', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: false,
+    }));
+    mockValidateSession.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({
+      dataCredentialProvider: 'git-credential',
+    });
+
+    expect(state).toMatchObject({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      dataCredentialProvider: 'git-credential',
+      dataCredentialHost: 'proton-data.proton-lfs-cli.local',
+      willAttemptNetwork: false,
+    });
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
   it('accepts a provider-backed data password source without resolving it', async () => {
     mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
     mockValidateSession.mockResolvedValue(true);

@@ -88,6 +88,10 @@ proton-drive-cli login --credential-provider git
 
 printf '%s' 'your-password' | proton-drive-cli login -u your.email@proton.me --password-stdin
 
+# Experimental browser session-fork login
+
+proton-drive-cli login --auth-mode browser-fork
+
 # Check authentication status
 
 proton-drive-cli status
@@ -99,6 +103,12 @@ proton-drive-cli logout
 ```
 
 Session tokens (no passwords) are stored in `~/.proton-drive-cli/session.json` with `0600` permissions. Tokens are refreshed automatically on HTTP 401 and Proton error code 9101. Proton API rate-limit cooldowns are stored separately in `~/.proton-drive-cli/rate-limit-cooldown.json` so later commands wait locally instead of retrying too soon.
+
+`--auth-mode browser-fork` mirrors Proton's official browser session-fork flow
+but is still experimental. It validates the encrypted browser payload and saves
+tokens only; the returned key password is not persisted until OS secret-store
+support is added, so Drive SDK operations still need an explicit mailbox/data
+password source.
 
 **CAPTCHA:** If CAPTCHA verification is required during login, the CLI guides you through the semi-automated token extraction process.
 

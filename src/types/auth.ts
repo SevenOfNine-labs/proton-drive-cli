@@ -28,6 +28,8 @@ export interface Auth2FARequest {
   FIDO2?: unknown;
 }
 
+export type AuthMode = 'srp' | 'browser-fork';
+
 export interface SessionCredentials {
   sessionId: string;
   uid: string;
@@ -35,6 +37,11 @@ export interface SessionCredentials {
   refreshToken: string;
   scopes: string[];
   passwordMode: number;
+  // Authentication path that created the session. Missing means legacy SRP.
+  authMode?: AuthMode;
+  // Browser-fork auth returns a key password that must be protected by an OS
+  // secret store. It is never written to session.json.
+  keyPasswordPersisted?: boolean;
   // Unix timestamp (ms) when the access token expires (for proactive refresh)
   tokenExpiresAt?: number;
   // mailboxPassword is intentionally NOT persisted — it flows via stdin
@@ -48,4 +55,21 @@ export interface SRPHandshake {
   clientEphemeral: string;
   clientProof: string;
   expectedServerProof: string;
+}
+
+export interface SessionForkInitResponse {
+  Code: number;
+  Selector: string;
+  UserCode: string;
+}
+
+export interface SessionForkStatusResponse {
+  Code: number;
+  Payload: string;
+  UID: string;
+  AccessToken: string;
+  RefreshToken?: string;
+  Scopes?: string[];
+  PasswordMode?: number;
+  ExpiresIn?: number;
 }

@@ -3,11 +3,13 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
+import { BrowserForkAuthService } from '../auth/browser-fork';
 import { SessionManager } from '../auth/session';
 import { promptForToken } from '../auth/captcha-helper';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
+import { openBrowserUrl } from '../utils/open-browser';
 import { readPasswordFromStdin, normalizeProviderName, createProvider } from '../credentials';
 
 interface LoginChallengeState {
@@ -117,6 +119,56 @@ export async function loginWithInteractiveChallenges(
   );
 }
 
+export async function loginWithBrowserFork(
+  authService: BrowserForkAuthService = new BrowserForkAuthService()
+): Promise<void> {
+  let spinner: ReturnType<typeof ora> | undefined;
+  if (isVerbose()) {
+    spinner = ora('Starting browser sign-in...').start();
+  }
+
+  try {
+    await authService.login({
+      onSignInUrl: (signInUrl: string) => {
+        if (spinner) {
+          spinner.stop();
+          spinner = undefined;
+        }
+
+        const opened = openBrowserUrl(signInUrl);
+        if (!isQuiet()) {
+          console.log(chalk.cyan('Complete Proton sign-in in your browser.'));
+          console.log(chalk.dim(opened
+            ? 'A browser window was opened for Proton account sign-in.'
+            : 'Could not open a browser automatically.'
+          ));
+          console.log(chalk.dim('If needed, open this URL manually:'));
+          console.log(signInUrl);
+        }
+
+        if (isVerbose()) {
+          spinner = ora('Waiting for browser sign-in...').start();
+        }
+      },
+    });
+
+    if (spinner) {
+      spinner.succeed(chalk.green('Browser login successful!'));
+    }
+    if (isVerbose()) {
+      console.log(chalk.dim('Session saved (tokens only). Browser key password was not persisted.'));
+      console.log(chalk.dim('Provide a mailbox/data password source for Drive SDK operations until OS secret-store support lands.'));
+    } else if (!isQuiet()) {
+      outputResult('OK');
+    }
+  } catch (error: unknown) {
+    if (spinner) {
+      spinner.stop();
+    }
+    throw error;
+  }
+}
+
 /**
  * Create the login command for the CLI.
  *
@@ -189,8 +241,23 @@ export function createLoginCommand(): Command {
     .option('-u, --username <email|username>', 'Proton account email or username')
     .option('--password-stdin', 'Read password from stdin (for scripts with special characters)')
     .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
+    .option('--auth-mode <mode>', 'Authentication mode: srp (default), browser-fork (experimental)', 'srp')
     .action(async (options) => {
       try {
+        const authMode = String(options.authMode || 'srp').toLowerCase();
+        if (authMode === 'browser-fork') {
+          await loginWithBrowserFork();
+          return;
+        }
+        if (authMode !== 'srp') {
+          throw new AppError(
+            `Unsupported authentication mode: ${options.authMode}`,
+            ErrorCode.VALIDATION_ERROR,
+            { authMode: options.authMode },
+            false
+          );
+        }
+
         let username = options.username;
         let password: string | undefined;
 

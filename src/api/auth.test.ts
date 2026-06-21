@@ -9,15 +9,18 @@ const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
 
 describe('AuthApiClient', () => {
   let client: AuthApiClient;
+  let mockGet: jest.Mock;
   let mockPost: jest.Mock;
   let mockDelete: jest.Mock;
   let originalLogLevel: LogLevel;
 
   beforeEach(() => {
     originalLogLevel = logger.getLevel();
+    mockGet = jest.fn();
     mockPost = jest.fn();
     mockDelete = jest.fn();
     MockedHttpClient.create = jest.fn().mockReturnValue({
+      get: mockGet,
       post: mockPost,
       delete: mockDelete,
       interceptors: { request: { use: jest.fn(), _handlers: [] }, response: { use: jest.fn(), _handlers: [] } },
@@ -291,6 +294,52 @@ describe('AuthApiClient', () => {
         expect.anything(),
         expect.anything()
       );
+    });
+  });
+
+  describe('session forks', () => {
+    test('starts a browser session fork', async () => {
+      const mockResponse = {
+        Code: 1000,
+        Selector: 'selector-123',
+        UserCode: 'user-code-123',
+      };
+      mockGet.mockResolvedValue({ data: mockResponse });
+
+      const result = await client.initSessionFork();
+
+      expect(mockGet).toHaveBeenCalledWith('/auth/v4/sessions/forks');
+      expect(result).toEqual(mockResponse);
+    });
+
+    test('rejects incomplete fork init responses', async () => {
+      mockGet.mockResolvedValue({ data: { Code: 1000 } });
+
+      await expect(client.initSessionFork())
+        .rejects.toThrow('Incomplete session fork init response');
+    });
+
+    test('polls browser session fork status using the selector path', async () => {
+      const mockResponse = {
+        Code: 1000,
+        Payload: 'encrypted-payload',
+        UID: 'uid-123',
+        AccessToken: 'access-token',
+        RefreshToken: 'refresh-token',
+      };
+      mockGet.mockResolvedValue({ data: mockResponse });
+
+      const result = await client.getSessionForkStatus('selector/with space');
+
+      expect(mockGet).toHaveBeenCalledWith('/auth/v4/sessions/forks/selector%2Fwith%20space');
+      expect(result).toEqual(mockResponse);
+    });
+
+    test('rejects incomplete fork status responses', async () => {
+      mockGet.mockResolvedValue({ data: { Code: 1000, UID: 'uid-123' } });
+
+      await expect(client.getSessionForkStatus('selector-123'))
+        .rejects.toThrow('Incomplete session fork status response');
     });
   });
 

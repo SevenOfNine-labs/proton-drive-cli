@@ -1,6 +1,6 @@
 import { AuthService } from '../auth';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
-import { loginWithInteractiveChallenges } from './login';
+import { loginWithBrowserFork, loginWithInteractiveChallenges } from './login';
 
 jest.mock('inquirer', () => ({
   prompt: jest.fn(),
@@ -22,11 +22,19 @@ jest.mock('../utils/output', () => ({
   outputResult: jest.fn(),
 }));
 
+jest.mock('../utils/open-browser', () => ({
+  openBrowserUrl: jest.fn(() => true),
+}));
+
 import inquirer from 'inquirer';
 import { promptForToken } from '../auth/captcha-helper';
+import { outputResult } from '../utils/output';
+import { openBrowserUrl } from '../utils/open-browser';
 
 const mockPrompt = inquirer.prompt as jest.MockedFunction<typeof inquirer.prompt>;
 const mockPromptForToken = promptForToken as jest.MockedFunction<typeof promptForToken>;
+const mockOutputResult = outputResult as jest.MockedFunction<typeof outputResult>;
+const mockOpenBrowserUrl = openBrowserUrl as jest.MockedFunction<typeof openBrowserUrl>;
 
 describe('loginWithInteractiveChallenges', () => {
   let authService: jest.Mocked<AuthService>;
@@ -120,5 +128,34 @@ describe('loginWithInteractiveChallenges', () => {
 
     expect(mockPrompt).not.toHaveBeenCalled();
     expect(authService.login).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('loginWithBrowserFork', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('opens the browser URL and reports success without printing secrets', async () => {
+    const fakeAuthService = {
+      login: jest.fn(async ({ onSignInUrl }) => {
+        await onSignInUrl('https://account.proton.me/desktop/login?app=drive&pv=3#payload=test');
+        return {
+          session: { uid: 'uid-123' },
+          userKeyPassword: 'derived-user-key-password',
+        };
+      }),
+    } as any;
+    const logSpy = jest.spyOn(console, 'log').mockImplementation();
+
+    await loginWithBrowserFork(fakeAuthService);
+
+    const consoleOutput = logSpy.mock.calls.flat().join('\n');
+    expect(fakeAuthService.login).toHaveBeenCalledTimes(1);
+    expect(mockOpenBrowserUrl).toHaveBeenCalledWith(
+      'https://account.proton.me/desktop/login?app=drive&pv=3#payload=test'
+    );
+    expect(mockOutputResult).toHaveBeenCalledWith('OK');
+    expect(consoleOutput).not.toContain('derived-user-key-password');
   });
 });

@@ -37,7 +37,7 @@ import {
 import { createProvider, normalizeProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
-import type { SessionCredentials } from '../types/auth';
+import type { AuthMode, SessionCredentials } from '../types/auth';
 
 /**
  * Write JSON response to stdout (single line, no extra output)
@@ -218,6 +218,8 @@ export interface BridgeAuthStatePayload {
   sessionExpired: boolean;
   sessionUidPresent: boolean;
   passwordMode?: number;
+  authMode?: AuthMode;
+  keyPasswordPersisted?: boolean;
   usernamePresent: boolean;
   hasExplicitLoginPassword: boolean;
   hasExplicitDataPassword: boolean;
@@ -285,6 +287,7 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   const sessionUidPresent = Boolean(session?.uid);
   const sessionValid = session ? await SessionManager.validateSession(session, false) : false;
   const sessionExpired = isLocallyExpired(session);
+  const browserForkNeedsKeyPassword = session?.authMode === 'browser-fork' && session.keyPasswordPersisted !== true;
   const actions: string[] = [];
   let state: BridgeAuthState;
 
@@ -302,12 +305,15 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   } else if (!sessionValid) {
     state = sessionExpired ? 'session_expired' : 'session_invalid';
     actions.push('Refresh or replace the saved session after offline gates pass; auth-state did not refresh tokens.');
-  } else if (session.passwordMode === 2 && !hasExplicitDataPassword && !dataCredentialProvider) {
-    state = 'needs_data_password';
-    actions.push(`Configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
   } else if (session.passwordMode !== 1 && session.passwordMode !== 2) {
     state = 'session_invalid';
     actions.push(`Unexpected Proton password mode ${session.passwordMode}; replace the saved session before transfers.`);
+  } else if (browserForkNeedsKeyPassword && !hasExplicitDataPassword && !dataCredentialProvider) {
+    state = 'needs_data_password';
+    actions.push(`Browser-fork sessions do not persist key passwords yet; configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+  } else if (session.passwordMode === 2 && !hasExplicitDataPassword && !dataCredentialProvider) {
+    state = 'needs_data_password';
+    actions.push(`Configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
   } else {
     state = 'ready';
     actions.push('Local auth inputs are sufficient for SDK initialization; auth-state did not contact Proton.');
@@ -320,6 +326,8 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
     sessionExpired,
     sessionUidPresent,
     passwordMode: session?.passwordMode,
+    authMode: session?.authMode,
+    keyPasswordPersisted: session?.keyPasswordPersisted,
     usernamePresent: Boolean(request.username),
     hasExplicitLoginPassword,
     hasExplicitDataPassword,

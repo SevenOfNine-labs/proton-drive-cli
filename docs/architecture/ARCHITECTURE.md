@@ -109,6 +109,13 @@ sequenceDiagram
 
 ```
 
+The default login flow uses SRP. An experimental browser session-fork flow is
+available for analysis and mocked testing behind
+`proton-drive-cli login --auth-mode browser-fork`; see
+[Browser Fork Authentication](browser-fork-auth.md). Browser-fork sessions do
+not persist the returned key password yet, so bridge `auth-state` keeps them
+gated behind an explicit mailbox/data password source.
+
 ### 2. File Upload Flow
 
 ```mermaid

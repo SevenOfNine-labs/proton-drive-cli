@@ -1,5 +1,11 @@
 import { HttpClient } from './http-client';
-import { Auth2FARequest, AuthInfoResponse, AuthResponse } from '../types/auth';
+import {
+  Auth2FARequest,
+  AuthInfoResponse,
+  AuthResponse,
+  SessionForkInitResponse,
+  SessionForkStatusResponse,
+} from '../types/auth';
 import { CaptchaError } from '../errors/types';
 import { logger } from '../utils/logger';
 import { redactSensitive } from '../utils/redaction';
@@ -138,6 +144,44 @@ export class AuthApiClient {
         'x-pm-uid': uid,
       },
     });
+  }
+
+  /**
+   * Start Proton's browser session-fork login flow.
+   *
+   * This mirrors the official SDK CLI's unauthenticated
+   * GET /auth/v4/sessions/forks call. The returned UserCode is embedded into
+   * the account.proton.me desktop-login URL; Selector is used for polling.
+   */
+  async initSessionFork(): Promise<SessionForkInitResponse> {
+    const response = await this.client.get<SessionForkInitResponse>(
+      '/auth/v4/sessions/forks'
+    );
+
+    const data = response.data;
+    if (!data.Selector || !data.UserCode) {
+      throw new Error('Incomplete session fork init response');
+    }
+    return data;
+  }
+
+  /**
+   * Poll Proton's browser session-fork login flow.
+   *
+   * Proton returns HTTP 422 while the browser sign-in is still pending. Callers
+   * should handle that status as "not ready yet" and keep polling within their
+   * own timeout budget.
+   */
+  async getSessionForkStatus(selector: string): Promise<SessionForkStatusResponse> {
+    const response = await this.client.get<SessionForkStatusResponse>(
+      `/auth/v4/sessions/forks/${encodeURIComponent(selector)}`
+    );
+
+    const data = response.data;
+    if (!data.Payload || !data.UID || !data.AccessToken) {
+      throw new Error('Incomplete session fork status response');
+    }
+    return data;
   }
 
   /**
