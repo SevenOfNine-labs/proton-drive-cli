@@ -85,6 +85,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@protontech/crypto": "^2.0.0",
     "@protontech/drive-sdk": "portal:./submodules/sdk/js/sdk",
     "@protontech/openpgp": "^6.2.2",
     "bcryptjs": "^3.0.3",
