@@ -11,7 +11,7 @@ Session tokens are the only data persisted to disk. Passwords are never stored.
 
 ## Environment Variables
 
-The CLI itself does not read credentials from environment variables. The following are used by the parent `proton-git-lfs` Go adapter:
+The CLI itself does not read credentials from environment variables. The following are used by the parent `proton-lfs-cli` Go adapter:
 
 | Variable                       | Default    | Description                                        |
 | ------------------------------ | ---------- | -------------------------------------------------- |

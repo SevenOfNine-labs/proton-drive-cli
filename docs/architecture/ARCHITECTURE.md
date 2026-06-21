@@ -596,7 +596,7 @@ npm run build:sea      # Standalone executable (Node.js 25.5+)
 
 - **Standalone**: Single executable with Node.js runtime embedded
 - **npm**: Published to npm registry (optional)
-- **Integration**: Bundled with proton-git-lfs adapter
+- **Integration**: Bundled with proton-lfs-cli adapter
 
 ## Future Enhancements
 

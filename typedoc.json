@@ -16,7 +16,7 @@
   "plugin": [],
   "entryPointStrategy": "expand",
   "navigationLinks": {
-    "GitHub": "https://github.com/SevenOfNine-ai/proton-drive-cli"
+    "GitHub": "https://github.com/SevenOfNine-labs/proton-drive-cli"
   },
   "categorizeByGroup": true,
   "categoryOrder": [

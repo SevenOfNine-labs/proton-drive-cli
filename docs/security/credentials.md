@@ -49,7 +49,7 @@ Credentials are resolved locally by `proton-drive-cli` — never sent over HTTP.
 
 ### pass-cli (Git LFS integration default)
 
-Credentials flow through the proton-git-lfs stack:
+Credentials flow through the proton-lfs-cli stack:
 
 ```
 pass-cli → Go adapter → proton-drive-cli bridge (stdin)
