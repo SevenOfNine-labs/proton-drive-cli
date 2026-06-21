@@ -216,7 +216,10 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.refreshSession).toHaveBeenCalledWith(fakeSession);
+      expect(SessionManager.refreshSession).toHaveBeenCalledWith(
+        fakeSession,
+        'external-drive-proton-lfs-cli@0.1.2'
+      );
     });
 
     it('returns original 401 if refresh fails', async () => {
@@ -303,7 +306,10 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.refreshSession).toHaveBeenCalledWith(fakeSession);
+      expect(SessionManager.refreshSession).toHaveBeenCalledWith(
+        fakeSession,
+        'external-drive-proton-lfs-cli@0.1.2'
+      );
     });
 
     it('refreshes on 403/9101 for fetchBlob too', async () => {

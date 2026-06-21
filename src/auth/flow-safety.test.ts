@@ -288,7 +288,7 @@ describe('offline auth flow safety gate', () => {
     await createSDKClient({ dataPassword: 'mailbox-password', allowLogin: false });
 
     expect(mockedSessionManager.refreshSession).toHaveBeenCalledTimes(1);
-    expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(expired);
+    expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(expired, undefined);
     expect(mockAuthLogin).not.toHaveBeenCalled();
     expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
   });
@@ -555,6 +555,7 @@ describe('offline auth flow safety gate', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
     });
   });
 
@@ -572,6 +573,7 @@ describe('offline auth flow safety gate', () => {
       dataPassword: undefined,
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
     });
   });
 

@@ -30,6 +30,7 @@ export interface CreateSDKClientOptions {
   dataPassword?: string;
   secondFactorCode?: string;
   allowLogin?: boolean;
+  appVersion?: string;
 }
 
 interface NormalizedCreateSDKClientOptions {
@@ -39,6 +40,7 @@ interface NormalizedCreateSDKClientOptions {
   dataPasswordExplicit: boolean;
   secondFactorCode?: string;
   allowLogin: boolean;
+  appVersion?: string;
 }
 
 function normalizeCreateSDKClientOptions(
@@ -55,6 +57,7 @@ function normalizeCreateSDKClientOptions(
       // two-password accounts must move to the options form with dataPassword.
       dataPasswordExplicit: !username,
       allowLogin: Boolean(username && passwordOrOptions),
+      appVersion: undefined,
     };
   }
 
@@ -65,6 +68,7 @@ function normalizeCreateSDKClientOptions(
     dataPasswordExplicit: Boolean(passwordOrOptions.dataPassword),
     secondFactorCode: passwordOrOptions.secondFactorCode,
     allowLogin: passwordOrOptions.allowLogin ?? Boolean(passwordOrOptions.username && passwordOrOptions.loginPassword),
+    appVersion: passwordOrOptions.appVersion,
   };
 }
 
@@ -121,7 +125,7 @@ export async function createSDKClient(
   username?: string,
 ): Promise<ProtonDriveClient> {
   const options = normalizeCreateSDKClientOptions(passwordOrOptions, username);
-  const driveCrypto = new DriveCryptoService();
+  const driveCrypto = new DriveCryptoService(options.appVersion);
 
   let sessionReady = false;
   let session = await SessionManager.loadSession();
@@ -137,7 +141,7 @@ export async function createSDKClient(
       // Session may exist but token is expired — try proactive refresh
       if (session) {
         logger.debug('SDK client: session expired, attempting proactive refresh');
-        session = await SessionManager.refreshSession(session);
+        session = await SessionManager.refreshSession(session, options.appVersion);
         sessionReady = true;
         logger.debug('SDK client: proactive token refresh succeeded');
       }
@@ -172,7 +176,7 @@ export async function createSDKClient(
     if (!options.allowLogin || !options.username || !options.loginPassword) {
       throw new Error('No session found and credentials not provided');
     }
-    const authService = new AuthService();
+    const authService = new AuthService(undefined, options.appVersion);
     const loginSession = await authService.login(options.username, options.loginPassword, {
       secondFactorCode: options.secondFactorCode,
     });
@@ -183,7 +187,7 @@ export async function createSDKClient(
   // Build adapters
   const cryptoProxy = new ProtonOpenPGPCryptoProxy();
   const openPGPCrypto = new OpenPGPCryptoWithCryptoProxy(cryptoProxy);
-  const httpClient = new HTTPClientAdapter();
+  const httpClient = new HTTPClientAdapter(options.appVersion);
   const account = new AccountAdapter(driveCrypto);
   const srpModule = new SRPModuleAdapter();
 

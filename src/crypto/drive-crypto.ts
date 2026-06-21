@@ -20,9 +20,9 @@ export class DriveCryptoService {
   private shareContexts: Map<string, DecryptedShareContext> = new Map();
   private nodeContexts: Map<string, DecryptedNodeContext> = new Map();
 
-  constructor() {
+  constructor(appVersion?: string) {
     this.crypto = new CryptoService();
-    this.userApi = new UserApiClient();
+    this.userApi = new UserApiClient(undefined, appVersion);
   }
 
   /**

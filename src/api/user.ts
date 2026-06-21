@@ -14,6 +14,7 @@ import { getProtonAppVersion } from '../constants';
 export class UserApiClient {
   private client: HttpClient;
   private baseUrl: string;
+  private readonly appVersion: string;
 
   // In-memory cache populated from disk on first access
   private _cryptoCache: {
@@ -24,15 +25,16 @@ export class UserApiClient {
 
   constructor(
     baseUrl: string = 'https://drive-api.proton.me',
-    appVersion: string = getProtonAppVersion()
+    appVersion?: string
   ) {
     this.baseUrl = baseUrl;
+    this.appVersion = getProtonAppVersion(appVersion);
     this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': appVersion,
+        'x-pm-appversion': this.appVersion,
       },
     });
 
@@ -69,7 +71,7 @@ export class UserApiClient {
             try {
               let freshSession;
               try {
-                freshSession = await SessionManager.refreshSession(session);
+                freshSession = await SessionManager.refreshSession(session, this.appVersion);
               } catch {
                 // Refresh token may be consumed by another process — re-read session.
                 const updated = await SessionManager.loadSession();

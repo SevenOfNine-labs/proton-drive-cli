@@ -382,6 +382,7 @@ describe('getInitializedClient', () => {
       dataPassword: undefined,
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
     });
   });
 
@@ -399,6 +400,24 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: '123456',
       allowLogin: true,
+      appVersion: undefined,
+    });
+  });
+
+  it('passes bridge appVersion into SDK client options', async () => {
+    await getInitializedClient({
+      username: 'user@proton.me',
+      password: 'login-password',
+      appVersion: 'external-drive-root@9.9.9',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'user@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: undefined,
+      secondFactorCode: undefined,
+      allowLogin: true,
+      appVersion: 'external-drive-root@9.9.9',
     });
   });
 
@@ -413,6 +432,7 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: false,
+      appVersion: undefined,
     });
   });
 
@@ -434,6 +454,7 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
     });
   });
 
@@ -459,6 +480,7 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: false,
+      appVersion: undefined,
     });
   });
 
@@ -500,6 +522,7 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
     });
   });
 });

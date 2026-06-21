@@ -304,7 +304,7 @@ export class SessionManager {
    * @param expectedSession - Optional session observed before acquiring the lock
    * @returns Updated session with new tokens
    */
-  static async refreshSession(expectedSession?: SessionCredentials): Promise<SessionCredentials> {
+  static async refreshSession(expectedSession?: SessionCredentials, appVersion?: string): Promise<SessionCredentials> {
     await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
 
     return this.withFileLock(async () => {
@@ -327,7 +327,7 @@ export class SessionManager {
 
       // Import AuthApiClient here to avoid circular dependencies.
       const { AuthApiClient } = await import('../api/auth');
-      const authApi = new AuthApiClient();
+      const authApi = new AuthApiClient(undefined, appVersion);
 
       logger.debug(`Refreshing tokens for session ${session.uid}`);
       const result = await authApi.refreshToken(session.uid, session.refreshToken);
@@ -356,7 +356,7 @@ export class SessionManager {
    *
    * @returns Valid session or null if no session exists
    */
-  static async getValidSession(): Promise<SessionCredentials | null> {
+  static async getValidSession(appVersion?: string): Promise<SessionCredentials | null> {
     const session = await this.loadSession();
     if (!session) return null;
 
@@ -364,7 +364,7 @@ export class SessionManager {
     if (this.isExpiringSoon(session)) {
       logger.info('Token expiring soon, proactively refreshing...');
       try {
-        return await this.refreshSession(session);
+        return await this.refreshSession(session, appVersion);
       } catch (error) {
         logger.warn('Proactive refresh failed, token may expire during operation:', error);
         // Continue with current session — will retry on 401
@@ -383,7 +383,7 @@ export class SessionManager {
    * @param remoteCheck - If true, makes an API call to verify the session is valid on the server
    * @returns True if session is valid
    */
-  static async validateSession(session: SessionCredentials, remoteCheck: boolean = false): Promise<boolean> {
+  static async validateSession(session: SessionCredentials, remoteCheck: boolean = false, appVersion?: string): Promise<boolean> {
     // Quick local validation: check if token is expired
     if (session.tokenExpiresAt && Date.now() >= session.tokenExpiresAt) {
       logger.debug('Session expired locally (tokenExpiresAt)');
@@ -409,7 +409,7 @@ export class SessionManager {
       try {
         // Import UserApiClient here to avoid circular dependencies
         const { UserApiClient } = await import('../api/user');
-        const userApi = new UserApiClient();
+        const userApi = new UserApiClient(undefined, appVersion);
         await userApi.getUser(); // Lightweight endpoint
         logger.debug('Session validated remotely (API call succeeded)');
         return true;

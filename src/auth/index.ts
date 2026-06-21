@@ -23,8 +23,8 @@ const TWO_FACTOR_FIDO2_AND_TOTP = 3;
 export class AuthService {
   private authApi: AuthApiClient;
 
-  constructor(apiBaseUrl?: string) {
-    this.authApi = new AuthApiClient(apiBaseUrl);
+  constructor(apiBaseUrl?: string, private readonly appVersion?: string) {
+    this.authApi = new AuthApiClient(apiBaseUrl, appVersion);
   }
 
   /**
@@ -224,7 +224,7 @@ export class AuthService {
    */
   async refreshSession(): Promise<SessionCredentials> {
     try {
-      const updatedSession = await SessionManager.refreshSession();
+      const updatedSession = await SessionManager.refreshSession(undefined, this.appVersion);
       logger.info('Access token refreshed');
       return updatedSession;
     } catch (error) {

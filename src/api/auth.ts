@@ -14,15 +14,16 @@ export class AuthApiClient {
 
   constructor(
     baseUrl: string = 'https://drive-api.proton.me',
-    appVersion: string = getProtonAppVersion()
+    appVersion?: string
   ) {
     this.baseUrl = baseUrl;
+    const resolvedAppVersion = getProtonAppVersion(appVersion);
     this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': appVersion,
+        'x-pm-appversion': resolvedAppVersion,
       },
     });
   }

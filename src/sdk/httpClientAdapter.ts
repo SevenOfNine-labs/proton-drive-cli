@@ -47,12 +47,15 @@ const RATE_LIMIT_ERROR_CODES = new Set([
 
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   private refreshInProgress: Promise<void> | null = null;
+  private readonly appVersion: string;
 
-  constructor(private readonly appVersion: string = getProtonAppVersion()) {}
+  constructor(appVersion?: string) {
+    this.appVersion = getProtonAppVersion(appVersion);
+  }
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
     // Use getValidSession() to proactively refresh tokens if expiring soon
-    const session = await SessionManager.getValidSession();
+    const session = await SessionManager.getValidSession(this.appVersion);
     if (session) {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
@@ -152,7 +155,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const originalAccessToken = session.accessToken;
 
         try {
-          await SessionManager.refreshSession(session);
+          await SessionManager.refreshSession(session, this.appVersion);
           logger.info('Token refreshed successfully (reactive, after 401)');
         } catch (refreshErr) {
           // Refresh token may have been consumed by another subprocess.

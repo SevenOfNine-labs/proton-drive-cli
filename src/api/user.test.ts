@@ -111,7 +111,10 @@ describe('UserApiClient', () => {
 
       await responseInterceptorReject(error);
 
-      expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(fakeSession);
+      expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(
+        fakeSession,
+        'external-drive-proton-lfs-cli@0.1.2'
+      );
       expect(mockHttpInstance.request).toHaveBeenCalledWith(
         expect.objectContaining({
           headers: expect.objectContaining({

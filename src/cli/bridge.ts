@@ -349,6 +349,7 @@ export async function getInitializedClient(request: BridgeRequest): Promise<Prot
     dataPassword,
     secondFactorCode: request.secondFactorCode,
     allowLogin: Boolean(resolved.username && loginPassword),
+    appVersion: request.appVersion,
   });
 }
 
@@ -397,7 +398,7 @@ async function handleAuthCommand(request: BridgeRequest): Promise<void> {
       // Session file corrupted or unreadable — fall through to full login
     }
 
-    const authService = new AuthService();
+    const authService = new AuthService(undefined, request.appVersion);
 
     await authService.login(resolved.username, resolved.loginPassword, {
       secondFactorCode: request.secondFactorCode,
@@ -604,7 +605,7 @@ async function handleDeleteCommand(request: BridgeRequest): Promise<void> {
 
 async function handleRefreshCommand(request: BridgeRequest): Promise<void> {
   try {
-    const authService = new AuthService();
+    const authService = new AuthService(undefined, request.appVersion);
     const session = await authService.refreshSession();
     writeSuccess({ refreshed: true, uid: session.uid });
   } catch (error: any) {
