@@ -38,6 +38,8 @@ export interface BridgeRequest {
   storageBase?: string;
   /** When set to 'git-credential', the bridge resolves credentials itself via git credential fill */
   credentialProvider?: string;
+  /** Explicitly controls whether SDK initialization may perform full SRP login */
+  allowLogin?: boolean;
   /** Array of OIDs for batch operations (batch-exists, batch-delete) */
   oids?: string[];
 }

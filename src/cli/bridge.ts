@@ -348,7 +348,7 @@ export async function getInitializedClient(request: BridgeRequest): Promise<Prot
     loginPassword,
     dataPassword,
     secondFactorCode: request.secondFactorCode,
-    allowLogin: Boolean(resolved.username && loginPassword),
+    allowLogin: request.allowLogin ?? Boolean(resolved.username && loginPassword),
     appVersion: request.appVersion,
   });
 }

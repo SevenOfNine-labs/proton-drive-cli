@@ -197,6 +197,14 @@ describe('BridgeRequest credentialProvider field', () => {
     expect(request.username).toBe('user@proton.me');
     expect(request.credentialProvider).toBe('git-credential');
   });
+
+  it('accepts explicit allowLogin control for transfer callers', () => {
+    const request: BridgeRequest = {
+      credentialProvider: 'git-credential',
+      allowLogin: false,
+    };
+    expect(request.allowLogin).toBe(false);
+  });
 });
 
 describe('getBridgeAuthState', () => {
@@ -454,6 +462,28 @@ describe('getInitializedClient', () => {
       dataPassword: 'mailbox-password',
       secondFactorCode: undefined,
       allowLogin: true,
+      appVersion: undefined,
+    });
+  });
+
+  it('honors allowLogin=false even when login credentials are available', async () => {
+    mockCredentialResolve.mockResolvedValue({
+      username: 'provider@proton.me',
+      password: 'login-password',
+    });
+
+    await getInitializedClient({
+      credentialProvider: 'git-credential',
+      dataPassword: 'mailbox-password',
+      allowLogin: false,
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      username: 'provider@proton.me',
+      loginPassword: 'login-password',
+      dataPassword: 'mailbox-password',
+      secondFactorCode: undefined,
+      allowLogin: false,
       appVersion: undefined,
     });
   });
