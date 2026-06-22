@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/error-details.schema.json",
+  "title": "proton-drive-cli bridge error details",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "errorCode": {
+      "type": "string",
+      "enum": [
+        "AUTH_FAILED",
+        "SESSION_EXPIRED",
+        "INVALID_CREDENTIALS",
+        "TWO_FACTOR_REQUIRED",
+        "DATA_PASSWORD_REQUIRED",
+        "KEY_PASSWORD_REQUIRED",
+        "NETWORK_ERROR",
+        "TIMEOUT",
+        "CONNECTION_REFUSED",
+        "API_ERROR",
+        "RATE_LIMITED",
+        "QUOTA_EXCEEDED",
+        "NOT_FOUND",
+        "FILE_NOT_FOUND",
+        "FILE_TOO_LARGE",
+        "PERMISSION_DENIED",
+        "DISK_FULL",
+        "UPLOAD_FAILED",
+        "DOWNLOAD_FAILED",
+        "ENCRYPTION_FAILED",
+        "DECRYPTION_FAILED",
+        "INVALID_FILE",
+        "PATH_NOT_FOUND",
+        "INVALID_PATH",
+        "NOT_A_FOLDER",
+        "CAPTCHA_REQUIRED",
+        "UNKNOWN_ERROR",
+        "VALIDATION_ERROR",
+        "OPERATION_CANCELLED"
+      ]
+    },
+    "twoFactorType": { "type": "string", "enum": ["totp", "fido2"] },
+    "totpAllowed": { "type": "boolean" },
+    "fido2Available": { "type": "boolean" },
+    "captchaUrl": { "type": "string" },
+    "captchaToken": { "type": "string" },
+    "verificationMethods": { "type": "array", "items": { "type": "string" } },
+    "action": { "type": "string" },
+    "retryAfter": { "type": "number" }
+  }
+}

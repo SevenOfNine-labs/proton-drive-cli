@@ -35,6 +35,7 @@ import {
   errorToStatusCode,
   oidToPath,
 } from '../bridge/validators';
+import type { BridgeAuthState } from '../bridge/protocol';
 import { createProvider, normalizeProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
@@ -203,15 +204,7 @@ async function resolveDataPassword(request: BridgeRequest, username?: string): P
   return cred.password;
 }
 
-export type BridgeAuthState =
-  | 'ready'
-  | 'login_available'
-  | 'needs_login'
-  | 'needs_data_password'
-  | 'needs_key_password'
-  | 'session_expired'
-  | 'session_invalid'
-  | 'configuration_error';
+export type { BridgeAuthState } from '../bridge/protocol';
 
 export interface BridgeAuthStatePayload {
   state: BridgeAuthState;

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/auth-state-payload.schema.json",
+  "title": "proton-drive-cli bridge auth-state payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state",
+    "hasSession",
+    "sessionValid",
+    "sessionExpired",
+    "sessionUidPresent",
+    "usernamePresent",
+    "hasExplicitLoginPassword",
+    "hasExplicitDataPassword",
+    "allowLogin",
+    "willAttemptNetwork",
+    "errors",
+    "actions"
+  ],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "login_available",
+        "needs_login",
+        "needs_data_password",
+        "needs_key_password",
+        "session_expired",
+        "session_invalid",
+        "configuration_error"
+      ]
+    },
+    "hasSession": { "type": "boolean" },
+    "sessionValid": { "type": "boolean" },
+    "sessionExpired": { "type": "boolean" },
+    "sessionUidPresent": { "type": "boolean" },
+    "passwordMode": { "type": "integer" },
+    "authMode": { "type": "string", "enum": ["srp", "browser-fork"] },
+    "keyPasswordPersisted": { "type": "boolean" },
+    "keyPasswordAvailable": { "type": "boolean" },
+    "keyPasswordProvider": { "type": "string", "enum": ["git-credential", "pass-cli"] },
+    "keyPasswordHost": { "type": "string" },
+    "usernamePresent": { "type": "boolean" },
+    "hasExplicitLoginPassword": { "type": "boolean" },
+    "hasExplicitDataPassword": { "type": "boolean" },
+    "loginCredentialProvider": { "type": "string" },
+    "dataCredentialProvider": { "type": "string" },
+    "dataCredentialHost": { "type": "string" },
+    "allowLogin": { "type": "boolean" },
+    "willAttemptNetwork": { "const": false },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "actions": { "type": "array", "items": { "type": "string" } }
+  }
+}

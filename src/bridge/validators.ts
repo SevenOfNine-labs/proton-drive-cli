@@ -6,7 +6,7 @@
  * (which itself has zero imports).
  */
 
-import { ErrorCode } from '../errors/types';
+import { statusCodeForErrorCode } from './protocol';
 import {
   ProtonDriveError,
   ValidationError,
@@ -149,24 +149,8 @@ export function errorToStatusCode(error: any): number {
   if (error instanceof IntegrityError) return 500;
   if (error instanceof AbortError) return 499;
 
-  const code = error?.code;
-  if (code === ErrorCode.AUTH_FAILED || code === ErrorCode.INVALID_CREDENTIALS) return 401;
-  if (code === ErrorCode.SESSION_EXPIRED) return 401;
-  if (code === ErrorCode.TWO_FACTOR_REQUIRED) return 401;
-  if (code === ErrorCode.DATA_PASSWORD_REQUIRED) return 401;
-  if (code === ErrorCode.KEY_PASSWORD_REQUIRED) return 401;
-  if (code === ErrorCode.NOT_FOUND || code === ErrorCode.PATH_NOT_FOUND || code === ErrorCode.FILE_NOT_FOUND) return 404;
-  if (code === ErrorCode.INVALID_FILE || code === ErrorCode.VALIDATION_ERROR || code === ErrorCode.INVALID_PATH || code === ErrorCode.NOT_A_FOLDER) return 400;
-  if (code === ErrorCode.PERMISSION_DENIED) return 403;
-  if (code === ErrorCode.FILE_TOO_LARGE) return 413;
-  if (code === ErrorCode.RATE_LIMITED) return 429;
-  if (code === ErrorCode.CAPTCHA_REQUIRED) return 407;
-  if (code === ErrorCode.OPERATION_CANCELLED) return 499;
-  if (code === ErrorCode.TIMEOUT) return 504;
-  if (code === ErrorCode.QUOTA_EXCEEDED || code === ErrorCode.DISK_FULL) return 507;
-  if (code === ErrorCode.NETWORK_ERROR || code === ErrorCode.CONNECTION_REFUSED || code === ErrorCode.API_ERROR) return 502;
-  if (code === ErrorCode.UPLOAD_FAILED || code === ErrorCode.DOWNLOAD_FAILED) return 502;
-  if (code === ErrorCode.ENCRYPTION_FAILED || code === ErrorCode.DECRYPTION_FAILED) return 500;
+  const mappedStatus = statusCodeForErrorCode(error?.code);
+  if (mappedStatus !== undefined) return mappedStatus;
 
   const msg = error?.message?.toLowerCase() || '';
   if (msg.includes('not found')) return 404;

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/response-envelope.schema.json",
+  "title": "proton-drive-cli bridge response envelope",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "const": true },
+        "payload": true,
+        "error": false,
+        "code": false,
+        "details": false
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "error", "code"],
+      "properties": {
+        "ok": { "const": false },
+        "payload": false,
+        "error": { "type": "string", "minLength": 1 },
+        "code": { "type": "integer", "minimum": 100 },
+        "details": { "type": "string" }
+      }
+    }
+  ]
+}

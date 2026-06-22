@@ -23,3 +23,18 @@ export {
   oidToPath,
   pathToOid,
 } from './validators';
+
+export {
+  BRIDGE_AUTH_STATES,
+  BRIDGE_COMMANDS,
+  BRIDGE_ERROR_DETAIL_FIELDS,
+  BRIDGE_REQUEST_FIELDS,
+  BRIDGE_RESPONSE_FIELDS,
+  ERROR_CODE_STATUS,
+  statusCodeForErrorCode,
+} from './protocol';
+
+export type {
+  BridgeAuthState,
+  BridgeCommand,
+} from './protocol';
