@@ -14,6 +14,8 @@ import { SessionManager } from '../auth/session';
 import { createProvider, normalizeProviderName } from '../credentials';
 import type { ProviderName } from '../credentials';
 import { PROTON_CREDENTIAL_HOST, PROTON_DATA_CREDENTIAL_HOST } from '../constants';
+import { getBridgeAuthState } from './bridge';
+import type { BridgeAuthStatePayload } from './bridge';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail' | 'skip';
 
@@ -41,6 +43,9 @@ export interface DoctorOptions {
 export interface DoctorReport {
   ok: boolean;
   summary: Record<DoctorStatus, number>;
+  authState: BridgeAuthStatePayload;
+  canAttemptTransfer: boolean;
+  canAttemptLiveCanary: boolean;
   checks: DoctorCheck[];
 }
 
@@ -295,7 +300,25 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   const summary = summarize(checks);
   const ok = summary.fail === 0 && (!normalizedOptions.strict || summary.warn === 0);
-  return { ok, summary, checks };
+  const authState = await getBridgeAuthState({
+    username: normalizedOptions.username,
+    credentialProvider,
+    dataCredentialProvider,
+    dataCredentialHost,
+  });
+  const canAttemptTransfer = ok && authState.state === 'ready';
+  const canAttemptLiveCanary = ok && (
+    authState.state === 'ready' ||
+    authState.state === 'login_available'
+  );
+  return {
+    ok,
+    summary,
+    authState,
+    canAttemptTransfer,
+    canAttemptLiveCanary,
+    checks,
+  };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
@@ -314,6 +337,10 @@ export function formatDoctorReport(report: DoctorReport): string {
       if (!check.remediation) return [row];
       return [row, `       ${chalk.dim(check.remediation)}`];
     }),
+    '',
+    `Auth state: ${report.authState.state}`,
+    `Transfer: ${report.canAttemptTransfer ? 'ready' : 'blocked'}`,
+    `Live canary: ${report.canAttemptLiveCanary ? 'ready' : 'blocked'}`,
     '',
     `Summary: ${report.summary.pass} pass, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.skip} skip`,
   ];

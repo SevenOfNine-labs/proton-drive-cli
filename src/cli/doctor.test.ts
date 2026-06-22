@@ -1,4 +1,7 @@
 const mockCreateProvider = jest.fn();
+const mockLoadSession = jest.fn();
+const mockValidateSession = jest.fn();
+const mockKeyPasswordVerify = jest.fn();
 const mockNormalizeProviderName = jest.fn((name: string) => {
   const normalized = name.trim().toLowerCase();
   if (normalized === 'git') return 'git-credential';
@@ -15,7 +18,17 @@ jest.mock('../credentials', () => ({
 jest.mock('../auth/session', () => ({
   SessionManager: {
     getSessionFilePath: jest.fn(() => '/tmp/proton-session.json'),
+    loadSession: mockLoadSession,
+    validateSession: mockValidateSession,
   },
+}));
+
+jest.mock('../auth/key-password-store', () => ({
+  createKeyPasswordStore: jest.fn(() => ({
+    provider: 'git-credential',
+    host: 'proton-drive-key.proton-lfs-cli.local',
+    verify: mockKeyPasswordVerify,
+  })),
 }));
 
 jest.mock('fs-extra', () => ({
@@ -76,6 +89,9 @@ describe('runDoctor', () => {
     delete process.env.PROTON_DATA_PASSWORD;
     delete process.env.PROTON_SECOND_FACTOR_CODE;
     mockCreateProvider.mockReturnValue(mockProvider());
+    mockLoadSession.mockResolvedValue(mockSession());
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
     mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin || target === sessionFile);
     (mockFs.stat as unknown as jest.Mock).mockResolvedValue({ mode: 0o600 });
     mockFs.readJson.mockResolvedValue(mockSession());
@@ -97,6 +113,11 @@ describe('runDoctor', () => {
     expect(report.ok).toBe(true);
     expect(report.summary.fail).toBe(0);
     expect(report.summary.pass).toBe(5);
+    expect(report.authState.state).toBe('ready');
+    expect(report.authState.willAttemptNetwork).toBe(false);
+    expect(report.canAttemptTransfer).toBe(true);
+    expect(report.canAttemptLiveCanary).toBe(true);
+    expect(mockValidateSession).toHaveBeenCalledWith(expect.objectContaining({ uid: 'uid-1' }), false);
     expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', { host: 'proton.me' });
     expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
       host: 'proton-data.proton-lfs-cli.local',
@@ -141,6 +162,7 @@ describe('runDoctor', () => {
 
   it('warns but passes when no saved session exists', async () => {
     mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin);
+    mockLoadSession.mockResolvedValue(null);
 
     const report = await runDoctor({
       credentialProvider: 'git-credential',
@@ -149,6 +171,9 @@ describe('runDoctor', () => {
     });
 
     expect(report.ok).toBe(true);
+    expect(report.authState.state).toBe('login_available');
+    expect(report.canAttemptTransfer).toBe(false);
+    expect(report.canAttemptLiveCanary).toBe(true);
     expect(report.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'session-file',
@@ -159,6 +184,7 @@ describe('runDoctor', () => {
 
   it('strict mode treats warnings as a non-zero result', async () => {
     mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin);
+    mockLoadSession.mockResolvedValue(null);
 
     const report = await runDoctor({
       credentialProvider: 'git-credential',
@@ -169,6 +195,24 @@ describe('runDoctor', () => {
 
     expect(report.ok).toBe(false);
     expect(report.summary.warn).toBe(1);
+    expect(report.canAttemptTransfer).toBe(false);
+    expect(report.canAttemptLiveCanary).toBe(false);
+  });
+
+  it('reports transfer blockers from the shared auth-state gate', async () => {
+    mockFs.readJson.mockResolvedValue(mockSession(2));
+    mockLoadSession.mockResolvedValue(mockSession(2));
+
+    const report = await runDoctor({
+      credentialProvider: 'git-credential',
+      driveCliBin,
+      sessionFile,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.authState.state).toBe('needs_data_password');
+    expect(report.canAttemptTransfer).toBe(false);
+    expect(report.canAttemptLiveCanary).toBe(false);
   });
 
   it('fails when legacy secret environment variables are set', async () => {
@@ -215,5 +259,8 @@ describe('runDoctor', () => {
     });
 
     expect(formatDoctorReport(report)).not.toContain('secret-password');
+    expect(formatDoctorReport(report)).toContain('Auth state: ready');
+    expect(formatDoctorReport(report)).toContain('Transfer: ready');
+    expect(formatDoctorReport(report)).toContain('Live canary: ready');
   });
 });
