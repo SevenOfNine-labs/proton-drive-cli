@@ -10,6 +10,7 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
+import { createReadStream, createWriteStream } from 'fs';
 import * as path from 'path';
 import { Readable, Writable } from 'stream';
 import { jwtDecode } from 'jwt-decode';
@@ -40,6 +41,7 @@ import { createProvider, normalizeProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
 import type { AuthMode, SessionCredentials } from '../types/auth';
+import { createRetryConfig, retryWithBackoff, type RetryConfig } from '../utils/retry';
 
 /**
  * Write JSON response to stdout (single line, no extra output)
@@ -443,6 +445,65 @@ async function handleAuthStateCommand(request: BridgeRequest): Promise<void> {
 // Singleton change token cache instance
 const changeTokenCache = new ChangeTokenCache();
 
+export const BRIDGE_TRANSFER_RETRY_CONFIG = createRetryConfig({
+  maxAttempts: 3,
+  initialDelayMs: 1_000,
+  maxDelayMs: 5_000,
+});
+
+export async function uploadFileWithRetry(
+  client: ProtonDriveClient,
+  parentUid: string,
+  fileName: string,
+  filePath: string,
+  expectedSize: number,
+  retryConfig: RetryConfig = BRIDGE_TRANSFER_RETRY_CONFIG,
+  context = `Bridge upload ${fileName}`
+): Promise<string> {
+  const result = await retryWithBackoff(async () => {
+    const fileStream = createReadStream(filePath);
+    try {
+      const webStream = Readable.toWeb(fileStream) as ReadableStream;
+      const uploader = await client.getFileUploader(parentUid, fileName, {
+        mediaType: 'application/octet-stream',
+        expectedSize,
+      });
+      const ctrl = await uploader.uploadFromStream(webStream, []);
+      return await ctrl.completion();
+    } catch (error) {
+      fileStream.destroy();
+      throw error;
+    }
+  }, retryConfig, context);
+
+  return result.nodeUid;
+}
+
+export async function downloadFileWithRetry(
+  client: ProtonDriveClient,
+  nodeUid: string,
+  outputPath: string,
+  retryConfig: RetryConfig = BRIDGE_TRANSFER_RETRY_CONFIG,
+  context = `Bridge download ${nodeUid}`
+): Promise<number> {
+  await retryWithBackoff(async () => {
+    const fileStream = createWriteStream(outputPath);
+    try {
+      const webStream = Writable.toWeb(fileStream) as WritableStream;
+      const downloader = await client.getFileDownloader(nodeUid);
+      const ctrl = downloader.downloadToStream(webStream);
+      await ctrl.completion();
+    } catch (error) {
+      fileStream.destroy();
+      await fs.rm(outputPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }, retryConfig, context);
+
+  const stat = await fs.stat(outputPath);
+  return stat.size;
+}
+
 async function handleUploadCommand(request: BridgeRequest): Promise<void> {
   const { oid, path: filePath, storageBase = 'LFS' } = request;
 
@@ -475,6 +536,22 @@ async function handleUploadCommand(request: BridgeRequest): Promise<void> {
     const client = await getInitializedClient(request);
     await ensureBaseDir(client, storageBase);
 
+    const existingNodeUid = await findFileByOid(client, storageBase, oid);
+    if (existingNodeUid) {
+      logger.info(`Upload skipped for ${oid} (remote object already exists)`);
+      await changeTokenCache.recordUpload(oid, filePath);
+      await changeTokenCache.save();
+      writeSuccess({
+        oid,
+        fileId: existingNodeUid,
+        revisionId: '',
+        uploaded: false,
+        cached: false,
+        deduplicated: true,
+      });
+      return;
+    }
+
     // Ensure prefix folder exists (first 2 chars of OID)
     const prefix = oid.substring(0, 2).toLowerCase();
     await ensureOidFolder(client, `/${storageBase}`, prefix);
@@ -492,15 +569,15 @@ async function handleUploadCommand(request: BridgeRequest): Promise<void> {
     const parentUid = await ensureFolderPath(client, parentPath);
     const stat = await fs.stat(filePath);
 
-    const fileStream = (await import('fs')).createReadStream(filePath);
-    const webStream = Readable.toWeb(fileStream) as ReadableStream;
-
-    const uploader = await client.getFileUploader(parentUid, fileName, {
-      mediaType: 'application/octet-stream',
-      expectedSize: stat.size,
-    });
-    const ctrl = await uploader.uploadFromStream(webStream, []);
-    const { nodeUid } = await ctrl.completion();
+    const nodeUid = await uploadFileWithRetry(
+      client,
+      parentUid,
+      fileName,
+      filePath,
+      stat.size,
+      BRIDGE_TRANSFER_RETRY_CONFIG,
+      `Bridge upload ${oid}`
+    );
 
     // Record successful upload in change token cache
     await changeTokenCache.recordUpload(oid, filePath);
@@ -538,20 +615,18 @@ async function handleDownloadCommand(request: BridgeRequest): Promise<void> {
       return;
     }
 
-    // Download via SDK
-    const downloader = await client.getFileDownloader(nodeUid);
-    const fileStream = (await import('fs')).createWriteStream(outputPath);
-    const webStream = Writable.toWeb(fileStream) as WritableStream;
-
-    const ctrl = downloader.downloadToStream(webStream);
-    await ctrl.completion();
-
-    const stat = await fs.stat(outputPath);
+    const size = await downloadFileWithRetry(
+      client,
+      nodeUid,
+      outputPath,
+      BRIDGE_TRANSFER_RETRY_CONFIG,
+      `Bridge download ${oid}`
+    );
 
     writeSuccess({
       oid,
       outputPath,
-      size: stat.size,
+      size,
       downloaded: true,
     });
   } catch (error: any) {

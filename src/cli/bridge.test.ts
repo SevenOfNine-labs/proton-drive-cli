@@ -1,3 +1,6 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 const mockCreateSDKClient = jest.fn();
 const mockCredentialResolve = jest.fn();
 const mockLoadSession = jest.fn();
@@ -44,11 +47,21 @@ jest.mock('../auth/key-password-store', () => ({
   })),
 }));
 
-import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError, getBridgeAuthState, getInitializedClient } from './bridge';
+import {
+  validateOid,
+  validateLocalPath,
+  errorToStatusCode,
+  formatCaptchaError,
+  getBridgeAuthState,
+  getInitializedClient,
+  uploadFileWithRetry,
+  downloadFileWithRetry,
+} from './bridge';
 import { BridgeRequest } from '../bridge/validators';
 import { createProvider } from '../credentials';
 import { ErrorCode, CaptchaError } from '../errors/types';
 import type { SessionCredentials } from '../types/auth';
+import { createRetryConfig } from '../utils/retry';
 
 const mockCreateProvider = createProvider as jest.MockedFunction<typeof createProvider>;
 
@@ -806,5 +819,108 @@ describe('getInitializedClient', () => {
       allowLogin: true,
       appVersion: undefined,
     });
+  });
+});
+
+describe('bridge transfer retry helpers', () => {
+  const retryConfig = createRetryConfig({
+    initialDelayMs: 1,
+    maxDelayMs: 1,
+  });
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-transfer-retry-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('retries transient upload completion failures with a fresh uploader', async () => {
+    const sourcePath = path.join(tmpDir, 'object.bin');
+    await fs.writeFile(sourcePath, 'retry-upload');
+    let attempts = 0;
+    const client = {
+      getFileUploader: jest.fn(async () => ({
+        uploadFromStream: jest.fn(async () => ({
+          completion: jest.fn(async () => {
+            attempts += 1;
+            if (attempts === 1) {
+              throw { response: { status: 503 } };
+            }
+            return { nodeUid: 'node-uploaded' };
+          }),
+        })),
+      })),
+    };
+
+    await expect(uploadFileWithRetry(
+      client as any,
+      'parent-uid',
+      'object.bin',
+      sourcePath,
+      'retry-upload'.length,
+      retryConfig,
+      'test upload'
+    )).resolves.toBe('node-uploaded');
+
+    expect(client.getFileUploader).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry permanent upload failures', async () => {
+    const sourcePath = path.join(tmpDir, 'object.bin');
+    await fs.writeFile(sourcePath, 'permanent-upload');
+    const client = {
+      getFileUploader: jest.fn(async () => ({
+        uploadFromStream: jest.fn(async () => ({
+          completion: jest.fn(async () => {
+            throw { response: { status: 409 } };
+          }),
+        })),
+      })),
+    };
+
+    await expect(uploadFileWithRetry(
+      client as any,
+      'parent-uid',
+      'object.bin',
+      sourcePath,
+      'permanent-upload'.length,
+      retryConfig,
+      'test upload permanent'
+    )).rejects.toMatchObject({ response: { status: 409 } });
+
+    expect(client.getFileUploader).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries transient download failures and removes partial output', async () => {
+    const outputPath = path.join(tmpDir, 'download.bin');
+    let attempts = 0;
+    const client = {
+      getFileDownloader: jest.fn(async () => ({
+        downloadToStream: jest.fn(() => ({
+          completion: jest.fn(async () => {
+            attempts += 1;
+            if (attempts === 1) {
+              await fs.writeFile(outputPath, 'partial');
+              throw { response: { status: 503 } };
+            }
+            await fs.writeFile(outputPath, 'complete');
+          }),
+        })),
+      })),
+    };
+
+    await expect(downloadFileWithRetry(
+      client as any,
+      'node-uid',
+      outputPath,
+      retryConfig,
+      'test download'
+    )).resolves.toBe('complete'.length);
+
+    await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('complete');
+    expect(client.getFileDownloader).toHaveBeenCalledTimes(2);
   });
 });

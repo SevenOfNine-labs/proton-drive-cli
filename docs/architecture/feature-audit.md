@@ -71,8 +71,8 @@ to stdout. It is used by `proton-lfs-cli` and must keep stdout machine-readable.
 | `auth` | Full SRP login or provider-backed login. | May contact Proton and create session. | Beta | `src/cli/bridge.test.ts`, `src/cli/e2e.test.ts`, auth tests. |
 | `auth-state` | Offline readiness inspection. | Must not resolve credentials, refresh, or contact Proton. | Stable | `src/cli/bridge.test.ts`. |
 | `init` | Ensure storage base folder exists. | Uses existing session/unlock material; `allowLogin=false` from root. | Beta | Root mocked E2E and `src/cli/bridge.test.ts`. |
-| `upload` | Store object at `/LFS/aa/bb/<oid>`. | Existing session only in adapter path. | Beta | Root mocked E2E, bridge tests, change-token tests. |
-| `download` | Retrieve object by OID to local output path. | Existing session only in adapter path. | Beta | Root mocked E2E, bridge tests. |
+| `upload` | Store object at `/LFS/aa/bb/<oid>`. | Existing session only in adapter path. | Beta | Retries transient SDK failures and skips already-present remote OIDs. |
+| `download` | Retrieve object by OID to local output path. | Existing session only in adapter path. | Beta | Retries transient SDK failures and removes partial output before retry. |
 | `list` | List folder contents. | Existing session or explicit CLI auth path. | Beta | Bridge tests and SDK behavioral tests. |
 | `exists` | Return OID existence. | Existing session only in adapter path. | Beta | Root adapter tests and mocked E2E. |
 | `delete` | Delete OID object. | Existing session only in adapter path. | Beta | Bridge helper tests. |
