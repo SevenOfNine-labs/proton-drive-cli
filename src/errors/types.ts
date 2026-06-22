@@ -8,6 +8,7 @@ export enum ErrorCode {
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
   TWO_FACTOR_REQUIRED = 'TWO_FACTOR_REQUIRED',
   DATA_PASSWORD_REQUIRED = 'DATA_PASSWORD_REQUIRED',
+  KEY_PASSWORD_REQUIRED = 'KEY_PASSWORD_REQUIRED',
 
   // Network errors
   NETWORK_ERROR = 'NETWORK_ERROR',
@@ -81,6 +82,9 @@ export class AppError extends Error {
 
       case ErrorCode.DATA_PASSWORD_REQUIRED:
         return 'Mailbox/data password required for this two-password Proton account.';
+
+      case ErrorCode.KEY_PASSWORD_REQUIRED:
+        return 'Stored browser-fork key password is missing or unreadable.';
 
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
@@ -161,6 +165,9 @@ export class AppError extends Error {
 
       case ErrorCode.DATA_PASSWORD_REQUIRED:
         return 'Provide the mailbox/data password for key decryption';
+
+      case ErrorCode.KEY_PASSWORD_REQUIRED:
+        return 'Run browser login again, or provide an explicit mailbox/data password source';
 
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.TIMEOUT:

@@ -4,6 +4,9 @@ export const PROTON_CREDENTIAL_HOST = 'proton.me';
 /** Separate credential host/key for two-password mailbox/data password entries. */
 export const PROTON_DATA_CREDENTIAL_HOST = 'proton-data.proton-lfs-cli.local';
 
+/** Separate credential host/key for browser-fork derived user key passwords. */
+export const PROTON_KEY_PASSWORD_CREDENTIAL_HOST = 'proton-drive-key.proton-lfs-cli.local';
+
 /** Third-party Proton Drive API client identifier. */
 export const DEFAULT_PROTON_APP_VERSION = 'external-drive-proton-lfs-cli@0.1.2';
 

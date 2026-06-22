@@ -35,6 +35,40 @@ export class DriveCryptoService {
   async initialize(mailboxPassword: string): Promise<void> {
     // Normalize password (Proton uses NFC normalization)
     const normalizedPassword = mailboxPassword.normalize('NFC');
+    await this.initializeWithUnlockMaterial({
+      kind: 'mailbox-password',
+      password: normalizedPassword,
+    });
+  }
+
+  /**
+   * Initialize crypto service with Proton's derived user key password.
+   *
+   * Browser session-fork auth returns this value directly. It is not the raw
+   * mailbox password and must not be salted/derived again.
+   */
+  async initializeWithUserKeyPassword(userKeyPassword: string): Promise<void> {
+    if (!userKeyPassword) {
+      throw new Error('User key password is required');
+    }
+    await this.initializeWithUnlockMaterial({
+      kind: 'user-key-password',
+      keyPassword: userKeyPassword,
+    });
+  }
+
+  private async initializeWithUnlockMaterial(material: {
+    kind: 'mailbox-password';
+    password: string;
+  } | {
+    kind: 'user-key-password';
+    keyPassword: string;
+  }): Promise<void> {
+    this.userKeys.clear();
+    this.addressKeys.clear();
+    this.addresses.clear();
+    this.shareContexts.clear();
+    this.nodeContexts.clear();
 
     // Get key salts from API (or cache)
     const keySalts = await this.userApi.getKeySalts();
@@ -53,25 +87,8 @@ export class DriveCryptoService {
 
     for (const key of user.Keys) {
       try {
-        const salt = saltMap.get(key.ID);
-
-        // In single-password mode, always try raw password first
-        try {
-          const decryptedKey = await this.decryptPrivateKeyWithPassphrase(key.PrivateKey, normalizedPassword);
-          this.userKeys.set(key.ID, decryptedKey);
-          continue;
-        } catch (rawPassError) {
-          // Raw password failed, try with salt derivation
-        }
-
-        // If raw password failed and we have a salt, try deriving passphrase
-        if (salt) {
-          const passphrase = await deriveKeyPassphrase(normalizedPassword, salt);
-          const decryptedKey = await this.decryptPrivateKeyWithPassphrase(key.PrivateKey, passphrase);
-          this.userKeys.set(key.ID, decryptedKey);
-        } else {
-          throw new Error('No salt available and raw password failed');
-        }
+        const decryptedKey = await this.decryptUserKey(key.PrivateKey, saltMap.get(key.ID), material);
+        this.userKeys.set(key.ID, decryptedKey);
       } catch (error) {
         logger.warn(`Failed to decrypt user key: ${error}`);
       }
@@ -105,17 +122,11 @@ export class DriveCryptoService {
             }
             if (!passphrase) {
               // No user key could decrypt the token — try password fallback
-              const salt = saltMap.get(key.ID);
-              passphrase = salt
-                ? await deriveKeyPassphrase(normalizedPassword, salt)
-                : normalizedPassword;
+              passphrase = await this.getFallbackKeyPassphrase(saltMap.get(key.ID), material);
             }
           } else {
             // Fall back to password-based decryption
-            const salt = saltMap.get(key.ID);
-            passphrase = salt
-              ? await deriveKeyPassphrase(normalizedPassword, salt)
-              : normalizedPassword;
+            passphrase = await this.getFallbackKeyPassphrase(saltMap.get(key.ID), material);
           }
 
           // Try to decrypt the key
@@ -137,6 +148,51 @@ export class DriveCryptoService {
     }
 
     logger.debug(`Decrypted ${this.userKeys.size} user key(s) and ${this.addressKeys.size} address key(s)`);
+  }
+
+  private async decryptUserKey(
+    armoredKey: string,
+    salt: string | null | undefined,
+    material: {
+      kind: 'mailbox-password';
+      password: string;
+    } | {
+      kind: 'user-key-password';
+      keyPassword: string;
+    }
+  ): Promise<openpgp.PrivateKey> {
+    if (material.kind === 'user-key-password') {
+      return this.decryptPrivateKeyWithPassphrase(armoredKey, material.keyPassword);
+    }
+
+    // In single-password mode, always try raw password first.
+    try {
+      return await this.decryptPrivateKeyWithPassphrase(armoredKey, material.password);
+    } catch {
+      // Raw password failed, try SRP-compatible salt derivation below.
+    }
+
+    if (!salt) {
+      throw new Error('No salt available and raw password failed');
+    }
+    const passphrase = await deriveKeyPassphrase(material.password, salt);
+    return this.decryptPrivateKeyWithPassphrase(armoredKey, passphrase);
+  }
+
+  private async getFallbackKeyPassphrase(
+    salt: string | null | undefined,
+    material: {
+      kind: 'mailbox-password';
+      password: string;
+    } | {
+      kind: 'user-key-password';
+      keyPassword: string;
+    }
+  ): Promise<string> {
+    if (material.kind === 'user-key-password') {
+      return material.keyPassword;
+    }
+    return salt ? deriveKeyPassphrase(material.password, salt) : material.password;
   }
 
   /**

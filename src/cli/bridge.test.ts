@@ -3,6 +3,7 @@ const mockCredentialResolve = jest.fn();
 const mockLoadSession = jest.fn();
 const mockValidateSession = jest.fn();
 const mockIsSessionForUser = jest.fn();
+const mockKeyPasswordVerify = jest.fn();
 
 jest.mock('../sdk/client', () => ({
   createSDKClient: mockCreateSDKClient,
@@ -21,6 +22,14 @@ jest.mock('../auth/session', () => ({
     validateSession: mockValidateSession,
     isSessionForUser: mockIsSessionForUser,
   },
+}));
+
+jest.mock('../auth/key-password-store', () => ({
+  createKeyPasswordStore: jest.fn(() => ({
+    provider: 'git-credential',
+    host: 'proton-drive-key.proton-lfs-cli.local',
+    verify: mockKeyPasswordVerify,
+  })),
 }));
 
 import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError, getBridgeAuthState, getInitializedClient } from './bridge';
@@ -214,7 +223,9 @@ describe('getBridgeAuthState', () => {
     mockCreateProvider.mockClear();
     mockLoadSession.mockReset();
     mockValidateSession.mockReset();
+    mockKeyPasswordVerify.mockReset();
     mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
   });
 
   it('reports missing login without resolving credentials or creating a client', async () => {
@@ -297,7 +308,7 @@ describe('getBridgeAuthState', () => {
     expect(mockCreateSDKClient).not.toHaveBeenCalled();
   });
 
-  it('requires a data password source for browser-fork sessions without persisted key passwords', async () => {
+  it('requires a key password source for browser-fork sessions without persisted key passwords', async () => {
     mockLoadSession.mockResolvedValue(makeSession({
       passwordMode: 1,
       authMode: 'browser-fork',
@@ -308,19 +319,75 @@ describe('getBridgeAuthState', () => {
     const state = await getBridgeAuthState({});
 
     expect(state).toMatchObject({
-      state: 'needs_data_password',
+      state: 'needs_key_password',
       hasSession: true,
       sessionValid: true,
       passwordMode: 1,
       authMode: 'browser-fork',
       keyPasswordPersisted: false,
+      keyPasswordAvailable: false,
       hasExplicitDataPassword: false,
       willAttemptNetwork: false,
     });
-    expect(state.actions[0]).toContain('Browser-fork sessions');
+    expect(state.actions[0]).toContain('stored key password');
+    expect(mockKeyPasswordVerify).not.toHaveBeenCalled();
     expect(mockCreateProvider).not.toHaveBeenCalled();
     expect(mockCredentialResolve).not.toHaveBeenCalled();
     expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('reports ready for browser-fork sessions with readable stored key passwords', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+      keyPasswordProvider: 'git-credential',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    }));
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+      keyPasswordAvailable: true,
+      keyPasswordProvider: 'git-credential',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+      willAttemptNetwork: false,
+    });
+    expect(mockKeyPasswordVerify).toHaveBeenCalledWith('session-uid');
+    expect(mockCreateProvider).not.toHaveBeenCalled();
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+    expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('requires key password recovery when a persisted browser-fork secret is unreadable', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      passwordMode: 1,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+      keyPasswordProvider: 'git-credential',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    }));
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(false);
+
+    const state = await getBridgeAuthState({});
+
+    expect(state).toMatchObject({
+      state: 'needs_key_password',
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+      keyPasswordAvailable: false,
+      willAttemptNetwork: false,
+    });
+    expect(mockKeyPasswordVerify).toHaveBeenCalledWith('session-uid');
   });
 
   it('accepts a data password source for browser-fork sessions', async () => {

@@ -88,16 +88,17 @@ function runGitCredential(
 /**
  * Resolve credentials using `git credential fill`.
  */
-export async function gitCredentialFill(host?: string): Promise<GitCredential> {
+export async function gitCredentialFill(host?: string, username?: string): Promise<GitCredential> {
   const input = formatCredentialInput({
     protocol: DEFAULT_PROTOCOL,
     host: host || PROTON_CREDENTIAL_HOST,
+    username,
   });
 
   const output = await runGitCredential('fill', input);
   const parsed = parseCredentialOutput(output);
 
-  if (!parsed.username || !parsed.password) {
+  if (!(parsed.username || username) || !parsed.password) {
     throw new Error(
       'git credential fill did not return username and password. ' +
       'Ensure a credential helper is configured (e.g., git-credential-manager).',
@@ -107,7 +108,7 @@ export async function gitCredentialFill(host?: string): Promise<GitCredential> {
   return {
     protocol: parsed.protocol || DEFAULT_PROTOCOL,
     host: parsed.host || host || PROTON_CREDENTIAL_HOST,
-    username: parsed.username,
+    username: parsed.username || username!,
     password: parsed.password,
   };
 }
@@ -148,7 +149,7 @@ export class GitCredentialProvider implements CredentialProvider {
   }
 
   async resolve(options?: { username?: string }): Promise<Credentials> {
-    const cred = await gitCredentialFill(this.host);
+    const cred = await gitCredentialFill(this.host, options?.username);
     return { username: options?.username || cred.username, password: cred.password };
   }
 

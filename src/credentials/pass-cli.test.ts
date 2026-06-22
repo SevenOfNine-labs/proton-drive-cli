@@ -218,6 +218,32 @@ describe('searchProtonEntry', () => {
     expect(entry!.email).toBe('user@proton.me');
   });
 
+  it('filters matches by exact requested username', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([
+        makePassCliItem({ title: 'Other Proton', email: 'other@proton.me', password: 'other', urls: ['https://proton.me'] }),
+        makePassCliItem({ title: 'Requested Proton', email: 'user@proton.me', password: 'pass', urls: ['https://proton.me'] }),
+      ]) },
+    );
+
+    const entry = await searchProtonEntry(undefined, 'user@proton.me');
+    expect(entry).not.toBeNull();
+    expect(entry!.email).toBe('user@proton.me');
+    expect(entry!.password).toBe('pass');
+  });
+
+  it('returns null when host matches but requested username does not', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([
+        makePassCliItem({ title: 'Proton', email: 'other@proton.me', password: 'pass', urls: ['https://proton.me'] }),
+      ]) },
+    );
+
+    await expect(searchProtonEntry(undefined, 'user@proton.me')).resolves.toBeNull();
+  });
+
   it('searches subsequent vaults if first has no match', async () => {
     simulateSequentialCalls(
       // listVaults
@@ -319,7 +345,21 @@ describe('PassCliProvider', () => {
     expect(creds.username).toBe('agent.user');
   });
 
-  it('resolve uses username from options over entry', async () => {
+  it('resolve requires username options to match a vault entry', async () => {
+    simulateSequentialCalls(
+      { stdout: '' },
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([
+        makePassCliItem({ title: 'Proton', email: 'override@proton.me', password: 'pass', urls: ['https://proton.me'] }),
+      ]) },
+    );
+
+    const provider = new PassCliProvider();
+    const creds = await provider.resolve({ username: 'override@proton.me' });
+    expect(creds.username).toBe('override@proton.me');
+  });
+
+  it('resolve throws when username options do not match a vault entry', async () => {
     simulateSequentialCalls(
       { stdout: '' },
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
@@ -329,8 +369,9 @@ describe('PassCliProvider', () => {
     );
 
     const provider = new PassCliProvider();
-    const creds = await provider.resolve({ username: 'override@proton.me' });
-    expect(creds.username).toBe('override@proton.me');
+    await expect(provider.resolve({ username: 'override@proton.me' })).rejects.toThrow(
+      'No Proton login entry found',
+    );
   });
 
   it('resolve throws when pass-cli is not logged in', async () => {
@@ -352,6 +393,10 @@ describe('PassCliProvider', () => {
 
   it('store calls pass-cli item create with vault name', async () => {
     simulateSequentialCalls(
+      // searchProtonEntry -> listVaults
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      // searchProtonEntry -> searchVault
+      { stdout: wrapItems([]) },
       // listVaults
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
       // item create
@@ -360,15 +405,92 @@ describe('PassCliProvider', () => {
     const provider = new PassCliProvider();
     await provider.store('user@proton.me', 'password123');
 
-    // Second call should be the item create
-    const createCall = mockExecFile.mock.calls[1];
+    const createCall = mockExecFile.mock.calls[3];
     expect(createCall[1]).toEqual([
       'item', 'create', 'login',
       '--vault-name', 'Personal',
       '--title', 'Proton',
       '--email', 'user@proton.me',
+      '--username', 'user@proton.me',
       '--password', 'password123',
       '--url', 'https://proton.me',
+    ]);
+  });
+
+  it('store creates custom-host entries with host-specific title and URL', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([]) },
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: '' },
+    );
+
+    const provider = new PassCliProvider('proton-drive-key.proton-lfs-cli.local');
+    await provider.store('uid-123', 'derived-key-password');
+
+    const createCall = mockExecFile.mock.calls[3];
+    expect(createCall[1]).toEqual([
+      'item', 'create', 'login',
+      '--vault-name', 'Personal',
+      '--title', 'Proton proton-drive-key.proton-lfs-cli.local',
+      '--email', 'uid-123',
+      '--username', 'uid-123',
+      '--password', 'derived-key-password',
+      '--url', 'https://proton-drive-key.proton-lfs-cli.local',
+    ]);
+  });
+
+  it('store updates an existing matching host and username entry', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([
+        makePassCliItem({
+          title: 'Proton proton-drive-key.proton-lfs-cli.local',
+          email: 'uid-123',
+          password: 'old-key-password',
+          urls: ['https://proton-drive-key.proton-lfs-cli.local'],
+        }),
+      ]) },
+      { stdout: '' },
+    );
+
+    const provider = new PassCliProvider('proton-drive-key.proton-lfs-cli.local');
+    await provider.store('uid-123', 'new-key-password');
+
+    const updateCall = mockExecFile.mock.calls[2];
+    expect(updateCall[1]).toEqual([
+      'item', 'update',
+      '--share-id', 'share-id',
+      '--item-id', 'item-id',
+      '--field', 'username=uid-123',
+      '--field', 'email=uid-123',
+      '--field', 'password=new-key-password',
+      '--field', 'url=https://proton-drive-key.proton-lfs-cli.local',
+    ]);
+  });
+
+  it('remove deletes an existing matching host and username entry by metadata', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([
+        makePassCliItem({
+          title: 'Proton proton-drive-key.proton-lfs-cli.local',
+          email: 'uid-123',
+          password: 'key-password',
+          urls: ['https://proton-drive-key.proton-lfs-cli.local'],
+        }),
+      ]) },
+      { stdout: '' },
+    );
+
+    const provider = new PassCliProvider('proton-drive-key.proton-lfs-cli.local');
+    await provider.remove('uid-123');
+
+    const deleteCall = mockExecFile.mock.calls[2];
+    expect(deleteCall[1]).toEqual([
+      'item', 'delete',
+      '--share-id', 'share-id',
+      '--item-id', 'item-id',
     ]);
   });
 

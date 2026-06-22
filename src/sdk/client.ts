@@ -21,8 +21,10 @@ import { SRPModuleAdapter } from './srpAdapter';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { logger } from '../utils/logger';
 import { AppError, ErrorCode } from '../errors/types';
+import type { SessionCredentials } from '../types/auth';
 
 export interface CreateSDKClientOptions {
   username?: string;
@@ -98,6 +100,41 @@ function getKeyUnlockPassword(
   return password;
 }
 
+async function getStoredBrowserForkKeyPassword(session: SessionCredentials): Promise<string> {
+  const store = createKeyPasswordStore({
+    provider: session.keyPasswordProvider,
+    host: session.keyPasswordHost,
+  });
+  const keyPassword = await store.load(session.uid);
+  if (!keyPassword) {
+    throw new AppError(
+      'Stored browser-fork key password is missing or unreadable',
+      ErrorCode.KEY_PASSWORD_REQUIRED,
+      {
+        authMode: session.authMode,
+        keyPasswordProvider: store.provider,
+        keyPasswordHost: store.host,
+      },
+      true,
+    );
+  }
+  return keyPassword;
+}
+
+async function initializeCryptoForSession(
+  driveCrypto: DriveCryptoService,
+  options: NormalizedCreateSDKClientOptions,
+  session: SessionCredentials | null,
+): Promise<void> {
+  if (session?.authMode === 'browser-fork' && session.keyPasswordPersisted && !options.dataPasswordExplicit) {
+    const keyPassword = await getStoredBrowserForkKeyPassword(session);
+    await driveCrypto.initializeWithUserKeyPassword(keyPassword);
+    return;
+  }
+
+  await driveCrypto.initialize(getKeyUnlockPassword(options, session?.passwordMode));
+}
+
 /**
  * Create an authenticated ProtonDriveClient with all adapters.
  *
@@ -164,7 +201,7 @@ export async function createSDKClient(
   // stop here; do not convert a bad data password into another SRP login.
   if (sessionReady) {
     try {
-      await driveCrypto.initialize(getKeyUnlockPassword(options, session?.passwordMode));
+      await initializeCryptoForSession(driveCrypto, options, session);
       logger.debug('SDK client: crypto initialized from session');
     } catch (cryptoErr) {
       logger.warn(`SDK client: crypto init failed (${cryptoErr instanceof Error ? cryptoErr.message : cryptoErr}); refusing automatic re-login`);

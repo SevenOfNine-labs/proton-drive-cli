@@ -72,6 +72,26 @@ describe('gitCredentialFill', () => {
     }
   });
 
+  it('uses supplied username for UID-scoped credential lookup', async () => {
+    simulateExecFile('protocol=https\nhost=custom.host\npassword=secret\n');
+
+    const result = await gitCredentialFill('custom.host', 'uid-123');
+
+    expect(result).toEqual({
+      protocol: 'https',
+      host: 'custom.host',
+      username: 'uid-123',
+      password: 'secret',
+    });
+
+    const stdinWrite = mockExecFile.mock.results[0]?.value?.stdin?.write;
+    if (stdinWrite) {
+      const input = stdinWrite.mock.calls[0][0];
+      expect(input).toContain('host=custom.host');
+      expect(input).toContain('username=uid-123');
+    }
+  });
+
   it('throws if username is missing', async () => {
     simulateExecFile('protocol=https\nhost=proton.me\npassword=secret\n');
     await expect(gitCredentialFill()).rejects.toThrow('did not return username and password');
@@ -222,6 +242,21 @@ describe('GitCredentialProvider', () => {
     const creds = await provider.resolve({ username: 'override@proton.me' });
 
     expect(creds.username).toBe('override@proton.me');
+  });
+
+  it('passes username options through to git credential fill', async () => {
+    simulateExecFile('protocol=https\nhost=custom.host\npassword=pass\n');
+
+    const provider = new GitCredentialProvider('custom.host');
+    const creds = await provider.resolve({ username: 'uid-123' });
+
+    expect(creds).toEqual({ username: 'uid-123', password: 'pass' });
+    const stdinWrite = mockExecFile.mock.results[0]?.value?.stdin?.write;
+    if (stdinWrite) {
+      const input = stdinWrite.mock.calls[0][0];
+      expect(input).toContain('host=custom.host');
+      expect(input).toContain('username=uid-123');
+    }
   });
 
   it('isAvailable returns true when fill succeeds', async () => {

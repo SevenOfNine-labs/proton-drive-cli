@@ -366,6 +366,11 @@ describe('error types', () => {
       expect(error.toUserMessage()).toContain('Two-factor authentication is required');
     });
 
+    it('should return user-friendly message for KEY_PASSWORD_REQUIRED', () => {
+      const error = new AppError('Missing key password', ErrorCode.KEY_PASSWORD_REQUIRED);
+      expect(error.toUserMessage()).toContain('Stored browser-fork key password');
+    });
+
     it('should return user-friendly message for ENCRYPTION_FAILED', () => {
       const error = new AppError('Encryption failed', ErrorCode.ENCRYPTION_FAILED);
       expect(error.toUserMessage()).toContain('Encryption failed');
@@ -396,6 +401,11 @@ describe('error types', () => {
     it('should return recovery suggestion for TWO_FACTOR_REQUIRED', () => {
       const error = new AppError('2FA required', ErrorCode.TWO_FACTOR_REQUIRED);
       expect(error.getRecoverySuggestion()).toContain('TOTP code');
+    });
+
+    it('should return recovery suggestion for KEY_PASSWORD_REQUIRED', () => {
+      const error = new AppError('Missing key password', ErrorCode.KEY_PASSWORD_REQUIRED);
+      expect(error.getRecoverySuggestion()).toContain('browser login');
     });
 
     it('should return recovery suggestion for NETWORK_ERROR', () => {

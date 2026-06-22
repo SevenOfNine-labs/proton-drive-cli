@@ -1,5 +1,7 @@
 const mockDriveCryptoInitialize = jest.fn();
+const mockDriveCryptoInitializeWithUserKeyPassword = jest.fn();
 const mockAuthLogin = jest.fn();
+const mockKeyPasswordLoad = jest.fn();
 
 jest.mock('@protontech/drive-sdk', () => ({
   ProtonDriveClient: jest.fn().mockImplementation((args) => ({ args })),
@@ -26,6 +28,15 @@ jest.mock('./srpAdapter', () => ({
 jest.mock('../crypto/drive-crypto', () => ({
   DriveCryptoService: jest.fn().mockImplementation(() => ({
     initialize: mockDriveCryptoInitialize,
+    initializeWithUserKeyPassword: mockDriveCryptoInitializeWithUserKeyPassword,
+  })),
+}));
+
+jest.mock('../auth/key-password-store', () => ({
+  createKeyPasswordStore: jest.fn(() => ({
+    provider: 'git-credential',
+    host: 'proton-drive-key.proton-lfs-cli.local',
+    load: mockKeyPasswordLoad,
   })),
 }));
 
@@ -88,6 +99,8 @@ describe('createSDKClient', () => {
     mockedSessionManager.saveSession.mockResolvedValue(undefined);
     mockedSessionManager.refreshSession.mockResolvedValue(singlePasswordSession as any);
     mockDriveCryptoInitialize.mockResolvedValue(undefined);
+    mockDriveCryptoInitializeWithUserKeyPassword.mockResolvedValue(undefined);
+    mockKeyPasswordLoad.mockResolvedValue('stored-user-key-password');
     mockAuthLogin.mockResolvedValue(singlePasswordSession);
   });
 
@@ -101,6 +114,64 @@ describe('createSDKClient', () => {
     });
 
     expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it('uses stored browser-fork key password to unlock an existing fork session', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue({
+      ...singlePasswordSession,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+      keyPasswordProvider: 'git-credential',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    } as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+
+    await createSDKClient({
+      allowLogin: false,
+    });
+
+    expect(mockKeyPasswordLoad).toHaveBeenCalledWith('uid-1');
+    expect(mockDriveCryptoInitializeWithUserKeyPassword).toHaveBeenCalledWith('stored-user-key-password');
+    expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+    expect(mockAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it('allows explicit data password to override browser-fork key password lookup', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue({
+      ...singlePasswordSession,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+    } as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+
+    await createSDKClient({
+      dataPassword: 'mailbox-password',
+      allowLogin: false,
+    });
+
+    expect(mockKeyPasswordLoad).not.toHaveBeenCalled();
+    expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('mailbox-password');
+    expect(mockDriveCryptoInitializeWithUserKeyPassword).not.toHaveBeenCalled();
+  });
+
+  it('fails existing browser-fork sessions when the stored key password is missing', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue({
+      ...singlePasswordSession,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
+    } as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+    mockKeyPasswordLoad.mockResolvedValue(undefined);
+
+    await expect(createSDKClient({
+      allowLogin: false,
+    })).rejects.toMatchObject({
+      code: ErrorCode.KEY_PASSWORD_REQUIRED,
+    });
+
+    expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+    expect(mockDriveCryptoInitializeWithUserKeyPassword).not.toHaveBeenCalled();
     expect(mockAuthLogin).not.toHaveBeenCalled();
   });
 

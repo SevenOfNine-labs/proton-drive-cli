@@ -1,6 +1,7 @@
 import { AuthApiClient } from '../api/auth';
 import { SRPClient } from './srp';
 import { SessionManager } from './session';
+import { createKeyPasswordStore } from './key-password-store';
 import { AuthResponse, SessionCredentials } from '../types/auth';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { isHttpClientError } from '../api/http-client';
@@ -94,6 +95,7 @@ export class AuthService {
         refreshToken: authResponse.RefreshToken,
         scopes: authResponse.Scopes,
         passwordMode: authResponse.PasswordMode,
+        authMode: 'srp',
         tokenExpiresAt,
         userHash: SessionManager.hashUsername(username),
       };
@@ -248,6 +250,16 @@ export class AuthService {
         } catch (error) {
           // Ignore errors from server (session might be already invalid)
           logger.warn('Could not revoke session on server (this is normal if token is expired)');
+        }
+
+        if (session.authMode === 'browser-fork' && session.keyPasswordPersisted) {
+          const keyPasswordStore = createKeyPasswordStore({
+            provider: session.keyPasswordProvider,
+            host: session.keyPasswordHost,
+          });
+          await keyPasswordStore.remove(session.uid).catch((error) => {
+            logger.warn(`Could not remove browser-fork key password: ${error instanceof Error ? error.message : error}`);
+          });
         }
       }
 

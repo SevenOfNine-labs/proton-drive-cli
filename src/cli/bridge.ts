@@ -18,6 +18,7 @@ import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
 import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { AppError, ErrorCode, CaptchaError, RateLimitError, isRateLimitError, isCaptchaError } from '../errors/types';
 import { logger, LogLevel } from '../utils/logger';
 import {
@@ -207,6 +208,7 @@ export type BridgeAuthState =
   | 'login_available'
   | 'needs_login'
   | 'needs_data_password'
+  | 'needs_key_password'
   | 'session_expired'
   | 'session_invalid'
   | 'configuration_error';
@@ -220,6 +222,9 @@ export interface BridgeAuthStatePayload {
   passwordMode?: number;
   authMode?: AuthMode;
   keyPasswordPersisted?: boolean;
+  keyPasswordAvailable?: boolean;
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
   usernamePresent: boolean;
   hasExplicitLoginPassword: boolean;
   hasExplicitDataPassword: boolean;
@@ -287,7 +292,21 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   const sessionUidPresent = Boolean(session?.uid);
   const sessionValid = session ? await SessionManager.validateSession(session, false) : false;
   const sessionExpired = isLocallyExpired(session);
-  const browserForkNeedsKeyPassword = session?.authMode === 'browser-fork' && session.keyPasswordPersisted !== true;
+  let keyPasswordAvailable = false;
+  if (session?.authMode === 'browser-fork' && session.keyPasswordPersisted) {
+    try {
+      keyPasswordAvailable = await createKeyPasswordStore({
+        provider: session.keyPasswordProvider,
+        host: session.keyPasswordHost,
+      }).verify(session.uid);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid key password store configuration';
+      errors.push(message);
+    }
+  }
+  const browserForkNeedsKeyPassword =
+    session?.authMode === 'browser-fork' &&
+    !keyPasswordAvailable;
   const actions: string[] = [];
   let state: BridgeAuthState;
 
@@ -309,8 +328,8 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
     state = 'session_invalid';
     actions.push(`Unexpected Proton password mode ${session.passwordMode}; replace the saved session before transfers.`);
   } else if (browserForkNeedsKeyPassword && !hasExplicitDataPassword && !dataCredentialProvider) {
-    state = 'needs_data_password';
-    actions.push(`Browser-fork sessions do not persist key passwords yet; configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+    state = 'needs_key_password';
+    actions.push('Browser-fork session is missing its stored key password; run browser login again or provide an explicit mailbox/data password source.');
   } else if (session.passwordMode === 2 && !hasExplicitDataPassword && !dataCredentialProvider) {
     state = 'needs_data_password';
     actions.push(`Configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
@@ -328,6 +347,9 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
     passwordMode: session?.passwordMode,
     authMode: session?.authMode,
     keyPasswordPersisted: session?.keyPasswordPersisted,
+    keyPasswordAvailable,
+    keyPasswordProvider: session?.keyPasswordProvider,
+    keyPasswordHost: session?.keyPasswordHost,
     usernamePresent: Boolean(request.username),
     hasExplicitLoginPassword,
     hasExplicitDataPassword,

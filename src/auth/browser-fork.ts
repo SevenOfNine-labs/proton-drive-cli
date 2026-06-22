@@ -6,6 +6,12 @@ import { getProtonAppVersion } from '../constants';
 import { AppError, ErrorCode } from '../errors/types';
 import { SessionForkStatusResponse, SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
+import {
+  createKeyPasswordStore,
+  KeyPasswordProviderName,
+  KeyPasswordStore,
+  normalizeKeyPasswordProvider,
+} from './key-password-store';
 import { SessionManager } from './session';
 
 export const PROTON_ACCOUNT_URL = 'https://account.proton.me';
@@ -28,6 +34,9 @@ export interface BrowserForkAuthServiceOptions {
   apiBaseUrl?: string;
   appVersion?: string;
   authApi?: BrowserForkAuthApi;
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
+  keyPasswordStore?: KeyPasswordStore;
   sleepMs?: SleepFn;
   now?: () => number;
   encryptionKeyFactory?: () => Buffer;
@@ -126,6 +135,9 @@ export function parseBrowserForkUserKeyPassword(
 export class BrowserForkAuthService {
   private readonly authApi: BrowserForkAuthApi;
   private readonly appVersion?: string;
+  private readonly keyPasswordProvider: KeyPasswordProviderName;
+  private readonly keyPasswordHost?: string;
+  private readonly keyPasswordStore?: KeyPasswordStore;
   private readonly sleepMs: SleepFn;
   private readonly now: () => number;
   private readonly encryptionKeyFactory: () => Buffer;
@@ -133,6 +145,9 @@ export class BrowserForkAuthService {
   constructor(options: BrowserForkAuthServiceOptions = {}) {
     this.appVersion = options.appVersion;
     this.authApi = options.authApi ?? new AuthApiClient(options.apiBaseUrl, options.appVersion);
+    this.keyPasswordProvider = normalizeKeyPasswordProvider(options.keyPasswordProvider);
+    this.keyPasswordHost = options.keyPasswordHost;
+    this.keyPasswordStore = options.keyPasswordStore;
     this.sleepMs = options.sleepMs ?? defaultSleepMs;
     this.now = options.now ?? Date.now;
     this.encryptionKeyFactory = options.encryptionKeyFactory ?? (() => randomBytes(32));
@@ -191,8 +206,9 @@ export class BrowserForkAuthService {
       );
     }
 
+    let userKeyPassword: string;
     try {
-      parseBrowserForkUserKeyPassword(encryptionKey, status.Payload);
+      userKeyPassword = parseBrowserForkUserKeyPassword(encryptionKey, status.Payload);
     } catch (error: unknown) {
       throw new AppError(
         `Browser fork payload could not be decrypted: ${error instanceof Error ? error.message : 'unknown error'}`,
@@ -202,6 +218,12 @@ export class BrowserForkAuthService {
       );
     }
 
+    const keyPasswordStore = this.keyPasswordStore ?? createKeyPasswordStore({
+      provider: this.keyPasswordProvider,
+      host: this.keyPasswordHost,
+    });
+    await this.persistKeyPassword(keyPasswordStore, status.UID, userKeyPassword);
+
     const session: SessionCredentials = {
       sessionId: status.UID,
       uid: status.UID,
@@ -210,14 +232,46 @@ export class BrowserForkAuthService {
       scopes: status.Scopes ?? [],
       passwordMode: status.PasswordMode ?? 2,
       authMode: 'browser-fork',
-      keyPasswordPersisted: false,
+      keyPasswordPersisted: true,
+      keyPasswordProvider: keyPasswordStore.provider,
+      keyPasswordHost: keyPasswordStore.host,
       tokenExpiresAt: resolveTokenExpiresAt(status.AccessToken, status.ExpiresIn),
     };
 
-    await SessionManager.saveSession(session);
+    try {
+      await SessionManager.saveSession(session);
+    } catch (error) {
+      await keyPasswordStore.remove(status.UID).catch(() => {});
+      throw error;
+    }
     logger.info('Browser fork authentication successful');
     logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
 
     return { session, keyPasswordAvailable: true };
+  }
+
+  private async persistKeyPassword(
+    store: KeyPasswordStore,
+    uid: string,
+    keyPassword: string
+  ): Promise<void> {
+    try {
+      await store.store(uid, keyPassword);
+      if (!await store.verify(uid)) {
+        await store.remove(uid).catch(() => {});
+        throw new Error('key password readback verification failed');
+      }
+    } catch (error: unknown) {
+      throw new AppError(
+        `Could not persist browser fork key password: ${error instanceof Error ? error.message : 'unknown error'}`,
+        ErrorCode.AUTH_FAILED,
+        {
+          authMode: 'browser-fork',
+          keyPasswordProvider: store.provider,
+          keyPasswordHost: store.host,
+        },
+        true
+      );
+    }
   }
 }

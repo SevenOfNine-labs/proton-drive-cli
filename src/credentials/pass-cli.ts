@@ -34,6 +34,10 @@ interface PassCliVault {
 }
 
 interface PassCliLoginItem {
+  id?: string;
+  shareId?: string;
+  vaultId?: string;
+  vaultName?: string;
   name: string;
   username?: string;
   email?: string;
@@ -105,6 +109,10 @@ async function searchVault(
     .map((item: any) => {
       const login = item.content?.content?.Login || {};
       return {
+        id: item.id || item.item_id || item.itemId,
+        shareId: item.share_id || item.shareId,
+        vaultId: item.vault_id || item.vaultId,
+        vaultName: vault,
         name: item.content?.title || item.name,
         username: login.username,
         email: login.email,
@@ -115,10 +123,19 @@ async function searchVault(
 }
 
 /** Search all vaults for a Proton login entry. */
-async function searchProtonEntry(urlPattern?: RegExp): Promise<PassCliLoginItem | null> {
+async function searchProtonEntry(urlPattern?: RegExp, username?: string): Promise<PassCliLoginItem | null> {
+  const normalizedUsername = username?.trim().toLowerCase();
   const vaults = await listVaults();
   for (const vault of vaults) {
     const matches = await searchVault(vault.name, urlPattern);
+    if (normalizedUsername) {
+      const exact = matches.find((entry) =>
+        entry.email?.trim().toLowerCase() === normalizedUsername ||
+        entry.username?.trim().toLowerCase() === normalizedUsername
+      );
+      if (exact) return exact;
+      continue;
+    }
     if (matches.length > 0) {
       return matches[0];
     }
@@ -128,9 +145,11 @@ async function searchProtonEntry(urlPattern?: RegExp): Promise<PassCliLoginItem 
 
 export class PassCliProvider implements CredentialProvider {
   readonly name = 'pass-cli' as const;
+  private readonly host: string;
   private readonly urlPattern: RegExp;
 
   constructor(host: string = PROTON_CREDENTIAL_HOST) {
+    this.host = host;
     this.urlPattern = credentialHostPattern(host);
   }
 
@@ -146,7 +165,7 @@ export class PassCliProvider implements CredentialProvider {
       );
     }
 
-    const entry = await searchProtonEntry(this.urlPattern);
+    const entry = await searchProtonEntry(this.urlPattern, options?.username);
     if (!entry || !entry.password) {
       throw new Error(
         'No Proton login entry found in pass-cli vaults. ' +
@@ -165,27 +184,48 @@ export class PassCliProvider implements CredentialProvider {
   }
 
   async store(username: string, password: string): Promise<void> {
+    const existing = await searchProtonEntry(this.urlPattern, username);
+    if (existing?.id && existing.shareId) {
+      await runPassCli([
+        'item', 'update',
+        '--share-id', existing.shareId,
+        '--item-id', existing.id,
+        '--field', `username=${username}`,
+        '--field', `email=${username}`,
+        '--field', `password=${password}`,
+        '--field', `url=https://${this.host}`,
+      ]);
+      return;
+    }
+
     // Use the first available vault
     const vaults = await listVaults();
     const vaultName = vaults[0]?.name || 'Personal';
     await runPassCli([
       'item', 'create', 'login',
       '--vault-name', vaultName,
-      '--title', 'Proton',
+      '--title', this.host === PROTON_CREDENTIAL_HOST ? 'Proton' : `Proton ${this.host}`,
       '--email', username,
+      '--username', username,
       '--password', password,
-      '--url', 'https://proton.me',
+      '--url', `https://${this.host}`,
     ]);
   }
 
   async remove(username: string): Promise<void> {
     // Find the entry first, then delete by name
-    const entry = await searchProtonEntry(this.urlPattern);
+    const entry = await searchProtonEntry(this.urlPattern, username);
     if (!entry) {
       throw new Error(`No Proton entry found for ${username}`);
     }
-    // pass-cli doesn't have a direct delete-by-name; this is best-effort
-    throw new Error('pass-cli item removal is not yet supported via CLI');
+    if (!entry.id || !entry.shareId) {
+      throw new Error(`Proton entry for ${username} is missing item metadata`);
+    }
+    await runPassCli([
+      'item', 'delete',
+      '--share-id', entry.shareId,
+      '--item-id', entry.id,
+    ]);
   }
 
   async verify(): Promise<boolean> {

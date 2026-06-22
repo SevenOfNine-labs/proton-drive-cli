@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
 import { BrowserForkAuthService } from '../auth/browser-fork';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
 import { promptForToken } from '../auth/captcha-helper';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
@@ -156,8 +157,7 @@ export async function loginWithBrowserFork(
       spinner.succeed(chalk.green('Browser login successful!'));
     }
     if (isVerbose()) {
-      console.log(chalk.dim('Session saved (tokens only). Browser key password was not persisted.'));
-      console.log(chalk.dim('Provide a mailbox/data password source for Drive SDK operations until OS secret-store support lands.'));
+      console.log(chalk.dim('Session saved (tokens only). Browser key password stored in the configured credential provider.'));
     } else if (!isQuiet()) {
       outputResult('OK');
     }
@@ -241,7 +241,7 @@ export function createLoginCommand(): Command {
     .option('-u, --username <email|username>', 'Proton account email or username')
     .option('--password-stdin', 'Read password from stdin (for scripts with special characters)')
     .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
-    .option('--auth-mode <mode>', 'Authentication mode: srp (default), browser-fork (experimental)', 'srp')
+    .option('--auth-mode <mode>', 'Authentication mode: srp (default), browser-fork', 'srp')
     .action(async (options) => {
       try {
         const authMode = String(options.authMode || 'srp').toLowerCase();
@@ -563,6 +563,15 @@ export function createStatusCommand(): Command {
           console.log(`  ${chalk.dim('Session ID:')} ${session.sessionId.substring(0, 20)}...`);
           console.log(`  ${chalk.dim('Scopes:')} ${session.scopes.join(', ')}`);
           console.log(`  ${chalk.dim('Password Mode:')} ${session.passwordMode === 1 ? 'Single' : 'Two-password'}`);
+          console.log(`  ${chalk.dim('Auth Mode:')} ${session.authMode || 'srp'}`);
+          if (session.authMode === 'browser-fork') {
+            const keyPasswordStore = createKeyPasswordStore({
+              provider: session.keyPasswordProvider,
+              host: session.keyPasswordHost,
+            });
+            const keyPasswordAvailable = await keyPasswordStore.verify(session.uid);
+            console.log(`  ${chalk.dim('Key Password:')} ${keyPasswordAvailable ? 'Stored' : 'Missing'}`);
+          }
         } else {
           console.log(chalk.yellow('✗ Not authenticated'));
           console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive login'));

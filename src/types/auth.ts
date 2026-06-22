@@ -42,6 +42,8 @@ export interface SessionCredentials {
   // Browser-fork auth returns a key password that must be protected by an OS
   // secret store. It is never written to session.json.
   keyPasswordPersisted?: boolean;
+  keyPasswordProvider?: 'git-credential' | 'pass-cli';
+  keyPasswordHost?: string;
   // Unix timestamp (ms) when the access token expires (for proactive refresh)
   tokenExpiresAt?: number;
   // mailboxPassword is intentionally NOT persisted — it flows via stdin
