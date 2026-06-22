@@ -7,7 +7,7 @@ Browser fork authentication is experimental and must stay behind
 canary evidence proves the flow against current Proton production behavior.
 
 This path is modeled on the official Proton SDK CLI implementation in
-`submodules/sdk/js/cli/src/api/auth.ts` and `authWeb.ts`:
+`submodules/sdk/cli/src/api/auth.ts` and `authWeb.ts`:
 
 1. Start a fork with unauthenticated `GET /auth/v4/sessions/forks`.
 2. Generate an `account.proton.me/desktop/login?app=drive&pv=3` URL with a

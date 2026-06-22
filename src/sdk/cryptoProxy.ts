@@ -11,7 +11,7 @@
  */
 
 import * as openpgp from '@protontech/openpgp';
-import type { OpenPGPCryptoProxy } from '@protontech/drive-sdk';
+import type { CryptoApiInterface } from '@protontech/crypto';
 
 // The SDK's opaque types are not exported from the top-level package.
 // They're just marker interfaces — at runtime everything is openpgp.js objects.
@@ -20,7 +20,7 @@ type PrivateKey = { readonly _idx: any; readonly _dummyType: 'private' };
 type PublicKey = { readonly _idx: any };
 type SessionKey = { data: Uint8Array };
 
-export class ProtonOpenPGPCryptoProxy implements OpenPGPCryptoProxy {
+export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
   async generateKey(options: {
     userIDs: { name: string }[];
     type: 'ecc';

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './auth/srp/uint8array-extensions';
 import { program } from 'commander';
 import chalk from 'chalk';
 import { version as pkgVersion } from '../package.json';

@@ -5,6 +5,7 @@ import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { resolvePassword } from '../credentials';
+import { getNodeDisplayName } from '../sdk/nodeEntity';
 
 /**
  * Create the info command for the CLI.
@@ -100,17 +101,12 @@ export function createInfoCommand(): Command {
         const client = await createSDKClient(password);
 
         const nodeUid = await resolvePathToNodeUid(client, targetPath);
-        const node = await client.getNode(nodeUid);
-
-        if (!node.ok) {
-          throw new Error(`Failed to get node info: ${JSON.stringify(node.error)}`);
-        }
-
-        const meta = node.value;
+        const meta = await client.getNode(nodeUid);
+        const name = getNodeDisplayName(meta);
 
         if (isVerbose()) {
           console.log(chalk.bold(`\nInfo: ${targetPath}\n`));
-          console.log(`  ${chalk.cyan('Name:')}     ${meta.name}`);
+          console.log(`  ${chalk.cyan('Name:')}     ${name}`);
           console.log(`  ${chalk.cyan('Type:')}     ${meta.type}`);
           console.log(`  ${chalk.cyan('Size:')}     ${meta.totalStorageSize || 0} bytes`);
           console.log(`  ${chalk.cyan('UID:')}      ${meta.uid}`);
@@ -122,7 +118,7 @@ export function createInfoCommand(): Command {
           }
         } else if (!isQuiet()) {
           outputResult(JSON.stringify({
-            name: meta.name,
+            name,
             type: meta.type,
             size: meta.totalStorageSize || 0,
             uid: meta.uid,

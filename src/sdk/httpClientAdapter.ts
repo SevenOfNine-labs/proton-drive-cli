@@ -7,7 +7,11 @@
  * - HTTP 403 with Proton error code 9101 (Insufficient scope)
  */
 
-import type { ProtonDriveHTTPClient } from '@protontech/drive-sdk';
+import type {
+  ProtonDriveHTTPClient,
+  ProtonDriveHTTPClientBlobRequest,
+  ProtonDriveHTTPClientJsonRequest,
+} from '@protontech/drive-sdk';
 import { SessionManager } from '../auth/session';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
@@ -27,7 +31,7 @@ interface HTTPClientJsonRequest extends HTTPClientBaseRequest {
 }
 
 interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
-  body?: Uint8Array | ArrayBuffer | string | Blob | ReadableStream;
+  body?: ProtonDriveHTTPClientBlobRequest['body'];
   onProgress?: (progress: number) => void;
 }
 
@@ -242,7 +246,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     }
   }
 
-  async fetchJson(request: HTTPClientJsonRequest): Promise<Response> {
+  async fetchJson(request: ProtonDriveHTTPClientJsonRequest): Promise<Response> {
     await this.injectAuthHeaders(request.headers);
     const url = this.resolveUrl(request.url);
 
@@ -259,7 +263,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     return this.fetchWithRefresh(url, fetchOpts, request.headers, request.timeoutMs, request.signal);
   }
 
-  async fetchBlob(request: HTTPClientBlobRequest): Promise<Response> {
+  async fetchBlob(request: ProtonDriveHTTPClientBlobRequest): Promise<Response> {
     await this.injectAuthHeaders(request.headers);
     const url = this.resolveUrl(request.url);
 

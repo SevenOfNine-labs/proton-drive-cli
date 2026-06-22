@@ -31,10 +31,11 @@ import type {
   ProtonDriveHTTPClient,
   NodeResult,
   NodeResultWithNewUid,
-  MaybeNode,
   NodeEntity,
   FileUploader,
   FileDownloader,
+  InvalidNameError,
+  Result,
 } from '@protontech/drive-sdk';
 
 import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
@@ -598,7 +599,7 @@ describe('OpenPGPCryptoWithCryptoProxy wrapping behavior', () => {
 
   test('generateKey returns privateKey with armor and passphrase', async () => {
     const passphrase = await crypto.generatePassphrase();
-    const result = await crypto.generateKey(passphrase);
+    const result = await crypto.generateKey(passphrase, { enableAead: false });
     expect(result).toBeDefined();
     expect(result.privateKey).toBeDefined();
     expect(typeof result.armoredKey).toBe('string');
@@ -607,24 +608,31 @@ describe('OpenPGPCryptoWithCryptoProxy wrapping behavior', () => {
 
   test('generateSessionKey returns session key with data', async () => {
     const passphrase = await crypto.generatePassphrase();
-    const { armoredKey } = await crypto.generateKey(passphrase);
+    const { armoredKey } = await crypto.generateKey(passphrase, { enableAead: false });
     const decryptedKey = await crypto.decryptKey(armoredKey, passphrase);
+    const publicKey = decryptedKey.toPublic();
 
-    const sk = await crypto.generateSessionKey(decryptedKey);
+    const sk = await crypto.generateSessionKey([publicKey], {
+      enableAeadWithEncryptionKeys: false,
+    });
     expect(sk).toBeDefined();
     expect(sk.data).toBeInstanceOf(Uint8Array);
   });
 
   test('encryptAndSign → decryptAndVerify roundtrip', async () => {
     const passphrase = await crypto.generatePassphrase();
-    const { armoredKey } = await crypto.generateKey(passphrase);
+    const { armoredKey } = await crypto.generateKey(passphrase, { enableAead: false });
     const decryptedKey = await crypto.decryptKey(armoredKey, passphrase);
     const publicKey = decryptedKey.toPublic();
 
     const plaintext = new TextEncoder().encode('roundtrip test');
-    const sk = await crypto.generateSessionKey(decryptedKey);
+    const sk = await crypto.generateSessionKey([publicKey], {
+      enableAeadWithEncryptionKeys: false,
+    });
 
-    const encrypted = await crypto.encryptAndSign(plaintext, sk, publicKey, decryptedKey);
+    const encrypted = await crypto.encryptAndSign(plaintext, sk, [publicKey], decryptedKey, {
+      enableAeadWithEncryptionKeys: false,
+    });
     expect(encrypted).toBeDefined();
 
     const decrypted = await crypto.decryptAndVerify(
@@ -719,10 +727,10 @@ describe('result type contracts', () => {
   });
 
   test('NodeResult failure shape: { uid, ok: false, error }', () => {
-    const failure: NodeResult = { uid: 'test-uid', ok: false, error: 'something went wrong' };
+    const failure: NodeResult = { uid: 'test-uid', ok: false, error: new Error('something went wrong') };
     expect(failure.ok).toBe(false);
     expect(failure.uid).toBe('test-uid');
-    expect(failure.error).toBe('something went wrong');
+    expect(failure.error.message).toBe('something went wrong');
   });
 
   test('NodeResultWithNewUid success shape: { uid, newUid, ok: true }', () => {
@@ -737,12 +745,12 @@ describe('result type contracts', () => {
     expect(failure.error).toBeInstanceOf(Error);
   });
 
-  test('MaybeNode success has .ok and .value with required fields', () => {
+  test('NodeEntity has direct fields and Result-wrapped name', () => {
     // Compile-time shape verification
     const verifyNodeShape = (node: NodeEntity) => {
       const checks = {
         uid: typeof node.uid === 'string',
-        name: typeof node.name === 'string',
+        name: typeof node.name.ok === 'boolean',
         type: node.type === NodeType.File || node.type === NodeType.Folder,
         isShared: typeof node.isShared === 'boolean',
         creationTime: node.creationTime instanceof Date,

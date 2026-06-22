@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-runtime.mjs",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
@@ -87,7 +87,7 @@
   },
   "dependencies": {
     "@protontech/crypto": "^2.0.0",
-    "@protontech/drive-sdk": "portal:./submodules/sdk/js/sdk",
+    "@protontech/drive-sdk": "portal:./submodules/sdk/client/js",
     "@protontech/openpgp": "^6.2.2",
     "bcryptjs": "^3.0.3",
     "boxen": "^7.1.1",

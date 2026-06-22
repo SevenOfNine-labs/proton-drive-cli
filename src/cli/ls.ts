@@ -8,6 +8,7 @@ import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { resolvePassword } from '../credentials';
+import { getNodeName } from '../sdk/nodeEntity';
 
 function formatSize(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -143,12 +144,13 @@ export function createLsCommand(): Command {
         }> = [];
 
         for await (const child of client.iterateFolderChildren(folderUid)) {
-          if (child.ok) {
+          const name = getNodeName(child);
+          if (name) {
             nodes.push({
-              name: child.value.name,
-              type: child.value.type,
-              size: child.value.totalStorageSize || 0,
-              modifyTime: child.value.modificationTime,
+              name,
+              type: child.type,
+              size: child.totalStorageSize || 0,
+              modifyTime: child.modificationTime,
             });
           }
         }

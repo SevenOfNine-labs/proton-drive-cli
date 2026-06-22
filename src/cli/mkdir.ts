@@ -102,16 +102,13 @@ export function createMkdirCommand(): Command {
         // Create the folder using SDK
         const parentUid = await ensureFolderPath(client, path);
         const result = await client.createFolder(parentUid, folderName);
-        if (!result.ok) {
-          throw new Error(`Failed to create folder: ${JSON.stringify(result.error)}`);
-        }
 
         if (isVerbose()) {
           console.log(chalk.green('✓ Folder created successfully'));
-          console.log(chalk.gray(`  Folder UID: ${result.value.uid}`));
+          console.log(chalk.gray(`  Folder UID: ${result.uid}`));
           console.log(chalk.gray(`  Full path: ${path}/${folderName}`));
         } else if (!isQuiet()) {
-          outputResult(result.value.uid);
+          outputResult(result.uid);
         }
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');

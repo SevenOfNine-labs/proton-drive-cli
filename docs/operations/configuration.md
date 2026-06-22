@@ -46,10 +46,10 @@ yarn test           # Run all tests (fully mocked)
 yarn test:coverage  # With coverage report
 ```
 
-The vendored `@protontech/drive-sdk` at `submodules/sdk/js/sdk` must be built before the main project:
+The vendored `@protontech/drive-sdk` at `submodules/sdk/client/js` must be built before the main project:
 
 ```bash
-cd submodules/sdk/js/sdk && npm install && npm run build
+cd submodules/sdk/client/js && npm ci && npm run build
 ```
 
 ## CAPTCHA Handling

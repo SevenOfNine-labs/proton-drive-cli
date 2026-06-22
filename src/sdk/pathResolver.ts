@@ -8,6 +8,7 @@
 
 import type { ProtonDriveClient, NodeType } from '@protontech/drive-sdk';
 import { logger } from '../utils/logger';
+import { getNodeName } from './nodeEntity';
 
 /**
  * Resolve a path string to a node UID by traversing the folder tree.
@@ -26,16 +27,13 @@ export async function resolvePathToNodeUid(
   const parts = path.split('/').filter((p) => p.length > 0);
 
   const root = await client.getMyFilesRootFolder();
-  if (!root.ok) {
-    throw new Error('Could not get root folder');
-  }
-  let currentUid = root.value.uid;
+  let currentUid = root.uid;
 
   for (const part of parts) {
     let found = false;
     for await (const child of client.iterateFolderChildren(currentUid)) {
-      if (child.ok && child.value.name === part) {
-        currentUid = child.value.uid;
+      if (getNodeName(child) === part) {
+        currentUid = child.uid;
         found = true;
         break;
       }
@@ -64,16 +62,13 @@ export async function ensureFolderPath(
   const parts = path.split('/').filter((p) => p.length > 0);
 
   const root = await client.getMyFilesRootFolder();
-  if (!root.ok) {
-    throw new Error('Could not get root folder');
-  }
-  let currentUid = root.value.uid;
+  let currentUid = root.uid;
 
   for (const part of parts) {
     let found = false;
     for await (const child of client.iterateFolderChildren(currentUid)) {
-      if (child.ok && child.value.name === part) {
-        currentUid = child.value.uid;
+      if (getNodeName(child) === part) {
+        currentUid = child.uid;
         found = true;
         break;
       }
@@ -81,10 +76,7 @@ export async function ensureFolderPath(
     if (!found) {
       logger.debug(`Creating folder: ${part}`);
       const created = await client.createFolder(currentUid, part);
-      if (!created.ok) {
-        throw new Error(`Failed to create folder "${part}": ${JSON.stringify(created.error)}`);
-      }
-      currentUid = created.value.uid;
+      currentUid = created.uid;
     }
   }
 
@@ -105,8 +97,8 @@ export async function findFileInFolder(
   fileName: string,
 ): Promise<string | null> {
   for await (const child of client.iterateFolderChildren(folderUid)) {
-    if (child.ok && child.value.name === fileName && child.value.type === ('file' as NodeType)) {
-      return child.value.uid;
+    if (getNodeName(child) === fileName && child.type === ('file' as NodeType)) {
+      return child.uid;
     }
   }
   return null;
