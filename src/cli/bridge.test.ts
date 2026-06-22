@@ -2,8 +2,12 @@ const mockCreateSDKClient = jest.fn();
 const mockCredentialResolve = jest.fn();
 const mockLoadSession = jest.fn();
 const mockValidateSession = jest.fn();
+const mockRefreshSession = jest.fn();
 const mockIsSessionForUser = jest.fn();
 const mockKeyPasswordVerify = jest.fn();
+const mockAuthServiceLogin = jest.fn();
+const mockAuthServiceRefreshSession = jest.fn();
+const mockNormalizeProviderName = jest.fn((name: string) => name);
 
 jest.mock('../sdk/client', () => ({
   createSDKClient: mockCreateSDKClient,
@@ -13,15 +17,23 @@ jest.mock('../credentials', () => ({
   createProvider: jest.fn(() => ({
     resolve: mockCredentialResolve,
   })),
-  normalizeProviderName: jest.fn((name: string) => name),
+  normalizeProviderName: mockNormalizeProviderName,
 }));
 
 jest.mock('../auth/session', () => ({
   SessionManager: {
     loadSession: mockLoadSession,
     validateSession: mockValidateSession,
+    refreshSession: mockRefreshSession,
     isSessionForUser: mockIsSessionForUser,
   },
+}));
+
+jest.mock('../auth', () => ({
+  AuthService: jest.fn(() => ({
+    login: mockAuthServiceLogin,
+    refreshSession: mockAuthServiceRefreshSession,
+  })),
 }));
 
 jest.mock('../auth/key-password-store', () => ({
@@ -51,6 +63,16 @@ function makeSession(overrides: Partial<SessionCredentials> = {}): SessionCreden
     tokenExpiresAt: Date.now() + 60_000,
     ...overrides,
   };
+}
+
+function expectNoAuthStateNetworkOrCredentialSideEffects(): void {
+  expect(mockAuthServiceLogin).not.toHaveBeenCalled();
+  expect(mockAuthServiceRefreshSession).not.toHaveBeenCalled();
+  expect(mockRefreshSession).not.toHaveBeenCalled();
+  expect(mockIsSessionForUser).not.toHaveBeenCalled();
+  expect(mockCredentialResolve).not.toHaveBeenCalled();
+  expect(mockCreateProvider).not.toHaveBeenCalled();
+  expect(mockCreateSDKClient).not.toHaveBeenCalled();
 }
 
 describe('validateOid', () => {
@@ -225,9 +247,15 @@ describe('getBridgeAuthState', () => {
     mockCreateSDKClient.mockReset();
     mockCredentialResolve.mockReset();
     mockCreateProvider.mockClear();
+    mockNormalizeProviderName.mockReset();
+    mockNormalizeProviderName.mockImplementation((name: string) => name);
     mockLoadSession.mockReset();
     mockValidateSession.mockReset();
+    mockRefreshSession.mockReset();
     mockKeyPasswordVerify.mockReset();
+    mockIsSessionForUser.mockReset();
+    mockAuthServiceLogin.mockReset();
+    mockAuthServiceRefreshSession.mockReset();
     mockValidateSession.mockResolvedValue(true);
     mockKeyPasswordVerify.mockResolvedValue(true);
   });
@@ -249,6 +277,106 @@ describe('getBridgeAuthState', () => {
     expect(mockCreateProvider).not.toHaveBeenCalled();
     expect(mockCredentialResolve).not.toHaveBeenCalled();
     expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('keeps auth-state side-effect free across local readiness outcomes', async () => {
+    const cases: Array<{
+      name: string;
+      request: BridgeRequest;
+      session: SessionCredentials | null;
+      sessionValid?: boolean;
+      wantState: string;
+    }> = [
+      {
+        name: 'missing session with provider-backed login available',
+        request: { credentialProvider: 'git-credential' },
+        session: null,
+        wantState: 'login_available',
+      },
+      {
+        name: 'ready single-password session',
+        request: {},
+        session: makeSession({ passwordMode: 1 }),
+        sessionValid: true,
+        wantState: 'ready',
+      },
+      {
+        name: 'two-password session missing data password source',
+        request: {},
+        session: makeSession({ passwordMode: 2 }),
+        sessionValid: true,
+        wantState: 'needs_data_password',
+      },
+      {
+        name: 'browser-fork session missing key password source',
+        request: {},
+        session: makeSession({
+          passwordMode: 1,
+          authMode: 'browser-fork',
+          keyPasswordPersisted: false,
+        }),
+        sessionValid: true,
+        wantState: 'needs_key_password',
+      },
+      {
+        name: 'expired session',
+        request: {},
+        session: makeSession({ tokenExpiresAt: Date.now() - 1_000 }),
+        sessionValid: false,
+        wantState: 'session_expired',
+      },
+      {
+        name: 'locally invalid session',
+        request: {},
+        session: makeSession({ tokenExpiresAt: Date.now() + 60_000 }),
+        sessionValid: false,
+        wantState: 'session_invalid',
+      },
+    ];
+
+    for (const tc of cases) {
+      mockCreateSDKClient.mockClear();
+      mockCredentialResolve.mockClear();
+      mockCreateProvider.mockClear();
+      mockLoadSession.mockReset();
+      mockValidateSession.mockReset();
+      mockRefreshSession.mockClear();
+      mockIsSessionForUser.mockClear();
+      mockAuthServiceLogin.mockClear();
+      mockAuthServiceRefreshSession.mockClear();
+      mockKeyPasswordVerify.mockClear();
+      mockLoadSession.mockResolvedValue(tc.session);
+      mockValidateSession.mockResolvedValue(tc.sessionValid ?? true);
+
+      const state = await getBridgeAuthState(tc.request);
+
+      expect(state.state).toBe(tc.wantState);
+      expect(state.willAttemptNetwork).toBe(false);
+      if (tc.session) {
+        expect(mockValidateSession).toHaveBeenCalledWith(tc.session, false);
+      } else {
+        expect(mockValidateSession).not.toHaveBeenCalled();
+      }
+      expectNoAuthStateNetworkOrCredentialSideEffects();
+    }
+  });
+
+  it('does not resolve credentials or contact Proton for invalid provider config', async () => {
+    mockNormalizeProviderName.mockImplementation(() => {
+      throw new Error('Unknown credential provider: mystery');
+    });
+    mockLoadSession.mockResolvedValue(null);
+
+    const state = await getBridgeAuthState({
+      credentialProvider: 'mystery',
+    });
+
+    expect(state).toMatchObject({
+      state: 'configuration_error',
+      willAttemptNetwork: false,
+    });
+    expect(mockValidateSession).not.toHaveBeenCalled();
+    expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
   it('reports login availability for provider-backed login without resolving the provider', async () => {
