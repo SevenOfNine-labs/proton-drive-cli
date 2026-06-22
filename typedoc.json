@@ -1,10 +1,15 @@
 {
   "entryPoints": [
-    "src/cli/index.ts",
+    "src/index.ts",
     "src/cli/bridge.ts",
+    "src/cli/login.ts",
+    "src/cli/doctor.ts",
     "src/auth/index.ts",
+    "src/auth/browser-fork.ts",
+    "src/auth/key-password-store.ts",
     "src/auth/session.ts",
-    "src/drive/operations.ts",
+    "src/bridge/protocol.ts",
+    "src/drive/change-tokens.ts",
     "src/utils/retry.ts",
     "src/utils/circuit-breaker.ts",
     "src/errors/types.ts"
