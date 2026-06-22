@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/doctor/v1/report.schema.json",
+  "title": "proton-drive-cli offline doctor report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ok",
+    "summary",
+    "authState",
+    "canAttemptTransfer",
+    "canAttemptLiveCanary",
+    "checks"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "warn", "fail", "skip"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "warn": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "skip": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "authState": {
+      "$ref": "../../bridge/v1/auth-state-payload.schema.json"
+    },
+    "canAttemptTransfer": { "type": "boolean" },
+    "canAttemptLiveCanary": { "type": "boolean" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "status", "message"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "warn", "fail", "skip"]
+          },
+          "message": { "type": "string" },
+          "detail": { "type": "string" },
+          "remediation": { "type": "string" }
+        }
+      }
+    }
+  }
+}

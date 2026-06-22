@@ -37,10 +37,29 @@ jest.mock('fs-extra', () => ({
   readJson: jest.fn(),
 }));
 
+import * as nodeFs from 'fs';
+import * as path from 'path';
 import * as fs from 'fs-extra';
-import { createDoctorCommand, formatDoctorReport, runDoctor } from './doctor';
+import {
+  DOCTOR_CHECK_FIELDS,
+  DOCTOR_REPORT_FIELDS,
+  DOCTOR_STATUSES,
+  DOCTOR_SUMMARY_FIELDS,
+  createDoctorCommand,
+  formatDoctorReport,
+  runDoctor,
+} from './doctor';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
+
+function readDoctorContract(name: string): any {
+  const file = path.resolve(__dirname, '..', '..', 'schemas', 'doctor', 'v1', name);
+  return JSON.parse(nodeFs.readFileSync(file, 'utf8'));
+}
+
+function sorted(values: readonly string[]): string[] {
+  return [...values].sort();
+}
 
 function mockProvider(username: string = 'user@proton.me') {
   return {
@@ -75,6 +94,20 @@ describe('createDoctorCommand', () => {
     expect(optionNames).toContain('--session-file');
     expect(optionNames).toContain('--json');
     expect(optionNames).toContain('--strict');
+  });
+});
+
+describe('doctor report contract', () => {
+  it('keeps doctor report schema aligned with runtime fields', () => {
+    const schema = readDoctorContract('report.schema.json');
+    expect(schema.additionalProperties).toBe(false);
+    expect(sorted(Object.keys(schema.properties))).toEqual(sorted(DOCTOR_REPORT_FIELDS));
+    expect(sorted(schema.required)).toEqual(sorted(DOCTOR_REPORT_FIELDS));
+    expect(sorted(Object.keys(schema.properties.summary.properties))).toEqual(sorted(DOCTOR_SUMMARY_FIELDS));
+    expect(sorted(schema.properties.summary.required)).toEqual(sorted(DOCTOR_SUMMARY_FIELDS));
+    expect(sorted(Object.keys(schema.properties.checks.items.properties))).toEqual(sorted(DOCTOR_CHECK_FIELDS));
+    expect(sorted(schema.properties.checks.items.properties.status.enum)).toEqual(sorted(DOCTOR_STATUSES));
+    expect(schema.properties.authState.$ref).toBe('../../bridge/v1/auth-state-payload.schema.json');
   });
 });
 

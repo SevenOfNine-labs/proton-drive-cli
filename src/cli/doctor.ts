@@ -49,6 +49,28 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+export const DOCTOR_STATUSES = ['pass', 'warn', 'fail', 'skip'] as const satisfies readonly DoctorStatus[];
+
+export const DOCTOR_REPORT_FIELDS = [
+  'ok',
+  'summary',
+  'authState',
+  'canAttemptTransfer',
+  'canAttemptLiveCanary',
+  'checks',
+] as const satisfies readonly (keyof DoctorReport)[];
+
+export const DOCTOR_SUMMARY_FIELDS = DOCTOR_STATUSES;
+
+export const DOCTOR_CHECK_FIELDS = [
+  'id',
+  'title',
+  'status',
+  'message',
+  'detail',
+  'remediation',
+] as const satisfies readonly (keyof DoctorCheck)[];
+
 const SECRET_ENV_NAMES = [
   'PROTON_DATA_PASSWORD',
   'PROTON_SECOND_FACTOR_CODE',
