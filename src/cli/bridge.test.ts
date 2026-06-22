@@ -50,6 +50,7 @@ jest.mock('../auth/key-password-store', () => ({
 import {
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
   formatCaptchaError,
   getBridgeAuthState,
@@ -146,6 +147,76 @@ describe('validateLocalPath', () => {
   it('rejects null/undefined', () => {
     expect(() => validateLocalPath(null as any)).toThrow('File path is required');
     expect(() => validateLocalPath(undefined as any)).toThrow('File path is required');
+  });
+});
+
+describe('validateBridgeRequestForCommand', () => {
+  const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
+
+  it('accepts upload request fields used by the Go adapter', () => {
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+      path: '/tmp/object.bin',
+      storageBase: 'LFS',
+      credentialProvider: 'git-credential',
+      appVersion: 'proton-lfs-cli-test',
+      allowLogin: false,
+    })).not.toThrow();
+  });
+
+  it('rejects missing command-required fields', () => {
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+    })).toThrow('Field "path" is required for bridge upload');
+  });
+
+  it('rejects fields that belong to another command', () => {
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+      path: '/tmp/object.bin',
+      outputPath: '/tmp/out.bin',
+    })).toThrow('Field "outputPath" is not allowed for bridge upload');
+  });
+
+  it('keeps auth-state local by rejecting transfer fields', () => {
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      storageBase: 'LFS',
+      credentialProvider: 'git-credential',
+      oid: VALID_OID,
+    })).toThrow('Field "oid" is not allowed for bridge auth-state');
+  });
+
+  it('accepts auth-state readiness selectors used by the Go adapter', () => {
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      storageBase: 'LFS',
+      credentialProvider: 'git-credential',
+      dataCredentialProvider: 'git-credential',
+      dataCredentialHost: 'proton-data.proton-lfs-cli.local',
+      appVersion: 'proton-lfs-cli-test',
+    })).not.toThrow();
+  });
+
+  it('rejects unknown fields', () => {
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      unknown: 'field',
+    })).toThrow('Unknown bridge request field "unknown"');
+  });
+
+  it('rejects non-object requests', () => {
+    expect(() => validateBridgeRequestForCommand('auth-state', null)).toThrow(
+      'Bridge request must be a JSON object'
+    );
+  });
+
+  it('rejects invalid field types before command handlers run', () => {
+    expect(() => validateBridgeRequestForCommand('batch-exists', {
+      oids: VALID_OID,
+    })).toThrow('Field "oids" must be an array of strings');
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+      path: '/tmp/object.bin',
+      allowLogin: 'false',
+    })).toThrow('Field "allowLogin" must be a boolean');
   });
 });
 

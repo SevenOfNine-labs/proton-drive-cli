@@ -33,10 +33,11 @@ import {
   BridgeResponse,
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
   oidToPath,
 } from '../bridge/validators';
-import type { BridgeAuthState } from '../bridge/protocol';
+import { isBridgeCommand, type BridgeAuthState } from '../bridge/protocol';
 import { createProvider, normalizeProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
@@ -161,7 +162,7 @@ async function readStdinJson(): Promise<BridgeRequest> {
 }
 
 // Re-export validators for existing consumers (e.g., bridge.test.ts)
-export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, errorToStatusCode } from '../bridge/validators';
+export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, validateBridgeRequestForCommand, errorToStatusCode } from '../bridge/validators';
 // formatCaptchaError is exported directly from this module (above)
 
 /**
@@ -936,8 +937,20 @@ export function createBridgeCommand(): Command {
 
       try {
         const request = await readStdinJson();
+        const normalizedCommand = command.toLowerCase();
+        if (!isBridgeCommand(normalizedCommand)) {
+          writeError(`Unknown bridge command: ${command}`, 400);
+          return;
+        }
 
-        switch (command.toLowerCase()) {
+        try {
+          validateBridgeRequestForCommand(normalizedCommand, request);
+        } catch (error) {
+          writeError(error instanceof Error ? error.message : 'Invalid bridge request', 400);
+          return;
+        }
+
+        switch (normalizedCommand) {
           case 'auth':
             await handleAuthCommand(request);
             break;
@@ -971,8 +984,6 @@ export function createBridgeCommand(): Command {
           case 'batch-delete':
             await handleBatchDeleteCommand(request);
             break;
-          default:
-            writeError(`Unknown bridge command: ${command}`, 400);
         }
       } catch (error: any) {
         handleBridgeError(error, 'Bridge command failed');

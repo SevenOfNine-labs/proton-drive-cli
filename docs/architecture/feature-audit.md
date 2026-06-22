@@ -46,6 +46,12 @@ to stdout. It is used by `proton-lfs-cli` and must keep stdout machine-readable.
 
 ### Request Fields
 
+Runtime validation uses the canonical per-command matrix in
+`schemas/bridge/v1/request-field-rules.json`. Unknown fields, fields that
+belong to another bridge command, wrong primitive types, and missing required
+command fields return a `400` envelope before credential resolution, SDK
+initialization, or local file operations.
+
 | Field | Meaning | Secret? | Notes |
 | --- | --- | --- | --- |
 | `username` | Login username or credential lookup hint. | No | May be omitted for session-only operations. |
@@ -150,7 +156,7 @@ Transfer callers must proceed only on `ready`.
 | Browser-fork auth | `src/auth/browser-fork.test.ts`, `src/cli/login.test.ts` | No real browser login in CI. | Experimental; needs disposable-account canary. |
 | Key-password store | `src/auth/key-password-store.test.ts`, credential provider tests. | Root mocked E2E checks missing-secret gating. | Stable for local contract. |
 | Credential providers | `src/credentials/*.test.ts`, `src/cli/credential.test.ts`. | Mocked pass-cli in root integration. | Stable for provider contract; OS helper UX remains platform-dependent. |
-| Bridge validation/envelope/errors | `src/cli/bridge.test.ts`, `src/bridge/index.test.ts`, `src/cli/e2e.test.ts`. | Root `tests/testdata/mock-proton-drive-cli.js`. | Stable. |
+| Bridge validation/envelope/errors | `src/cli/bridge.test.ts`, `src/bridge/index.test.ts`, `src/bridge/protocol.test.ts`, `src/cli/e2e.test.ts`. | Root `tests/testdata/mock-proton-drive-cli.js`. | Stable. |
 | SDK adapter shape | `src/sdk/sdk-contract.test.ts`, `src/sdk/sdk-behavioral.test.ts`, `src/sdk/client.test.ts`. | Root mocked E2E and opt-in SDK integration. | Beta. |
 | Path resolution and folder creation | `src/sdk/pathResolver.ts` via SDK behavior tests. | Mocked bridge/root tests. | Beta. |
 | Drive file commands | CLI E2E validation and SDK mocks. | No default real Proton Drive command canary. | Beta. |
@@ -174,3 +180,6 @@ Transfer callers must proceed only on `ready`.
 - `KEY_PASSWORD_REQUIRED` was added as a first-class application error in the
   previous auth hardening work, but bridge HTTP status mapping still defaulted
   unknown app errors to `500`. This pass maps it to `401` and adds a unit test.
+- Bridge request validation now has a checked-in per-command field contract and
+  rejects unknown or command-inappropriate fields before any auth, SDK, or file
+  side effects can begin.

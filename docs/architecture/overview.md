@@ -78,9 +78,9 @@ src/
 
 ## Bridge Protocol
 
-The `proton-drive bridge <command>` interface reads JSON from stdin and writes JSON to stdout using a `{ ok, payload, error, code }` envelope.
+The `proton-drive bridge <command>` interface reads JSON from stdin and writes JSON to stdout using a `{ ok, payload, error, code }` envelope. Requests are validated against the per-command field matrix in `schemas/bridge/v1/request-field-rules.json` before credential resolution, SDK initialization, or local file operations.
 
-**Commands:** `auth`, `upload`, `download`, `list`, `exists`, `delete`, `refresh`, `init`, `batch-exists`, `batch-delete`
+**Commands:** `auth`, `auth-state`, `upload`, `download`, `list`, `exists`, `delete`, `refresh`, `init`, `batch-exists`, `batch-delete`
 
 **Request format:**
 

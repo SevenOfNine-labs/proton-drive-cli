@@ -272,6 +272,40 @@ describe('bridge protocol', () => {
     });
   });
 
+  describe('command-specific request validation', () => {
+    it('rejects unknown request fields before command handling', async () => {
+      const r = await runBridge('auth-state', {
+        storageBase: 'LFS',
+        unexpected: 'value',
+      });
+      expect(r.json.ok).toBe(false);
+      expect(r.json.code).toBe(400);
+      expect(r.json.error).toContain('Unknown bridge request field');
+    });
+
+    it('rejects fields from another bridge command', async () => {
+      const r = await runBridge('upload', {
+        oid: 'a'.repeat(64),
+        path: '/tmp/proton-drive-cli-e2e-no-auth-object',
+        outputPath: '/tmp/out',
+        password: 'pass',
+      });
+      expect(r.json.ok).toBe(false);
+      expect(r.json.code).toBe(400);
+      expect(r.json.error).toContain('not allowed for bridge upload');
+    });
+
+    it('rejects invalid batch field types before auth', async () => {
+      const r = await runBridge('batch-exists', {
+        oids: 'a'.repeat(64),
+        password: 'pass',
+      });
+      expect(r.json.ok).toBe(false);
+      expect(r.json.code).toBe(400);
+      expect(r.json.error).toContain('array of strings');
+    });
+  });
+
   describe('malformed input', () => {
     it('rejects non-JSON stdin', async () => {
       const r = await runCli(['bridge', 'auth'], { stdin: 'not json at all' });

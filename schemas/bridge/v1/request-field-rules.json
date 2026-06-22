@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request-field-rules.json",
+  "title": "proton-drive-cli bridge request field rules",
+  "commands": {
+    "auth": {
+      "required": [],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin"
+      ]
+    },
+    "auth-state": {
+      "required": [],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin"
+      ]
+    },
+    "upload": {
+      "required": ["oid", "path"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oid",
+        "path"
+      ]
+    },
+    "download": {
+      "required": ["oid", "outputPath"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oid",
+        "outputPath"
+      ]
+    },
+    "list": {
+      "required": [],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "folder"
+      ]
+    },
+    "exists": {
+      "required": ["oid"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oid"
+      ]
+    },
+    "delete": {
+      "required": ["oid"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oid"
+      ]
+    },
+    "refresh": {
+      "required": [],
+      "allowed": ["appVersion"]
+    },
+    "init": {
+      "required": [],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin"
+      ]
+    },
+    "batch-exists": {
+      "required": ["oids"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oids"
+      ]
+    },
+    "batch-delete": {
+      "required": ["oids"],
+      "allowed": [
+        "username",
+        "password",
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "secondFactorCode",
+        "appVersion",
+        "storageBase",
+        "credentialProvider",
+        "allowLogin",
+        "oids"
+      ]
+    }
+  }
+}

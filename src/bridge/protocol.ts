@@ -16,6 +16,10 @@ export const BRIDGE_COMMANDS = [
 
 export type BridgeCommand = typeof BRIDGE_COMMANDS[number];
 
+export function isBridgeCommand(command: string): command is BridgeCommand {
+  return (BRIDGE_COMMANDS as readonly string[]).includes(command);
+}
+
 export const BRIDGE_AUTH_STATES = [
   'ready',
   'login_available',
@@ -46,6 +50,73 @@ export const BRIDGE_REQUEST_FIELDS = [
   'allowLogin',
   'oids',
 ] as const;
+
+export type BridgeRequestField = typeof BRIDGE_REQUEST_FIELDS[number];
+
+export interface BridgeCommandRequestFields {
+  required: readonly BridgeRequestField[];
+  allowed: readonly BridgeRequestField[];
+}
+
+export const BRIDGE_COMMON_REQUEST_FIELDS = [
+  'username',
+  'password',
+  'dataPassword',
+  'dataCredentialProvider',
+  'dataCredentialHost',
+  'secondFactorCode',
+  'appVersion',
+  'storageBase',
+  'credentialProvider',
+  'allowLogin',
+] as const satisfies readonly BridgeRequestField[];
+
+export const BRIDGE_COMMAND_REQUEST_FIELDS = {
+  auth: {
+    required: [],
+    allowed: BRIDGE_COMMON_REQUEST_FIELDS,
+  },
+  'auth-state': {
+    required: [],
+    allowed: BRIDGE_COMMON_REQUEST_FIELDS,
+  },
+  upload: {
+    required: ['oid', 'path'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oid', 'path'],
+  },
+  download: {
+    required: ['oid', 'outputPath'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oid', 'outputPath'],
+  },
+  list: {
+    required: [],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'folder'],
+  },
+  exists: {
+    required: ['oid'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oid'],
+  },
+  delete: {
+    required: ['oid'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oid'],
+  },
+  refresh: {
+    required: [],
+    allowed: ['appVersion'],
+  },
+  init: {
+    required: [],
+    allowed: BRIDGE_COMMON_REQUEST_FIELDS,
+  },
+  'batch-exists': {
+    required: ['oids'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oids'],
+  },
+  'batch-delete': {
+    required: ['oids'],
+    allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oids'],
+  },
+} as const satisfies Record<BridgeCommand, BridgeCommandRequestFields>;
 
 export const BRIDGE_RESPONSE_FIELDS = [
   'ok',

@@ -3,10 +3,13 @@ import {
   BridgeResponse,
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
   oidToPath,
   pathToOid,
   OID_PATTERN,
+  BRIDGE_COMMAND_REQUEST_FIELDS,
+  isBridgeCommand,
 } from './index';
 
 const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
@@ -31,6 +34,16 @@ describe('shared bridge exports', () => {
   it('exports validateLocalPath', () => {
     expect(() => validateLocalPath('/tmp/file.txt')).not.toThrow();
     expect(() => validateLocalPath('../etc/passwd')).toThrow('Path traversal');
+  });
+
+  it('exports command request validation helpers', () => {
+    expect(isBridgeCommand('auth-state')).toBe(true);
+    expect(isBridgeCommand('not-a-command')).toBe(false);
+    expect(BRIDGE_COMMAND_REQUEST_FIELDS.upload.required).toContain('oid');
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+      path: '/tmp/file.txt',
+    })).not.toThrow();
   });
 
   it('exports errorToStatusCode', () => {

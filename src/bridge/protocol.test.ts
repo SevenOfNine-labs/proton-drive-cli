@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   BRIDGE_AUTH_STATES,
+  BRIDGE_COMMAND_REQUEST_FIELDS,
+  BRIDGE_COMMANDS,
   BRIDGE_ERROR_DETAIL_FIELDS,
   BRIDGE_REQUEST_FIELDS,
   BRIDGE_RESPONSE_FIELDS,
@@ -23,6 +25,24 @@ describe('bridge protocol contract', () => {
     const schema = readContract('request.schema.json');
     expect(sorted(Object.keys(schema.properties))).toEqual(sorted(BRIDGE_REQUEST_FIELDS));
     expect(schema.additionalProperties).toBe(false);
+  });
+
+  it('keeps request field rules aligned with runtime constants', () => {
+    const contract = readContract('request-field-rules.json');
+    expect(sorted(Object.keys(contract.commands))).toEqual(sorted(BRIDGE_COMMANDS));
+
+    for (const command of BRIDGE_COMMANDS) {
+      const contractRule = contract.commands[command];
+      const runtimeRule = BRIDGE_COMMAND_REQUEST_FIELDS[command];
+      expect(sorted(contractRule.required)).toEqual(sorted(runtimeRule.required));
+      expect(sorted(contractRule.allowed)).toEqual(sorted(runtimeRule.allowed));
+      for (const field of contractRule.required) {
+        expect(contractRule.allowed).toContain(field);
+      }
+      for (const field of contractRule.allowed) {
+        expect(BRIDGE_REQUEST_FIELDS).toContain(field);
+      }
+    }
   });
 
   it('keeps response envelope schema fields aligned with runtime constants', () => {

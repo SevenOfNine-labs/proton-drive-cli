@@ -17,6 +17,7 @@ export {
   // Validators
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
 
   // OID path mapping
@@ -26,15 +27,20 @@ export {
 
 export {
   BRIDGE_AUTH_STATES,
+  BRIDGE_COMMAND_REQUEST_FIELDS,
   BRIDGE_COMMANDS,
+  BRIDGE_COMMON_REQUEST_FIELDS,
   BRIDGE_ERROR_DETAIL_FIELDS,
   BRIDGE_REQUEST_FIELDS,
   BRIDGE_RESPONSE_FIELDS,
   ERROR_CODE_STATUS,
+  isBridgeCommand,
   statusCodeForErrorCode,
 } from './protocol';
 
 export type {
   BridgeAuthState,
   BridgeCommand,
+  BridgeCommandRequestFields,
+  BridgeRequestField,
 } from './protocol';

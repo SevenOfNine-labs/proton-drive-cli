@@ -6,7 +6,13 @@
  * (which itself has zero imports).
  */
 
-import { statusCodeForErrorCode } from './protocol';
+import {
+  BRIDGE_COMMAND_REQUEST_FIELDS,
+  BRIDGE_REQUEST_FIELDS,
+  statusCodeForErrorCode,
+  type BridgeCommand,
+  type BridgeRequestField,
+} from './protocol';
 import {
   ProtonDriveError,
   ValidationError,
@@ -86,6 +92,70 @@ export function validateLocalPath(filePath: string): void {
   }
   if (filePath.split(/[/\\]/).includes('..')) {
     throw new Error('Path traversal not allowed');
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function requestFieldType(field: BridgeRequestField): 'string' | 'boolean' | 'string-array' {
+  if (field === 'allowLogin') return 'boolean';
+  if (field === 'oids') return 'string-array';
+  return 'string';
+}
+
+/**
+ * Validate the JSON request envelope for a specific bridge command.
+ *
+ * This enforces the canonical command/field matrix before any command can
+ * resolve credentials, touch the network, or perform local file operations.
+ * Format-specific checks such as OID syntax and path traversal remain in the
+ * command handlers so their existing error messages stay stable.
+ */
+export function validateBridgeRequestForCommand(
+  command: BridgeCommand,
+  request: unknown,
+): asserts request is BridgeRequest {
+  if (!isPlainObject(request)) {
+    throw new Error('Bridge request must be a JSON object');
+  }
+
+  const allowedFields = new Set(BRIDGE_COMMAND_REQUEST_FIELDS[command].allowed);
+  const knownFields = new Set(BRIDGE_REQUEST_FIELDS);
+
+  for (const field of Object.keys(request)) {
+    if (!knownFields.has(field as BridgeRequestField)) {
+      throw new Error(`Unknown bridge request field "${field}"`);
+    }
+    if (!allowedFields.has(field as BridgeRequestField)) {
+      throw new Error(`Field "${field}" is not allowed for bridge ${command}`);
+    }
+
+    const value = request[field];
+    const expectedType = requestFieldType(field as BridgeRequestField);
+    if (value === undefined) continue;
+    if (expectedType === 'string' && typeof value !== 'string') {
+      throw new Error(`Field "${field}" must be a string`);
+    }
+    if (expectedType === 'boolean' && typeof value !== 'boolean') {
+      throw new Error(`Field "${field}" must be a boolean`);
+    }
+    if (expectedType === 'string-array') {
+      if (!Array.isArray(value)) {
+        throw new Error(`Field "${field}" must be an array of strings`);
+      }
+      if (!value.every((item) => typeof item === 'string')) {
+        throw new Error(`Field "${field}" must be an array of strings`);
+      }
+    }
+  }
+
+  for (const field of BRIDGE_COMMAND_REQUEST_FIELDS[command].required) {
+    const value = request[field];
+    if (value === undefined || value === null || value === '') {
+      throw new Error(`Field "${field}" is required for bridge ${command}`);
+    }
   }
 }
 
