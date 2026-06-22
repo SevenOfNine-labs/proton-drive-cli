@@ -3,7 +3,7 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
-import { BrowserForkAuthService } from '../auth/browser-fork';
+import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../auth/browser-fork';
 import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
 import { promptForToken } from '../auth/captcha-helper';
@@ -16,6 +16,30 @@ import { readPasswordFromStdin, normalizeProviderName, createProvider } from '..
 interface LoginChallengeState {
   captchaToken?: string;
   secondFactorCode?: string;
+}
+
+export interface BrowserForkKeyPasswordOptions {
+  credentialProvider?: string;
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
+}
+
+export function resolveBrowserForkKeyPasswordOptions(
+  options: BrowserForkKeyPasswordOptions = {}
+): BrowserForkAuthServiceOptions {
+  const keyPasswordProvider =
+    options.keyPasswordProvider?.trim() ||
+    options.credentialProvider?.trim() ||
+    process.env.PROTON_KEY_PASSWORD_PROVIDER?.trim() ||
+    process.env.PROTON_CREDENTIAL_PROVIDER?.trim();
+  const keyPasswordHost =
+    options.keyPasswordHost?.trim() ||
+    process.env.PROTON_KEY_PASSWORD_HOST?.trim();
+
+  return {
+    ...(keyPasswordProvider ? { keyPasswordProvider } : {}),
+    ...(keyPasswordHost ? { keyPasswordHost } : {}),
+  };
 }
 
 function isInteractiveTotpChallenge(error: unknown): error is AppError {
@@ -242,11 +266,15 @@ export function createLoginCommand(): Command {
     .option('--password-stdin', 'Read password from stdin (for scripts with special characters)')
     .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .option('--auth-mode <mode>', 'Authentication mode: srp (default), browser-fork', 'srp')
+    .option('--key-password-provider <type>', 'Credential provider for browser-fork key password: git-credential or pass-cli')
+    .option('--key-password-host <host>', 'Credential host/key for browser-fork key password')
     .action(async (options) => {
       try {
         const authMode = String(options.authMode || 'srp').toLowerCase();
         if (authMode === 'browser-fork') {
-          await loginWithBrowserFork();
+          await loginWithBrowserFork(new BrowserForkAuthService(
+            resolveBrowserForkKeyPasswordOptions(options)
+          ));
           return;
         }
         if (authMode !== 'srp') {

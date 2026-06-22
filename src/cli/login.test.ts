@@ -1,6 +1,10 @@
 import { AuthService } from '../auth';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
-import { loginWithBrowserFork, loginWithInteractiveChallenges } from './login';
+import {
+  loginWithBrowserFork,
+  loginWithInteractiveChallenges,
+  resolveBrowserForkKeyPasswordOptions,
+} from './login';
 
 jest.mock('inquirer', () => ({
   prompt: jest.fn(),
@@ -35,6 +39,43 @@ const mockPrompt = inquirer.prompt as jest.MockedFunction<typeof inquirer.prompt
 const mockPromptForToken = promptForToken as jest.MockedFunction<typeof promptForToken>;
 const mockOutputResult = outputResult as jest.MockedFunction<typeof outputResult>;
 const mockOpenBrowserUrl = openBrowserUrl as jest.MockedFunction<typeof openBrowserUrl>;
+
+describe('resolveBrowserForkKeyPasswordOptions', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('prefers explicit key-password provider and host', () => {
+    expect(resolveBrowserForkKeyPasswordOptions({
+      credentialProvider: 'git-credential',
+      keyPasswordProvider: ' pass-cli ',
+      keyPasswordHost: ' proton-drive-key.example.test ',
+    })).toEqual({
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.example.test',
+    });
+  });
+
+  it('falls back to credential-provider for browser-fork key storage', () => {
+    expect(resolveBrowserForkKeyPasswordOptions({
+      credentialProvider: 'git-credential',
+    })).toEqual({
+      keyPasswordProvider: 'git-credential',
+    });
+  });
+
+  it('uses environment defaults when command options are absent', () => {
+    process.env.PROTON_KEY_PASSWORD_PROVIDER = 'pass-cli';
+    process.env.PROTON_KEY_PASSWORD_HOST = 'proton-drive-key.env.test';
+
+    expect(resolveBrowserForkKeyPasswordOptions()).toEqual({
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.env.test',
+    });
+  });
+});
 
 describe('loginWithInteractiveChallenges', () => {
   let authService: jest.Mocked<AuthService>;

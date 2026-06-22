@@ -3,8 +3,8 @@
 ## Status
 
 Browser fork authentication is experimental and must stay behind
-`proton-drive-cli login --auth-mode browser-fork` until the key-password
-storage story is complete.
+`proton-drive-cli login --auth-mode browser-fork` until disposable-account
+canary evidence proves the flow against current Proton production behavior.
 
 This path is modeled on the official Proton SDK CLI implementation in
 `submodules/sdk/js/cli/src/api/auth.ts` and `authWeb.ts`:
@@ -23,24 +23,39 @@ This path is modeled on the official Proton SDK CLI implementation in
 
 The fork payload contains `keyPassword`, which is needed to unlock Proton user
 keys for Drive operations. Proton's official CLI stores that secret in an OS
-secret store. This project does not yet have that integration, so the
-experimental implementation validates the encrypted payload but does not write
-`keyPassword` to `~/.proton-drive-cli/session.json`.
+secret store. This project stores the derived key password in a configured
+credential provider and verifies readback before saving the browser-fork
+session. The secret is never written to `~/.proton-drive-cli/session.json`.
+
+Key-password provider selection is explicit:
+
+- `--key-password-provider <git-credential|pass-cli>` wins.
+- `--credential-provider <git-credential|pass-cli>` is used as a browser-fork
+  key-password provider fallback.
+- `PROTON_KEY_PASSWORD_PROVIDER` and then `PROTON_CREDENTIAL_PROVIDER` are used
+  when command flags are absent.
+- `--key-password-host` or `PROTON_KEY_PASSWORD_HOST` can override the default
+  `proton-drive-key.proton-lfs-cli.local` credential host.
 
 Browser-fork sessions are persisted with:
 
 ```json
 {
   "authMode": "browser-fork",
-  "keyPasswordPersisted": false
+  "keyPasswordPersisted": true,
+  "keyPasswordProvider": "git-credential",
+  "keyPasswordHost": "proton-drive-key.proton-lfs-cli.local"
 }
 ```
 
-The bridge `auth-state` command treats those sessions as
-`needs_data_password` unless the caller provides a mailbox/data password source
-through `dataPassword` or `dataCredentialProvider`. This prevents root-level
-Git LFS transfers from reporting `ready` only to fail later during SDK crypto
-initialization.
+If key-password storage fails or readback verification fails, the login command
+does not save the session. If session save fails after key-password storage, it
+attempts to remove the stored key password before returning the error.
+
+The bridge `auth-state` command verifies the persisted browser-fork key
+password without contacting Proton. It reports `ready` only when the session is
+locally valid and the configured key password is readable; otherwise it reports
+a closed state such as `needs_data_password`.
 
 ## Testing Rules
 
