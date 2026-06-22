@@ -5,8 +5,9 @@ Project-owned docs live here. The vendored SDK docs remain under `submodules/sdk
 ## Start Here
 
 1. [Architecture Overview](architecture/overview.md)
-2. [Credential Security](security/credentials.md)
-3. [Configuration](operations/configuration.md)
+2. [Formal Feature Audit](architecture/feature-audit.md)
+3. [Credential Security](security/credentials.md)
+4. [Configuration](operations/configuration.md)
 
 ## Structure
 

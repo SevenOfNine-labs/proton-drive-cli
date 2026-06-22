@@ -171,6 +171,10 @@ describe('errorToStatusCode', () => {
     expect(errorToStatusCode({ code: ErrorCode.CAPTCHA_REQUIRED })).toBe(407);
   });
 
+  it('maps KEY_PASSWORD_REQUIRED to 401', () => {
+    expect(errorToStatusCode({ code: ErrorCode.KEY_PASSWORD_REQUIRED })).toBe(401);
+  });
+
   it('falls back to message-based matching for "captcha"', () => {
     expect(errorToStatusCode({ message: 'CAPTCHA verification required' })).toBe(407);
   });
