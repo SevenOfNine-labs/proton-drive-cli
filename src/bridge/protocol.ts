@@ -120,6 +120,7 @@ export const BRIDGE_ERROR_DETAIL_FIELDS = [
   'verificationMethods',
   'action',
   'retryAfter',
+  'protonCode',
 ] as const;
 
 export const ERROR_CODE_STATUS = {
@@ -133,6 +134,7 @@ export const ERROR_CODE_STATUS = {
   [ErrorCode.TIMEOUT]: 504,
   [ErrorCode.CONNECTION_REFUSED]: 502,
   [ErrorCode.API_ERROR]: 502,
+  [ErrorCode.INSUFFICIENT_SCOPE]: 403,
   [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.QUOTA_EXCEEDED]: 507,
   [ErrorCode.NOT_FOUND]: 404,

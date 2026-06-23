@@ -53,6 +53,7 @@ import {
   validateBridgeRequestForCommand,
   errorToStatusCode,
   formatCaptchaError,
+  formatInsufficientScopeError,
   getBridgeAuthState,
   getInitializedClient,
 } from './bridge';
@@ -272,6 +273,22 @@ describe('formatCaptchaError', () => {
       captchaUrl: 'https://verify.proton.me',
       captchaToken: 'token',
       action: 'run: proton-drive login',
+    });
+  });
+});
+
+describe('formatInsufficientScopeError', () => {
+  it('returns structured bridge details for Proton 9101 scope failures', () => {
+    const response = formatInsufficientScopeError(
+      new Error('API Error (9101): Access token does not have sufficient scope')
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.code).toBe(403);
+    expect(JSON.parse(response.details as string)).toMatchObject({
+      errorCode: ErrorCode.INSUFFICIENT_SCOPE,
+      protonCode: 9101,
+      action: expect.stringContaining('do not retry login loops'),
     });
   });
 });

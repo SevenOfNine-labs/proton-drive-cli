@@ -13,6 +13,7 @@
     "TIMEOUT": { "httpStatus": 504, "rootCode": "network_failure" },
     "CONNECTION_REFUSED": { "httpStatus": 502, "rootCode": "network_failure" },
     "API_ERROR": { "httpStatus": 502, "rootCode": "server_error" },
+    "INSUFFICIENT_SCOPE": { "httpStatus": 403, "rootCode": "insufficient_scope" },
     "RATE_LIMITED": { "httpStatus": 429, "rootCode": "rate_limited" },
     "QUOTA_EXCEEDED": { "httpStatus": 507, "rootCode": "server_error" },
     "NOT_FOUND": { "httpStatus": 404, "rootCode": "not_found" },

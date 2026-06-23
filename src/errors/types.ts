@@ -17,6 +17,7 @@ export enum ErrorCode {
 
   // API errors
   API_ERROR = 'API_ERROR',
+  INSUFFICIENT_SCOPE = 'INSUFFICIENT_SCOPE',
   RATE_LIMITED = 'RATE_LIMITED',
   QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
   NOT_FOUND = 'NOT_FOUND',
@@ -125,6 +126,9 @@ export class AppError extends Error {
       case ErrorCode.RATE_LIMITED:
         return this.message || 'Too many requests. Please try again later.';
 
+      case ErrorCode.INSUFFICIENT_SCOPE:
+        return 'Proton rejected this session or app authorization scope.';
+
       case ErrorCode.QUOTA_EXCEEDED:
         return 'Storage quota exceeded. Please free up space in your Proton Drive.';
 
@@ -182,6 +186,9 @@ export class AppError extends Error {
 
       case ErrorCode.RATE_LIMITED:
         return 'Wait a few moments before trying again';
+
+      case ErrorCode.INSUFFICIENT_SCOPE:
+        return 'Re-login only after the app/version scope requirement is understood';
 
       case ErrorCode.QUOTA_EXCEEDED:
         return 'Free up space in your Proton Drive or upgrade your plan';

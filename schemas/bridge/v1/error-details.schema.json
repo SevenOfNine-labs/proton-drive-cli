@@ -18,6 +18,7 @@
         "TIMEOUT",
         "CONNECTION_REFUSED",
         "API_ERROR",
+        "INSUFFICIENT_SCOPE",
         "RATE_LIMITED",
         "QUOTA_EXCEEDED",
         "NOT_FOUND",
@@ -46,6 +47,7 @@
     "captchaToken": { "type": "string" },
     "verificationMethods": { "type": "array", "items": { "type": "string" } },
     "action": { "type": "string" },
-    "retryAfter": { "type": "number" }
+    "retryAfter": { "type": "number" },
+    "protonCode": { "type": "number" }
   }
 }

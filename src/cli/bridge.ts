@@ -66,6 +66,38 @@ function appErrorDetails(error: AppError): string {
   });
 }
 
+function isInsufficientScopeError(error: unknown): boolean {
+  const candidate = error as {
+    response?: { data?: { Code?: unknown; Error?: unknown }; status?: unknown };
+    code?: unknown;
+    message?: unknown;
+  };
+  const protonCode = candidate?.response?.data?.Code ?? candidate?.code;
+  if (protonCode === 9101 || protonCode === '9101') {
+    return true;
+  }
+
+  const message = String(candidate?.message || candidate?.response?.data?.Error || '').toLowerCase();
+  return message.includes('9101') || message.includes('sufficient scope');
+}
+
+export function formatInsufficientScopeError(error: unknown): BridgeResponse {
+  const message = error instanceof Error && error.message
+    ? error.message
+    : 'Access token does not have sufficient Proton scope';
+
+  return {
+    ok: false,
+    error: message,
+    code: 403,
+    details: JSON.stringify({
+      errorCode: ErrorCode.INSUFFICIENT_SCOPE,
+      protonCode: 9101,
+      action: 'stop: app/session scope is insufficient; do not retry login loops',
+    }),
+  };
+}
+
 /**
  * Centralized error handler for bridge commands.
  * Detects CAPTCHA and rate-limit errors and formats appropriate responses.
@@ -91,6 +123,11 @@ function handleBridgeError(error: any, fallbackMessage: string = 'Operation fail
       errorCode: ErrorCode.RATE_LIMITED,
       retryAfter,
     }));
+    return;
+  }
+
+  if (isInsufficientScopeError(error)) {
+    writeResponse(formatInsufficientScopeError(error));
     return;
   }
 
