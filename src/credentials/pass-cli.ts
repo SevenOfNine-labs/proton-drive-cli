@@ -16,6 +16,7 @@ import { execFile } from 'child_process';
 
 import { PROTON_CREDENTIAL_HOST } from '../constants';
 import type { CredentialProvider, Credentials } from './types';
+import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
 const TIMEOUT_MS = 15_000;
 const DEFAULT_BIN = 'pass-cli';
@@ -149,6 +150,19 @@ function itemMatchesCredentialHost(raw: any, urlPattern: RegExp, host: string): 
   return titleMatchesCredentialHost(passCliItemTitle(raw), host);
 }
 
+function urlHosts(urls: string[] = []): string[] {
+  const hosts = new Set<string>();
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url);
+      hosts.add(parsed.host || parsed.protocol.replace(/:$/, ''));
+    } catch {
+      hosts.add(url.replace(/:.*/, ''));
+    }
+  }
+  return [...hosts].sort();
+}
+
 function getPassCliBin(): string {
   return process.env.PROTON_PASS_CLI_BIN?.trim() || DEFAULT_BIN;
 }
@@ -173,10 +187,15 @@ function runPassCli(args: string[]): Promise<string> {
 
 /** Check if pass-cli is installed and logged in. */
 async function passCliTest(): Promise<boolean> {
+  authTrace('credential.pass-cli.test.start');
   try {
     await runPassCli(['test']);
+    authTrace('credential.pass-cli.test.success');
     return true;
-  } catch {
+  } catch (error) {
+    authTrace('credential.pass-cli.test.failure', {
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 }
@@ -187,9 +206,14 @@ async function listVaults(): Promise<PassCliVault[]> {
   const parsed = JSON.parse(output);
   // pass-cli returns { vaults: [...] } or an array directly
   const vaults = Array.isArray(parsed) ? parsed : (parsed.vaults || []);
-  return vaults
+  const normalizedVaults = vaults
     .map(toPassCliVault)
     .filter((vault: PassCliVault | null): vault is PassCliVault => vault !== null);
+  authTrace('credential.pass-cli.vaults', {
+    count: normalizedVaults.length,
+    vaults: normalizedVaults.map((vault: PassCliVault) => vault.name),
+  });
+  return normalizedVaults;
 }
 
 async function viewVaultItem(vault: PassCliVault | string, entry: PassCliLoginItem): Promise<PassCliLoginItem | null> {
@@ -217,6 +241,11 @@ async function searchVault(
   host: string = PROTON_CREDENTIAL_HOST,
   options: { exhaustive?: boolean } = {},
 ): Promise<PassCliLoginItem[]> {
+  authTrace('credential.pass-cli.vault-scan.start', {
+    vault: vaultDisplayName(vault),
+    byShareId: Boolean(vaultShareId(vault)),
+    exhaustive: Boolean(options.exhaustive),
+  });
   const output = await runPassCli(itemListArgs(vault));
   const parsed = JSON.parse(output);
   // pass-cli returns { items: [...] } or a bare array
@@ -238,6 +267,12 @@ async function searchVault(
       matches.push(detailed);
     }
   }
+  authTrace('credential.pass-cli.vault-scan.success', {
+    vault: vaultDisplayName(vault),
+    exhaustive: Boolean(options.exhaustive),
+    itemCount: items.length,
+    matchCount: matches.length,
+  });
   return matches;
 }
 
@@ -249,6 +284,11 @@ async function searchProtonEntry(
 ): Promise<PassCliLoginItem | null> {
   const normalizedUsername = username?.trim().toLowerCase();
   const vaults = await listVaults();
+  authTrace('credential.pass-cli.search.start', {
+    host,
+    username: maskIdentifier(username),
+    vaultCount: vaults.length,
+  });
   const findInVaults = async (exhaustive: boolean): Promise<PassCliLoginItem | null> => {
     for (const vault of vaults) {
       const matches = await searchVault(vault, urlPattern, host, { exhaustive });
@@ -257,11 +297,28 @@ async function searchProtonEntry(
           entry.email?.trim().toLowerCase() === normalizedUsername ||
           entry.username?.trim().toLowerCase() === normalizedUsername
         );
-        if (exact) return exact;
+        if (exact) {
+          authTrace('credential.pass-cli.selected', {
+            host,
+            mode: exhaustive ? 'exhaustive' : 'heuristic',
+            vault: exact.vaultName,
+            username: maskIdentifier(exact.email || exact.username),
+            urlHosts: urlHosts(exact.urls),
+          });
+          return exact;
+        }
         continue;
       }
       if (matches.length > 0) {
-        return matches[0];
+        const selected = matches[0];
+        authTrace('credential.pass-cli.selected', {
+          host,
+          mode: exhaustive ? 'exhaustive' : 'heuristic',
+          vault: selected.vaultName,
+          username: maskIdentifier(selected.email || selected.username),
+          urlHosts: urlHosts(selected.urls),
+        });
+        return selected;
       }
     }
     return null;
@@ -276,7 +333,15 @@ async function searchProtonEntry(
   // shown, which is not available for agent sessions. If title heuristics
   // miss, hydrate every login item across every vault and inspect URLs from
   // `item view`.
-  return findInVaults(true);
+  const exhaustiveMatch = await findInVaults(true);
+  if (!exhaustiveMatch) {
+    authTrace('credential.pass-cli.search.miss', {
+      host,
+      username: maskIdentifier(username),
+      vaultCount: vaults.length,
+    });
+  }
+  return exhaustiveMatch;
 }
 
 export class PassCliProvider implements CredentialProvider {
@@ -294,8 +359,18 @@ export class PassCliProvider implements CredentialProvider {
   }
 
   async resolve(options?: { username?: string }): Promise<Credentials> {
+    authTrace('credential.resolve.start', {
+      provider: this.name,
+      host: this.host,
+      username: maskIdentifier(options?.username),
+    });
     const loggedIn = await passCliTest();
     if (!loggedIn) {
+      authTrace('credential.resolve.failure', {
+        provider: this.name,
+        host: this.host,
+        reason: 'pass-cli-not-logged-in',
+      });
       throw new Error(
         'pass-cli is not logged in. Run: pass-cli login',
       );
@@ -303,6 +378,11 @@ export class PassCliProvider implements CredentialProvider {
 
     const entry = await searchProtonEntry(this.urlPattern, options?.username, this.host);
     if (!entry || !entry.password) {
+      authTrace('credential.resolve.failure', {
+        provider: this.name,
+        host: this.host,
+        reason: 'entry-not-found',
+      });
       throw new Error(
         'No Proton login entry found in pass-cli vaults. ' +
         'Create one with a proton.me URL, or use --credential-provider git-credential.',
@@ -311,11 +391,23 @@ export class PassCliProvider implements CredentialProvider {
 
     const username = options?.username || entry.email || entry.username;
     if (!username) {
+      authTrace('credential.resolve.failure', {
+        provider: this.name,
+        host: this.host,
+        reason: 'missing-username',
+      });
       throw new Error(
         'Proton login entry found but has no username or email.',
       );
     }
 
+    authTrace('credential.resolve.success', {
+      provider: this.name,
+      host: this.host,
+      username: maskIdentifier(username),
+      vault: entry.vaultName,
+      urlHosts: urlHosts(entry.urls),
+    });
     return { username, password: entry.password };
   }
 
@@ -365,12 +457,36 @@ export class PassCliProvider implements CredentialProvider {
   }
 
   async verify(): Promise<boolean> {
+    authTrace('credential.verify.start', {
+      provider: this.name,
+      host: this.host,
+    });
     try {
       const loggedIn = await passCliTest();
-      if (!loggedIn) return false;
+      if (!loggedIn) {
+        authTrace('credential.verify.success', {
+          provider: this.name,
+          host: this.host,
+          ok: false,
+          reason: 'pass-cli-not-logged-in',
+        });
+        return false;
+      }
       const entry = await searchProtonEntry(this.urlPattern, undefined, this.host);
-      return entry !== null && !!entry.password;
-    } catch {
+      const ok = entry !== null && !!entry.password;
+      authTrace('credential.verify.success', {
+        provider: this.name,
+        host: this.host,
+        ok,
+        username: maskIdentifier(entry?.email || entry?.username),
+      });
+      return ok;
+    } catch (error) {
+      authTrace('credential.verify.failure', {
+        provider: this.name,
+        host: this.host,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
   }

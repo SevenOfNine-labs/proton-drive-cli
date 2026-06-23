@@ -7,6 +7,7 @@ import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { HttpClientError, isHttpClientError } from '../api/http-client';
 import { jwtDecode } from 'jwt-decode';
 import { logger } from '../utils/logger';
+import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
 interface LoginOptions {
   captchaToken?: string;
@@ -54,20 +55,28 @@ export class AuthService {
   ): Promise<SessionCredentials> {
     const options = this.normalizeLoginOptions(optionsOrCaptchaToken);
     try {
+      authTrace('auth.login.start', {
+        username: maskIdentifier(username),
+        captchaTokenPresent: Boolean(options.captchaToken),
+        secondFactorCodePresent: Boolean(options.secondFactorCode),
+      });
+
       // Step 1: Get auth info (send CAPTCHA token if available)
       const authInfo = await this.runAuthStage('auth-info', () =>
         this.authApi.getAuthInfo(username, options.captchaToken)
       );
 
       // Step 2: Compute SRP handshake
-      const handshake = await SRPClient.computeHandshake(
-        username,
-        password,
-        authInfo.Salt,
-        authInfo.Modulus,
-        authInfo.ServerEphemeral,
-        authInfo.Version,
-        authInfo.Username
+      const handshake = await this.runLocalAuthStep('srp-handshake', () =>
+        SRPClient.computeHandshake(
+          username,
+          password,
+          authInfo.Salt,
+          authInfo.Modulus,
+          authInfo.ServerEphemeral,
+          authInfo.Version,
+          authInfo.Username
+        )
       );
 
       // Step 3: Authenticate
@@ -82,12 +91,15 @@ export class AuthService {
       );
 
       // Step 4: Verify server proof
+      authTrace('auth.server-proof.start');
       if (!SRPClient.verifyServerProof(
         authResponse.ServerProof,
         handshake.expectedServerProof
       )) {
+        authTrace('auth.server-proof.failure', { reason: 'invalid-server-proof' });
         throw new Error('Server authentication failed: invalid server proof');
       }
+      authTrace('auth.server-proof.success');
 
       // Step 5: Complete mandatory 2FA before persisting any session.
       await this.runAuthStage('two-factor', () =>
@@ -121,9 +133,21 @@ export class AuthService {
       };
 
       // Step 8: Save session
+      authTrace('auth.session-save.start', {
+        sessionFile: SessionManager.getSessionFilePath(),
+        passwordMode: authResponse.PasswordMode,
+        scopes: authResponse.Scopes,
+      });
       await SessionManager.saveSession(session);
+      authTrace('auth.session-save.success', {
+        sessionFile: SessionManager.getSessionFilePath(),
+      });
       logger.info('Authentication successful');
       logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
+      authTrace('auth.login.success', {
+        username: maskIdentifier(username),
+        passwordMode: authResponse.PasswordMode,
+      });
 
       return session;
     } catch (error: unknown) {
@@ -165,9 +189,28 @@ export class AuthService {
   }
 
   private async runAuthStage<T>(stage: AuthStage, operation: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    authTrace('auth.stage.start', {
+      stage,
+      endpoint: AUTH_STAGE_ENDPOINT[stage],
+    });
+
     try {
-      return await operation();
+      const result = await operation();
+      authTrace('auth.stage.success', {
+        stage,
+        endpoint: AUTH_STAGE_ENDPOINT[stage],
+        durationMs: Date.now() - start,
+      });
+      return result;
     } catch (error: unknown) {
+      authTrace('auth.stage.failure', {
+        stage,
+        endpoint: AUTH_STAGE_ENDPOINT[stage],
+        durationMs: Date.now() - start,
+        ...this.authTraceErrorFields(error),
+      });
+
       if (error instanceof AppError || error instanceof CaptchaError) {
         throw error;
       }
@@ -199,6 +242,58 @@ export class AuthService {
 
       throw error;
     }
+  }
+
+  private async runLocalAuthStep<T>(step: string, operation: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    authTrace('auth.local-step.start', { step });
+    try {
+      const result = await operation();
+      authTrace('auth.local-step.success', {
+        step,
+        durationMs: Date.now() - start,
+      });
+      return result;
+    } catch (error: unknown) {
+      authTrace('auth.local-step.failure', {
+        step,
+        durationMs: Date.now() - start,
+        ...this.authTraceErrorFields(error),
+      });
+      throw error;
+    }
+  }
+
+  private authTraceErrorFields(error: unknown): Record<string, unknown> {
+    if (isHttpClientError(error)) {
+      const data = error.response?.data as Record<string, unknown> | undefined;
+      return {
+        errorName: error.name,
+        errorMessage: error.message,
+        clientCode: error.code,
+        httpStatus: error.response?.status,
+        protonCode: data?.Code,
+        apiMessage: data?.Error,
+      };
+    }
+
+    if (error instanceof AppError) {
+      return {
+        errorName: error.name,
+        errorCode: error.code,
+        errorMessage: error.message,
+        details: error.details,
+      };
+    }
+
+    if (error instanceof Error) {
+      return {
+        errorName: error.name,
+        errorMessage: error.message,
+      };
+    }
+
+    return { errorMessage: String(error) };
   }
 
   private authStageErrorCode(error: HttpClientError): ErrorCode {

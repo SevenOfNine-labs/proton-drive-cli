@@ -276,14 +276,16 @@ export function createCredentialCommand(): Command {
           }
         }
 
+        if (isQuiet()) {
+          return;
+        }
+
         // Resolve to show details
         const cred = await provider.resolve();
 
-        if (!isQuiet()) {
-          console.log(chalk.green(`Credentials found via ${providerName}:`));
-          console.log(`  ${chalk.dim('Username:')} ${cred.username}`);
-          console.log(`  ${chalk.dim('Password:')} ${'*'.repeat(20)}`);
-        }
+        console.log(chalk.green(`Credentials found via ${providerName}:`));
+        console.log(`  ${chalk.dim('Username:')} ${cred.username}`);
+        console.log(`  ${chalk.dim('Password:')} ${'*'.repeat(20)}`);
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
         process.exit(1);

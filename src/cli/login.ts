@@ -12,6 +12,7 @@ import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { openBrowserUrl } from '../utils/open-browser';
 import { readPasswordFromStdin, normalizeProviderName, createProvider } from '../credentials';
+import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
 interface LoginChallengeState {
   captchaToken?: string;
@@ -147,6 +148,7 @@ export async function loginWithInteractiveChallenges(
 export async function loginWithBrowserFork(
   authService: BrowserForkAuthService = new BrowserForkAuthService()
 ): Promise<void> {
+  authTrace('cli.login.browser-fork.start');
   let spinner: ReturnType<typeof ora> | undefined;
   if (isVerbose()) {
     spinner = ora('Starting browser sign-in...').start();
@@ -185,10 +187,12 @@ export async function loginWithBrowserFork(
     } else if (!isQuiet()) {
       outputResult('OK');
     }
+    authTrace('cli.login.browser-fork.success');
   } catch (error: unknown) {
     if (spinner) {
       spinner.stop();
     }
+    authTrace('cli.login.browser-fork.failure', traceErrorFields(error));
     throw error;
   }
 }
@@ -271,6 +275,12 @@ export function createLoginCommand(): Command {
     .action(async (options) => {
       try {
         const authMode = String(options.authMode || 'srp').toLowerCase();
+        authTrace('cli.login.start', {
+          authMode,
+          credentialProvider: options.credentialProvider,
+          username: maskIdentifier(options.username),
+          passwordStdin: Boolean(options.passwordStdin),
+        });
         if (authMode === 'browser-fork') {
           await loginWithBrowserFork(new BrowserForkAuthService(
             resolveBrowserForkKeyPasswordOptions(options)
@@ -296,6 +306,10 @@ export function createLoginCommand(): Command {
           const creds = await provider.resolve({ username });
           username = creds.username || username;
           password = creds.password;
+          authTrace('cli.login.credentials-ready', {
+            provider: name,
+            username: maskIdentifier(username),
+          });
           if (!isQuiet()) {
             console.log(chalk.dim(`[INFO] Credentials resolved via ${name} for ${username}`));
           }
@@ -396,6 +410,9 @@ export function createLoginCommand(): Command {
         // At this point both username and password are guaranteed defined
         const finalUsername = username as string;
         const finalPassword = password as string;
+        authTrace('cli.login.srp.ready', {
+          username: maskIdentifier(finalUsername),
+        });
 
         // Authenticate with spinner
         let spinner: ReturnType<typeof ora> | undefined;
@@ -405,6 +422,9 @@ export function createLoginCommand(): Command {
         const authService = new AuthService();
 
         try {
+          authTrace('cli.login.srp.start', {
+            username: maskIdentifier(finalUsername),
+          });
           await loginWithInteractiveChallenges(
             authService,
             finalUsername.trim(),
@@ -426,20 +446,43 @@ export function createLoginCommand(): Command {
           } else if (!isQuiet()) {
             outputResult('OK');
           }
+          authTrace('cli.login.srp.success', {
+            username: maskIdentifier(finalUsername),
+          });
         } catch (error: unknown) {
           if (spinner) {
             spinner.stop();
           }
 
+          authTrace('cli.login.srp.failure', traceErrorFields(error));
           throw error;
         }
       } catch (error) {
+        authTrace('cli.login.failure', traceErrorFields(error));
         handleError(error, process.env.DEBUG === 'true');
         process.exit(1);
       }
     });
 
   return command;
+}
+
+function traceErrorFields(error: unknown): Record<string, unknown> {
+  if (error instanceof AppError) {
+    return {
+      errorName: error.name,
+      errorCode: error.code,
+      errorMessage: error.message,
+      details: error.details,
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+    };
+  }
+  return { errorMessage: String(error) };
 }
 
 /**

@@ -15,6 +15,7 @@ import { execFile } from 'child_process';
 
 import { PROTON_CREDENTIAL_HOST } from '../constants';
 import type { CredentialProvider, Credentials } from './types';
+import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
 export interface GitCredential {
   protocol: string;
@@ -89,6 +90,10 @@ function runGitCredential(
  * Resolve credentials using `git credential fill`.
  */
 export async function gitCredentialFill(host?: string, username?: string): Promise<GitCredential> {
+  authTrace('credential.git.fill.start', {
+    host: host || PROTON_CREDENTIAL_HOST,
+    username: maskIdentifier(username),
+  });
   const input = formatCredentialInput({
     protocol: DEFAULT_PROTOCOL,
     host: host || PROTON_CREDENTIAL_HOST,
@@ -99,18 +104,27 @@ export async function gitCredentialFill(host?: string, username?: string): Promi
   const parsed = parseCredentialOutput(output);
 
   if (!(parsed.username || username) || !parsed.password) {
+    authTrace('credential.git.fill.failure', {
+      host: host || PROTON_CREDENTIAL_HOST,
+      reason: 'missing-username-or-password',
+    });
     throw new Error(
       'git credential fill did not return username and password. ' +
       'Ensure a credential helper is configured (e.g., git-credential-manager).',
     );
   }
 
-  return {
+  const credential = {
     protocol: parsed.protocol || DEFAULT_PROTOCOL,
     host: parsed.host || host || PROTON_CREDENTIAL_HOST,
     username: parsed.username || username!,
     password: parsed.password,
   };
+  authTrace('credential.git.fill.success', {
+    host: credential.host,
+    username: maskIdentifier(credential.username),
+  });
+  return credential;
 }
 
 /**
@@ -149,7 +163,17 @@ export class GitCredentialProvider implements CredentialProvider {
   }
 
   async resolve(options?: { username?: string }): Promise<Credentials> {
+    authTrace('credential.resolve.start', {
+      provider: this.name,
+      host: this.host,
+      username: maskIdentifier(options?.username),
+    });
     const cred = await gitCredentialFill(this.host, options?.username);
+    authTrace('credential.resolve.success', {
+      provider: this.name,
+      host: this.host,
+      username: maskIdentifier(options?.username || cred.username),
+    });
     return { username: options?.username || cred.username, password: cred.password };
   }
 
@@ -172,6 +196,25 @@ export class GitCredentialProvider implements CredentialProvider {
   }
 
   async verify(): Promise<boolean> {
-    return this.isAvailable();
+    authTrace('credential.verify.start', {
+      provider: this.name,
+      host: this.host,
+    });
+    try {
+      const ok = await this.isAvailable();
+      authTrace('credential.verify.success', {
+        provider: this.name,
+        host: this.host,
+        ok,
+      });
+      return ok;
+    } catch (error) {
+      authTrace('credential.verify.failure', {
+        provider: this.name,
+        host: this.host,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   }
 }
