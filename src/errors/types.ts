@@ -69,6 +69,9 @@ export class AppError extends Error {
   toUserMessage(): string {
     switch (this.code) {
       case ErrorCode.AUTH_FAILED:
+        if (this.message?.startsWith('Login failed during ')) {
+          return this.message;
+        }
         return 'Authentication failed. Please check your credentials and try again.';
 
       case ErrorCode.SESSION_EXPIRED:
@@ -90,6 +93,9 @@ export class AppError extends Error {
         return 'Network connection failed. Please check your internet connection and try again.';
 
       case ErrorCode.TIMEOUT:
+        if (this.message?.startsWith('Login failed during ')) {
+          return this.message;
+        }
         return 'Request timed out. The server took too long to respond.';
 
       case ErrorCode.CONNECTION_REFUSED:

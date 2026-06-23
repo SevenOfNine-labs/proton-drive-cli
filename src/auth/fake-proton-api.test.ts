@@ -460,7 +460,7 @@ describe('AuthService against a fake Proton API', () => {
       const authService = new harness.AuthService(server.baseUrl, APP_VERSION);
 
       await expect(authService.login(USERNAME, PASSWORD)).rejects.toThrow(
-        'Login failed: Request failed with status 401'
+        'Login failed during auth-submit: Request failed with status 401'
       );
       expectNoRouteErrors(server);
       expect(server.records.map(record => `${record.method} ${record.path}`)).toEqual([

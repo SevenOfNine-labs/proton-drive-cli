@@ -1,4 +1,5 @@
 import { AuthApiClient } from '../api/auth';
+import { HttpClientError } from '../api/http-client';
 import { ErrorCode } from '../errors/types';
 import { AuthResponse } from '../types/auth';
 import { AuthService } from './index';
@@ -167,6 +168,54 @@ describe('AuthService', () => {
       });
 
     expect(complete2FA).not.toHaveBeenCalled();
+    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
+  });
+
+  it('labels auth-info timeout failures without persisting the session', async () => {
+    getAuthInfo.mockRejectedValue(new HttpClientError('Request timed out', {
+      code: 'ECONNABORTED',
+    }));
+    const service = new AuthService();
+
+    await expect(service.login('user@proton.me', 'login-password'))
+      .rejects.toMatchObject({
+        code: ErrorCode.TIMEOUT,
+        message: 'Login failed during auth-info: Request timed out',
+        details: expect.objectContaining({
+          authStage: 'auth-info',
+          endpoint: '/auth/v4/info',
+          clientCode: 'ECONNABORTED',
+        }),
+      });
+
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
+  });
+
+  it('labels auth-submit API failures without persisting the session', async () => {
+    authenticate.mockRejectedValue(new HttpClientError('Request failed with status 401', {
+      response: {
+        data: { Code: 8002, Error: 'Invalid login credentials' },
+        status: 401,
+        headers: {},
+        config: {},
+      },
+    }));
+    const service = new AuthService();
+
+    await expect(service.login('user@proton.me', 'login-password'))
+      .rejects.toMatchObject({
+        code: ErrorCode.AUTH_FAILED,
+        message: 'Login failed during auth-submit: Request failed with status 401',
+        details: expect.objectContaining({
+          authStage: 'auth-submit',
+          endpoint: '/auth/v4',
+          httpStatus: 401,
+          protonCode: 8002,
+          apiMessage: 'Invalid login credentials',
+        }),
+      });
+
     expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@ import { SessionManager } from './session';
 import { createKeyPasswordStore } from './key-password-store';
 import { AuthResponse, SessionCredentials } from '../types/auth';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
-import { isHttpClientError } from '../api/http-client';
+import { HttpClientError, isHttpClientError } from '../api/http-client';
 import { jwtDecode } from 'jwt-decode';
 import { logger } from '../utils/logger';
 
@@ -12,6 +12,20 @@ interface LoginOptions {
   captchaToken?: string;
   secondFactorCode?: string;
 }
+
+type AuthStage = 'auth-info' | 'auth-submit' | 'two-factor';
+
+const AUTH_STAGE_ENDPOINT: Record<AuthStage, string> = {
+  'auth-info': '/auth/v4/info',
+  'auth-submit': '/auth/v4',
+  'two-factor': '/auth/v4/2fa',
+};
+
+const AUTH_STAGE_LABEL: Record<AuthStage, string> = {
+  'auth-info': 'auth-info',
+  'auth-submit': 'auth-submit',
+  'two-factor': 'two-factor',
+};
 
 const TWO_FACTOR_TOTP = 1;
 const TWO_FACTOR_FIDO2 = 2;
@@ -41,7 +55,9 @@ export class AuthService {
     const options = this.normalizeLoginOptions(optionsOrCaptchaToken);
     try {
       // Step 1: Get auth info (send CAPTCHA token if available)
-      const authInfo = await this.authApi.getAuthInfo(username, options.captchaToken);
+      const authInfo = await this.runAuthStage('auth-info', () =>
+        this.authApi.getAuthInfo(username, options.captchaToken)
+      );
 
       // Step 2: Compute SRP handshake
       const handshake = await SRPClient.computeHandshake(
@@ -55,12 +71,14 @@ export class AuthService {
       );
 
       // Step 3: Authenticate
-      const authResponse = await this.authApi.authenticate(
-        username,
-        handshake.clientEphemeral,
-        handshake.clientProof,
-        authInfo.SRPSession,
-        options.captchaToken
+      const authResponse = await this.runAuthStage('auth-submit', () =>
+        this.authApi.authenticate(
+          username,
+          handshake.clientEphemeral,
+          handshake.clientProof,
+          authInfo.SRPSession,
+          options.captchaToken
+        )
       );
 
       // Step 4: Verify server proof
@@ -72,7 +90,9 @@ export class AuthService {
       }
 
       // Step 5: Complete mandatory 2FA before persisting any session.
-      await this.completeTwoFactorIfRequired(authResponse, options.secondFactorCode);
+      await this.runAuthStage('two-factor', () =>
+        this.completeTwoFactorIfRequired(authResponse, options.secondFactorCode)
+      );
 
       // Step 6: Calculate token expiration time
       // Initial login response doesn't include ExpiresIn, so decode JWT to get expiry
@@ -142,6 +162,69 @@ export class AuthService {
       return { captchaToken: optionsOrCaptchaToken };
     }
     return optionsOrCaptchaToken || {};
+  }
+
+  private async runAuthStage<T>(stage: AuthStage, operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: unknown) {
+      if (error instanceof AppError || error instanceof CaptchaError) {
+        throw error;
+      }
+
+      if (isHttpClientError(error)) {
+        const data = error.response?.data as Record<string, unknown> | undefined;
+        const protonCode = data?.Code;
+
+        // Keep the existing rate-limit path so cooldown metadata is preserved.
+        if (protonCode === 2028 || error.response?.status === 429) {
+          throw error;
+        }
+
+        throw new AppError(
+          `Login failed during ${AUTH_STAGE_LABEL[stage]}: ${error.message}`,
+          this.authStageErrorCode(error),
+          {
+            authStage: stage,
+            endpoint: AUTH_STAGE_ENDPOINT[stage],
+            clientCode: error.code,
+            httpStatus: error.response?.status,
+            protonCode,
+            apiMessage: data?.Error,
+            originalError: error.message,
+          },
+          this.isRecoverableAuthStageError(error)
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  private authStageErrorCode(error: HttpClientError): ErrorCode {
+    if (!error.response) {
+      if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+        return ErrorCode.TIMEOUT;
+      }
+      if (error.code === 'ECONNREFUSED') {
+        return ErrorCode.CONNECTION_REFUSED;
+      }
+      return ErrorCode.NETWORK_ERROR;
+    }
+    if (error.response.status === 400 || error.response.status === 401) {
+      return ErrorCode.AUTH_FAILED;
+    }
+    if (error.response.status >= 500) {
+      return ErrorCode.API_ERROR;
+    }
+    return ErrorCode.API_ERROR;
+  }
+
+  private isRecoverableAuthStageError(error: HttpClientError): boolean {
+    if (!error.response) {
+      return true;
+    }
+    return error.response.status >= 500;
   }
 
   private async completeTwoFactorIfRequired(
