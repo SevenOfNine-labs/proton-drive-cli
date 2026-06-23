@@ -142,8 +142,11 @@ function titleMatchesCredentialHost(title: string, host: string): boolean {
 }
 
 function itemMatchesCredentialHost(raw: any, urlPattern: RegExp, host: string): boolean {
-  return passCliItemURLs(raw).some((url) => urlPattern.test(url)) ||
-    titleMatchesCredentialHost(passCliItemTitle(raw), host);
+  const urls = passCliItemURLs(raw);
+  if (urls.length > 0) {
+    return urls.some((url) => urlPattern.test(url));
+  }
+  return titleMatchesCredentialHost(passCliItemTitle(raw), host);
 }
 
 function getPassCliBin(): string {

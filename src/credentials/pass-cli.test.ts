@@ -224,6 +224,20 @@ describe('searchVault', () => {
     expect(results).toHaveLength(1);
   });
 
+  it('rejects Proton-titled entries with non-matching URLs', async () => {
+    simulateExecFile(wrapItems([
+      makePassCliItem({
+        title: 'Proton Mail Bridge (assistant@example.test)',
+        username: 'assistant@example.test',
+        password: 'bridge-password',
+        urls: ['imap://127.0.0.1:1143', 'smtps://127.0.0.1:1025'],
+      }),
+    ]));
+
+    const results = await searchVault('Personal');
+    expect(results).toHaveLength(0);
+  });
+
   it('handles bare array response (backward compat)', async () => {
     simulateExecFile(JSON.stringify([
       makePassCliItem({ title: 'Proton', email: 'u@proton.me', password: 'p', urls: ['https://proton.me'] }),
@@ -276,6 +290,36 @@ describe('searchVault', () => {
       expect.objectContaining({ timeout: 15_000 }),
       expect.any(Function),
     );
+  });
+
+  it('rejects hydrated Proton title matches when detailed URLs do not match', async () => {
+    simulateSequentialCalls(
+      { stdout: wrapItems([
+        makePassCliMetadataItem({ title: 'Proton Mail Bridge (assistant@example.test)', id: 'bridge-123', shareId: 'share-456' }),
+        makePassCliMetadataItem({ title: 'Proton', id: 'login-123', shareId: 'share-456' }),
+      ]) },
+      { stdout: JSON.stringify({
+        item: makePassCliItem({
+          title: 'Proton Mail Bridge (assistant@example.test)',
+          username: 'assistant@example.test',
+          password: 'bridge-password',
+          urls: ['imap://127.0.0.1:1143', 'smtps://127.0.0.1:1025'],
+        }),
+      }) },
+      { stdout: JSON.stringify({
+        item: makePassCliItem({
+          title: 'Proton',
+          username: 'agent.van-driesten',
+          password: 'login-password',
+          urls: ['https://proton.me'],
+        }),
+      }) },
+    );
+
+    const results = await searchVault('Personal');
+    expect(results).toHaveLength(1);
+    expect(results[0].username).toBe('agent.van-driesten');
+    expect(results[0].password).toBe('login-password');
   });
 });
 
