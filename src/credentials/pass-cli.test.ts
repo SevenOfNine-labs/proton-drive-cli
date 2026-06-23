@@ -159,6 +159,23 @@ describe('listVaults', () => {
     expect(vaults).toEqual([{ id: 'vid1', name: 'Personal' }]);
   });
 
+  it('preserves vault share ids for stable all-vault item lookup', async () => {
+    simulateExecFile(JSON.stringify({
+      vaults: [{
+        vault_id: 'vid1',
+        share_id: 'share1',
+        name: 'Seven of Nine [dev]',
+      }],
+    }));
+
+    const vaults = await listVaults();
+    expect(vaults).toEqual([{
+      id: 'vid1',
+      shareId: 'share1',
+      name: 'Seven of Nine [dev]',
+    }]);
+  });
+
   it('parses vault list from object response with id', async () => {
     simulateExecFile(JSON.stringify({
       vaults: [{ id: 'v1', name: 'Personal' }],
@@ -214,6 +231,22 @@ describe('searchVault', () => {
 
     const results = await searchVault('Personal');
     expect(results).toHaveLength(1);
+  });
+
+  it('lists a vault by share id when available', async () => {
+    simulateExecFile(wrapItems([
+      makePassCliItem({ title: 'Proton', username: 'user', password: 'pass', urls: ['https://proton.me'] }),
+    ]));
+
+    const results = await searchVault({ name: 'Seven of Nine [dev]', shareId: 'share-dev' });
+    expect(results).toHaveLength(1);
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      1,
+      'pass-cli',
+      ['item', 'list', '--share-id', 'share-dev', '--filter-type', 'login', '--output', 'json'],
+      expect.objectContaining({ timeout: 15_000 }),
+      expect.any(Function),
+    );
   });
 
   it('hydrates metadata-only proton title matches through item view', async () => {
@@ -304,6 +337,80 @@ describe('searchProtonEntry', () => {
 
     const entry = await searchProtonEntry();
     expect(entry).not.toBeNull();
+  });
+
+  it('searches every vault by share id and hydrates a later metadata-only match', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({
+        vaults: [
+          { vault_id: 'v1', share_id: 'share-work', name: 'Work' },
+          { vault_id: 'v2', share_id: 'share-dev', name: 'Seven of Nine [dev]' },
+        ],
+      }) },
+      { stdout: wrapItems([]) },
+      { stdout: wrapItems([
+        makePassCliMetadataItem({ title: 'proton.me', id: 'item-123', shareId: 'share-dev' }),
+      ]) },
+      { stdout: JSON.stringify({
+        item: makePassCliItem({
+          title: 'proton.me',
+          email: 'user@proton.me',
+          password: 'pass',
+          urls: ['https://proton.me/'],
+        }),
+      }) },
+    );
+
+    const entry = await searchProtonEntry();
+    expect(entry).not.toBeNull();
+    expect(entry!.email).toBe('user@proton.me');
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      2,
+      'pass-cli',
+      ['item', 'list', '--share-id', 'share-work', '--filter-type', 'login', '--output', 'json'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      3,
+      'pass-cli',
+      ['item', 'list', '--share-id', 'share-dev', '--filter-type', 'login', '--output', 'json'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('falls back to hydrating metadata-only items to match hidden proton.me URLs', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({
+        vaults: [{ vault_id: 'v1', share_id: 'share-personal', name: 'Personal' }],
+      }) },
+      { stdout: wrapItems([
+        makePassCliMetadataItem({ title: 'Primary Account', id: 'item-123', shareId: 'share-personal' }),
+      ]) },
+      { stdout: wrapItems([
+        makePassCliMetadataItem({ title: 'Primary Account', id: 'item-123', shareId: 'share-personal' }),
+      ]) },
+      { stdout: JSON.stringify({
+        item: makePassCliItem({
+          title: 'Primary Account',
+          username: 'agent.van-driesten',
+          password: 'pass',
+          urls: ['https://proton.me/'],
+        }),
+      }) },
+    );
+
+    const entry = await searchProtonEntry();
+    expect(entry).not.toBeNull();
+    expect(entry!.username).toBe('agent.van-driesten');
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      4,
+      'pass-cli',
+      ['item', 'view', '--output', 'json', '--share-id', 'share-personal', '--item-id', 'item-123'],
+      expect.any(Object),
+      expect.any(Function),
+    );
   });
 
   it('returns null when no vaults have a match', async () => {
@@ -441,7 +548,9 @@ describe('PassCliProvider', () => {
     simulateSequentialCalls(
       // searchProtonEntry -> listVaults
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
-      // searchProtonEntry -> searchVault
+      // searchProtonEntry -> heuristic searchVault
+      { stdout: wrapItems([]) },
+      // searchProtonEntry -> exhaustive searchVault
       { stdout: wrapItems([]) },
       // listVaults
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
@@ -451,7 +560,7 @@ describe('PassCliProvider', () => {
     const provider = new PassCliProvider();
     await provider.store('user@proton.me', 'password123');
 
-    const createCall = mockExecFile.mock.calls[3];
+    const createCall = mockExecFile.mock.calls[4];
     expect(createCall[1]).toEqual([
       'item', 'create', 'login',
       '--vault-name', 'Personal',
@@ -467,6 +576,7 @@ describe('PassCliProvider', () => {
     simulateSequentialCalls(
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
       { stdout: wrapItems([]) },
+      { stdout: wrapItems([]) },
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
       { stdout: '' },
     );
@@ -474,7 +584,7 @@ describe('PassCliProvider', () => {
     const provider = new PassCliProvider('proton-drive-key.proton-lfs-cli.local');
     await provider.store('uid-123', 'derived-key-password');
 
-    const createCall = mockExecFile.mock.calls[3];
+    const createCall = mockExecFile.mock.calls[4];
     expect(createCall[1]).toEqual([
       'item', 'create', 'login',
       '--vault-name', 'Personal',

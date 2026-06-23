@@ -29,7 +29,8 @@ function credentialHostPattern(host: string = PROTON_CREDENTIAL_HOST): RegExp {
 }
 
 interface PassCliVault {
-  id: string;
+  id?: string;
+  shareId?: string;
   name: string;
 }
 
@@ -96,6 +97,38 @@ function toPassCliLoginItem(raw: any, vaultName: string): PassCliLoginItem {
   };
 }
 
+function toPassCliVault(raw: any): PassCliVault | null {
+  const id = raw?.vault_id || raw?.vaultId || raw?.id;
+  const shareId = raw?.share_id || raw?.shareId;
+  const name = raw?.name || raw?.title || id || shareId;
+  if (!name && !shareId) return null;
+
+  const vault: PassCliVault = { name: name || shareId };
+  if (id) vault.id = id;
+  if (shareId) vault.shareId = shareId;
+  return vault;
+}
+
+function vaultDisplayName(vault: PassCliVault | string): string {
+  return typeof vault === 'string' ? vault : vault.name;
+}
+
+function vaultShareId(vault: PassCliVault | string): string | undefined {
+  return typeof vault === 'string' ? undefined : vault.shareId;
+}
+
+function itemListArgs(vault: PassCliVault | string): string[] {
+  const args = ['item', 'list'];
+  const shareId = vaultShareId(vault);
+  if (shareId) {
+    args.push('--share-id', shareId);
+  } else {
+    args.push(vaultDisplayName(vault));
+  }
+  args.push('--filter-type', 'login', '--output', 'json');
+  return args;
+}
+
 function titleMatchesCredentialHost(title: string, host: string): boolean {
   const normalizedTitle = title.trim().toLowerCase();
   const normalizedHost = host.trim().toLowerCase();
@@ -151,13 +184,19 @@ async function listVaults(): Promise<PassCliVault[]> {
   const parsed = JSON.parse(output);
   // pass-cli returns { vaults: [...] } or an array directly
   const vaults = Array.isArray(parsed) ? parsed : (parsed.vaults || []);
-  return vaults.map((v: any) => ({ id: v.vault_id || v.id || v.vaultId, name: v.name }));
+  return vaults
+    .map(toPassCliVault)
+    .filter((vault: PassCliVault | null): vault is PassCliVault => vault !== null);
 }
 
-async function viewVaultItem(vaultName: string, entry: PassCliLoginItem): Promise<PassCliLoginItem | null> {
+async function viewVaultItem(vault: PassCliVault | string, entry: PassCliLoginItem): Promise<PassCliLoginItem | null> {
   const args = ['item', 'view', '--output', 'json'];
-  if (entry.shareId && entry.id) {
-    args.push('--share-id', entry.shareId, '--item-id', entry.id);
+  const shareId = entry.shareId || vaultShareId(vault);
+  const vaultName = vaultDisplayName(vault);
+  if (shareId && entry.id) {
+    args.push('--share-id', shareId, '--item-id', entry.id);
+  } else if (shareId && entry.name) {
+    args.push('--share-id', shareId, '--item-title', entry.name);
   } else if (entry.name) {
     args.push('--vault-name', vaultName, '--item-title', entry.name);
   } else {
@@ -170,23 +209,22 @@ async function viewVaultItem(vaultName: string, entry: PassCliLoginItem): Promis
 
 /** Search a single vault for login items matching the requested credential host. */
 async function searchVault(
-  vault: string,
+  vault: PassCliVault | string,
   urlPattern: RegExp = credentialHostPattern(),
-  host: string = PROTON_CREDENTIAL_HOST
+  host: string = PROTON_CREDENTIAL_HOST,
+  options: { exhaustive?: boolean } = {},
 ): Promise<PassCliLoginItem[]> {
-  const output = await runPassCli([
-    'item', 'list', vault,
-    '--filter-type', 'login',
-    '--output', 'json',
-  ]);
+  const output = await runPassCli(itemListArgs(vault));
   const parsed = JSON.parse(output);
   // pass-cli returns { items: [...] } or a bare array
   const items: any[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
   const matches: PassCliLoginItem[] = [];
   for (const item of items) {
-    if (!itemMatchesCredentialHost(item, urlPattern, host)) continue;
+    const listedMatch = itemMatchesCredentialHost(item, urlPattern, host);
+    const shouldHydrateHiddenURL = options.exhaustive && passCliItemURLs(item).length === 0;
+    if (!listedMatch && !shouldHydrateHiddenURL) continue;
 
-    const entry = toPassCliLoginItem(item, vault);
+    const entry = toPassCliLoginItem(item, vaultDisplayName(vault));
     if (entry.password && (entry.email || entry.username)) {
       matches.push(entry);
       continue;
@@ -208,21 +246,34 @@ async function searchProtonEntry(
 ): Promise<PassCliLoginItem | null> {
   const normalizedUsername = username?.trim().toLowerCase();
   const vaults = await listVaults();
-  for (const vault of vaults) {
-    const matches = await searchVault(vault.name, urlPattern, host);
-    if (normalizedUsername) {
-      const exact = matches.find((entry) =>
-        entry.email?.trim().toLowerCase() === normalizedUsername ||
-        entry.username?.trim().toLowerCase() === normalizedUsername
-      );
-      if (exact) return exact;
-      continue;
+  const findInVaults = async (exhaustive: boolean): Promise<PassCliLoginItem | null> => {
+    for (const vault of vaults) {
+      const matches = await searchVault(vault, urlPattern, host, { exhaustive });
+      if (normalizedUsername) {
+        const exact = matches.find((entry) =>
+          entry.email?.trim().toLowerCase() === normalizedUsername ||
+          entry.username?.trim().toLowerCase() === normalizedUsername
+        );
+        if (exact) return exact;
+        continue;
+      }
+      if (matches.length > 0) {
+        return matches[0];
+      }
     }
-    if (matches.length > 0) {
-      return matches[0];
-    }
+    return null;
+  };
+
+  const heuristicMatch = await findInVaults(false);
+  if (heuristicMatch) {
+    return heuristicMatch;
   }
-  return null;
+
+  // `pass-cli item list` can omit URL fields unless secrets are explicitly
+  // shown, which is not available for agent sessions. If title heuristics
+  // miss, hydrate every login item across every vault and inspect URLs from
+  // `item view`.
+  return findInVaults(true);
 }
 
 export class PassCliProvider implements CredentialProvider {
