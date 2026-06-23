@@ -210,28 +210,27 @@ describe('SessionManager', () => {
       // Should not perform SRP auth
     });
 
-    it('should create new session if no session exists', async () => {
+    it('should fail closed instead of creating a session if no session exists', async () => {
       mockFs.pathExists.mockResolvedValue(false);
 
       const { AuthService } = await import('./index');
       const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
-      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
+      mockAuthService.prototype.login = jest.fn();
 
-      const result = await SessionManager.getOrCreateSession(
+      await expect(SessionManager.getOrCreateSession(
         'user@example.com',
         'password123'
-      );
+      )).rejects.toThrow('No valid browser-fork session found');
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalledWith(
-        'user@example.com',
-        'password123'
-      );
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
 
-    it('should create new session if user changed', async () => {
+    it('should reuse a valid browser-fork session without username matching', async () => {
       const existingSession = {
         ...mockSession,
         userHash: SessionManager.hashUsername('old@example.com'),
+        authMode: 'browser-fork' as const,
+        keyPasswordPersisted: true,
       };
       mockFs.pathExists.mockResolvedValue(true);
       mockFs.readJson.mockResolvedValue(existingSession);
@@ -245,10 +244,11 @@ describe('SessionManager', () => {
         'password123'
       );
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+      expect(result).toEqual(existingSession);
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
 
-    it('should create new session if validation fails', async () => {
+    it('should fail closed if validation fails', async () => {
       const invalidSession = {
         ...mockSession,
         tokenExpiresAt: Date.now() - 1000, // Expired
@@ -259,14 +259,14 @@ describe('SessionManager', () => {
 
       const { AuthService } = await import('./index');
       const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
-      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
+      mockAuthService.prototype.login = jest.fn();
 
-      const result = await SessionManager.getOrCreateSession(
+      await expect(SessionManager.getOrCreateSession(
         'user@example.com',
         'password123'
-      );
+      )).rejects.toThrow('No valid browser-fork session found');
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
   });
 

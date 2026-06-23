@@ -5,20 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "username": { "type": "string" },
-    "password": { "type": "string" },
     "dataPassword": { "type": "string" },
     "dataCredentialProvider": { "type": "string" },
     "dataCredentialHost": { "type": "string" },
-    "secondFactorCode": { "type": "string" },
     "appVersion": { "type": "string" },
     "oid": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
     "path": { "type": "string" },
     "outputPath": { "type": "string" },
     "folder": { "type": "string" },
     "storageBase": { "type": "string" },
-    "credentialProvider": { "type": "string" },
-    "allowLogin": { "type": "boolean" },
     "oids": {
       "type": "array",
       "items": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }

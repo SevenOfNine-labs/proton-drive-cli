@@ -4,7 +4,6 @@ import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the mkdir command for the CLI.
@@ -55,8 +54,9 @@ import { resolvePassword } from '../credentials';
  * # Create nested folder (parent must exist)
  * proton-drive mkdir /Documents Projects
  *
- * # Create folder with git-credential provider
- * proton-drive mkdir /Photos Vacation --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive mkdir /Photos Vacation
  *
  * # Quiet mode (outputs only folder UID)
  * proton-drive mkdir /Backups 2024 --quiet
@@ -85,15 +85,10 @@ export function createMkdirCommand(): Command {
     .description('Create a new folder in Proton Drive')
     .argument('<path>', 'Path where to create the folder (e.g., /Documents)')
     .argument('<folder-name>', 'Name of the folder to create')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (path: string, folderName: string, options) => {
       try {
-        // Resolve password for key decryption
-        const password = await resolvePassword(options);
-
         // Initialize SDK client
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         if (isVerbose()) {
           console.log(chalk.cyan(`Creating folder "${folderName}" at ${path}...`));

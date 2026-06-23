@@ -19,7 +19,6 @@ import {
   getParentPath,
 } from '../utils/stdin';
 import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the upload command for the CLI.
@@ -91,8 +90,9 @@ import { resolvePassword } from '../credentials';
  * # Disable progress output (for scripts)
  * proton-drive upload file.pdf /Documents --no-progress
  *
- * # Upload with git-credential provider
- * proton-drive upload file.pdf /Documents --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive upload file.pdf /Documents
  * ```
  *
  * @example
@@ -120,8 +120,6 @@ export function createUploadCommand(): Command {
     .argument('[destination]', 'Destination path in Drive - can be a folder (/Documents) or include filename (/Documents/newname.txt)', '/')
     .option('--no-progress', 'Disable progress output')
     .option('--name <filename>', 'Filename to use when uploading from stdin')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (file: string, destination: string, options) => {
       const startTime = Date.now();
       let uploadCancelled = false;
@@ -217,15 +215,11 @@ export function createUploadCommand(): Command {
             await cleanupTempFile(tempFilePath);
           }
         });
-
-        // Resolve password for key decryption
-        const password = await resolvePassword(options);
-
         let initSpinner;
         if (isVerbose()) {
           initSpinner = ora('Initializing Drive client...').start();
         }
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
         if (initSpinner) {
           initSpinner.succeed('Client initialized');
         }

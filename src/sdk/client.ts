@@ -5,7 +5,7 @@
  * - OpenPGPCryptoProxy → OpenPGPCryptoWithCryptoProxy
  * - HTTPClientAdapter (injects session tokens)
  * - AccountAdapter (wraps DriveCryptoService)
- * - SRPModuleAdapter (wraps SRP + key derivation)
+ * - SRPModuleAdapter (SDK-required key derivation adapter; not account login)
  * - MemoryCache × 2 (entities + crypto)
  */
 
@@ -19,7 +19,6 @@ import { HTTPClientAdapter } from './httpClientAdapter';
 import { AccountAdapter } from './accountAdapter';
 import { SRPModuleAdapter } from './srpAdapter';
 import { DriveCryptoService } from '../crypto/drive-crypto';
-import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
 import { createKeyPasswordStore } from '../auth/key-password-store';
 import { logger } from '../utils/logger';
@@ -27,49 +26,30 @@ import { AppError, ErrorCode } from '../errors/types';
 import type { SessionCredentials } from '../types/auth';
 
 export interface CreateSDKClientOptions {
-  username?: string;
-  loginPassword?: string;
   dataPassword?: string;
-  secondFactorCode?: string;
-  allowLogin?: boolean;
   appVersion?: string;
 }
 
 interface NormalizedCreateSDKClientOptions {
-  username?: string;
-  loginPassword?: string;
   dataPassword?: string;
   dataPasswordExplicit: boolean;
-  secondFactorCode?: string;
-  allowLogin: boolean;
   appVersion?: string;
 }
 
 function normalizeCreateSDKClientOptions(
-  passwordOrOptions: string | CreateSDKClientOptions,
-  username?: string,
+  passwordOrOptions: string | CreateSDKClientOptions = {},
 ): NormalizedCreateSDKClientOptions {
   if (typeof passwordOrOptions === 'string') {
     return {
-      username,
-      loginPassword: username ? passwordOrOptions : undefined,
       dataPassword: passwordOrOptions,
-      // Legacy createSDKClient(password) means "password for key decryption".
-      // Legacy createSDKClient(password, username) means "login password";
-      // two-password accounts must move to the options form with dataPassword.
-      dataPasswordExplicit: !username,
-      allowLogin: Boolean(username && passwordOrOptions),
+      dataPasswordExplicit: true,
       appVersion: undefined,
     };
   }
 
   return {
-    username: passwordOrOptions.username,
-    loginPassword: passwordOrOptions.loginPassword,
-    dataPassword: passwordOrOptions.dataPassword ?? passwordOrOptions.loginPassword,
+    dataPassword: passwordOrOptions.dataPassword,
     dataPasswordExplicit: Boolean(passwordOrOptions.dataPassword),
-    secondFactorCode: passwordOrOptions.secondFactorCode,
-    allowLogin: passwordOrOptions.allowLogin ?? Boolean(passwordOrOptions.username && passwordOrOptions.loginPassword),
     appVersion: passwordOrOptions.appVersion,
   };
 }
@@ -138,30 +118,27 @@ async function initializeCryptoForSession(
 /**
  * Create an authenticated ProtonDriveClient with all adapters.
  *
- * Authentication strategy (in order):
+ * Session strategy (in order):
  * 1. Valid session (not expired) → use directly, initialize crypto
  * 2. Expired session with refresh token → proactive refresh, then crypto
- * 3. No session or refresh failed → full SRP login
+ * 3. No session or refresh failed → fail closed; run browser login first
  *
  * Crypto initialization is expensive (3 API calls: keySalts, user, addresses).
  * When a crypto cache exists on disk, those calls are skipped entirely.
  *
- * @param password - User's mailbox password (always required for crypto)
- * @param username - Required for full login (optional if restoring session)
+ * @param password - Optional explicit mailbox/data password for crypto unlock
  * @returns Initialized ProtonDriveClient ready for operations
  */
 export async function createSDKClient(
-  password: string,
-  username?: string,
+  dataPassword: string,
 ): Promise<ProtonDriveClient>;
 export async function createSDKClient(
-  options: CreateSDKClientOptions,
+  options?: CreateSDKClientOptions,
 ): Promise<ProtonDriveClient>;
 export async function createSDKClient(
-  passwordOrOptions: string | CreateSDKClientOptions,
-  username?: string,
+  passwordOrOptions: string | CreateSDKClientOptions = {},
 ): Promise<ProtonDriveClient> {
-  const options = normalizeCreateSDKClientOptions(passwordOrOptions, username);
+  const options = normalizeCreateSDKClientOptions(passwordOrOptions);
   const driveCrypto = new DriveCryptoService(options.appVersion);
 
   let sessionReady = false;
@@ -193,7 +170,7 @@ export async function createSDKClient(
         logger.debug('SDK client: session refreshed by another process');
       }
     } catch {
-      // Still no valid session — fall through to full login
+      // Still no valid session — fail closed below.
     }
   }
 
@@ -210,15 +187,12 @@ export async function createSDKClient(
   }
 
   if (!sessionReady) {
-    if (!options.allowLogin || !options.username || !options.loginPassword) {
-      throw new Error('No session found and credentials not provided');
-    }
-    const authService = new AuthService(undefined, options.appVersion);
-    const loginSession = await authService.login(options.username, options.loginPassword, {
-      secondFactorCode: options.secondFactorCode,
-    });
-    await driveCrypto.initialize(getKeyUnlockPassword(options, loginSession.passwordMode));
-    logger.debug('SDK client: authenticated with full SRP login');
+    throw new AppError(
+      'No browser-fork session found. Run proton-drive login before transfers.',
+      ErrorCode.SESSION_EXPIRED,
+      { authMode: 'browser-fork' },
+      true,
+    );
   }
 
   // Build adapters

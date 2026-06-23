@@ -528,43 +528,29 @@ export class SessionManager {
   }
 
   /**
-   * Get an existing session or create a new one via SRP authentication.
-   * This method implements session reuse: if a valid session exists, it is returned
-   * immediately without performing SRP auth. This significantly reduces auth overhead.
+   * Get an existing browser-fork session.
    *
-   * @param username - Username for authentication (if new session needed)
-   * @param password - Password for authentication (if new session needed)
-   * @param remoteCheck - If true, validates existing session with an API call
-   * @returns Valid session (existing or newly created)
+   * This method intentionally never creates a new session. Account
+   * authentication must happen through the browser-fork login command.
    */
   static async getOrCreateSession(
-    username: string,
-    password: string,
+    _username: string,
+    _password: string,
     remoteCheck: boolean = false
   ): Promise<SessionCredentials> {
     const existing = await this.loadSession();
 
     if (existing) {
-      // Check if the session belongs to the same user
-      const expectedHash = this.hashUsername(username);
-      if (existing.userHash && existing.userHash !== expectedHash) {
-        logger.info('Existing session belongs to different user, creating new session...');
-      } else {
-        logger.debug('Found existing session, validating...');
-        const isValid = await this.validateSession(existing, remoteCheck);
-        if (isValid) {
-          logger.info('Reusing existing valid session (skipping SRP auth)');
-          return existing;
-        }
-        logger.info('Existing session invalid, creating new session...');
+      logger.debug('Found existing session, validating...');
+      const isValid = await this.validateSession(existing, remoteCheck);
+      if (isValid) {
+        logger.info('Reusing existing valid browser-fork session');
+        return existing;
       }
+      logger.info('Existing session invalid; browser-fork login is required');
     }
 
-    // No session or invalid session — perform full SRP auth
-    logger.info('Performing SRP authentication...');
-    const { AuthService } = await import('./index');
-    const authService = new AuthService();
-    return await authService.login(username, password);
+    throw new Error('No valid browser-fork session found. Run: proton-drive login');
   }
 
   // ─── Crypto-init cache ──────────────────────────────────────────────

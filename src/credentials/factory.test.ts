@@ -1,20 +1,8 @@
-import { normalizeProviderName, createProvider, resolvePassword } from './factory';
+import { normalizeProviderName, createProvider } from './factory';
 import { GitCredentialProvider } from './git-credential';
 import { PassCliProvider } from './pass-cli';
 import { StdinProvider } from './stdin';
 import { InteractiveProvider } from './interactive';
-
-// Mock git-credential module
-jest.mock('./git-credential', () => {
-  const actual = jest.requireActual('./git-credential');
-  return {
-    ...actual,
-    gitCredentialFill: jest.fn(),
-  };
-});
-
-import { gitCredentialFill } from './git-credential';
-const mockedGitCredentialFill = gitCredentialFill as jest.MockedFunction<typeof gitCredentialFill>;
 
 describe('normalizeProviderName', () => {
   it('normalizes "git" to "git-credential"', () => {
@@ -76,43 +64,5 @@ describe('createProvider', () => {
   it('passes host option to PassCliProvider', () => {
     const provider = createProvider('pass-cli', { host: 'custom.host' });
     expect(provider).toBeInstanceOf(PassCliProvider);
-  });
-});
-
-describe('resolvePassword', () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
-    mockedGitCredentialFill.mockReset();
-  });
-
-  it('resolves password via git credential provider', async () => {
-    mockedGitCredentialFill.mockResolvedValue({
-      protocol: 'https',
-      host: 'proton.me',
-      username: 'user@proton.me',
-      password: 'git-pass',
-    });
-
-    const result = await resolvePassword({ credentialProvider: 'git' });
-    expect(result).toBe('git-pass');
-    expect(mockedGitCredentialFill).toHaveBeenCalledTimes(1);
-  });
-
-  it('propagates git credential errors', async () => {
-    mockedGitCredentialFill.mockRejectedValue(new Error('git credential fill failed'));
-
-    await expect(resolvePassword({ credentialProvider: 'git' }))
-      .rejects.toThrow('git credential fill failed');
-  });
-
-  it('throws descriptive error when no method available', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
-    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
-
-    await expect(resolvePassword({})).rejects.toThrow(
-      /Password required for key decryption/,
-    );
-
-    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
   });
 });

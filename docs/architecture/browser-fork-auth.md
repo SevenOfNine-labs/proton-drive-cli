@@ -2,9 +2,8 @@
 
 ## Status
 
-Browser fork authentication is experimental and must stay behind
-`proton-drive-cli login --auth-mode browser-fork` until disposable-account
-canary evidence proves the flow against current Proton production behavior.
+Browser fork authentication is the only supported account authentication path.
+`proton-drive-cli login` always uses this flow.
 
 This path is modeled on the official Proton SDK CLI implementation in
 `submodules/sdk/cli/src/api/auth.ts` and `authWeb.ts`:
@@ -30,8 +29,6 @@ session. The secret is never written to `~/.proton-drive-cli/session.json`.
 Key-password provider selection is explicit:
 
 - `--key-password-provider <git-credential|pass-cli>` wins.
-- `--credential-provider <git-credential|pass-cli>` is used as a browser-fork
-  key-password provider fallback.
 - `PROTON_KEY_PASSWORD_PROVIDER` and then `PROTON_CREDENTIAL_PROVIDER` are used
   when command flags are absent.
 - `--key-password-host` or `PROTON_KEY_PASSWORD_HOST` can override the default
@@ -55,7 +52,8 @@ attempts to remove the stored key password before returning the error.
 The bridge `auth-state` command verifies the persisted browser-fork key
 password without contacting Proton. It reports `ready` only when the session is
 locally valid and the configured key password is readable; otherwise it reports
-a closed state such as `needs_data_password`.
+a closed state such as `needs_login`, `needs_key_password`, or
+`needs_data_password`.
 
 ## Testing Rules
 

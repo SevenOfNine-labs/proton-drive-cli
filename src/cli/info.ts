@@ -4,7 +4,6 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 import { getNodeDisplayName } from '../sdk/nodeEntity';
 
 /**
@@ -64,8 +63,9 @@ import { getNodeDisplayName } from '../sdk/nodeEntity';
  * # JSON output for parsing (normal mode)
  * proton-drive info /file.txt | jq .size
  *
- * # Use with git-credential provider
- * proton-drive info /Documents/file.pdf --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive info /Documents/file.pdf
  *
  * # Quiet mode (no output)
  * proton-drive info /file.txt --quiet
@@ -93,12 +93,9 @@ export function createInfoCommand(): Command {
   info
     .description('Show metadata for a file or folder in Proton Drive')
     .argument('<path>', 'Path to the file or folder (e.g., /Documents/file.pdf)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
-    .action(async (targetPath: string, options) => {
+    .action(async (targetPath: string) => {
       try {
-        const password = await resolvePassword(options);
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         const nodeUid = await resolvePathToNodeUid(client, targetPath);
         const meta = await client.getNode(nodeUid);

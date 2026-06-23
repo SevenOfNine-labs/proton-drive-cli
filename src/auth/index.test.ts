@@ -1,10 +1,7 @@
 import { AuthApiClient } from '../api/auth';
-import { HttpClientError } from '../api/http-client';
-import { ErrorCode } from '../errors/types';
-import { AuthResponse } from '../types/auth';
 import { AuthService } from './index';
 import { SessionManager } from './session';
-import { SRPClient } from './srp';
+import { createKeyPasswordStore } from './key-password-store';
 
 jest.mock('../api/auth', () => ({
   AuthApiClient: jest.fn(),
@@ -12,210 +9,112 @@ jest.mock('../api/auth', () => ({
 
 jest.mock('./session', () => ({
   SessionManager: {
-    saveSession: jest.fn(),
     loadSession: jest.fn(),
     clearSession: jest.fn(),
     clearCryptoCache: jest.fn(),
     hasValidSession: jest.fn(),
-    hashUsername: jest.fn(),
-    getSessionFilePath: jest.fn(),
+    refreshSession: jest.fn(),
   },
 }));
 
-jest.mock('./srp', () => ({
-  SRPClient: {
-    computeHandshake: jest.fn(),
-    verifyServerProof: jest.fn(),
-  },
+jest.mock('./key-password-store', () => ({
+  createKeyPasswordStore: jest.fn(),
+}));
+
+jest.mock('../utils/logger', () => ({
+  logger: { info: jest.fn(), warn: jest.fn() },
 }));
 
 const MockedAuthApiClient = AuthApiClient as jest.MockedClass<typeof AuthApiClient>;
 const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
-const mockedSRPClient = SRPClient as jest.Mocked<typeof SRPClient>;
+const mockedCreateKeyPasswordStore = createKeyPasswordStore as jest.MockedFunction<typeof createKeyPasswordStore>;
+
+function jwtExpiringIn(seconds: number): string {
+  const payload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + seconds,
+  })).toString('base64url');
+  return `header.${payload}.signature`;
+}
 
 describe('AuthService', () => {
-  const getAuthInfo = jest.fn();
-  const authenticate = jest.fn();
-  const complete2FA = jest.fn();
-  const refreshToken = jest.fn();
   const logout = jest.fn();
-
-  const baseAuthResponse: AuthResponse = {
-    UID: 'uid-123',
-    AccessToken: 'access-token',
-    RefreshToken: 'refresh-token',
-    TokenType: 'Bearer',
-    Scopes: ['full'],
-    ServerProof: 'server-proof',
-    PasswordMode: 1,
-    '2FA': {
-      Enabled: 0,
-      FIDO2: { RegisteredKeys: [] },
-      TOTP: 0,
-    },
+  const removeKeyPassword = jest.fn();
+  const session = {
+    sessionId: 'uid-123',
+    uid: 'uid-123',
+    accessToken: jwtExpiringIn(3600),
+    refreshToken: 'refresh-token',
+    scopes: ['full'],
+    passwordMode: 1,
+    authMode: 'browser-fork' as const,
+    keyPasswordPersisted: true,
+    keyPasswordProvider: 'git-credential' as const,
+    keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-
-    getAuthInfo.mockResolvedValue({
-      Modulus: 'modulus',
-      ServerEphemeral: 'server-ephemeral',
-      Version: 4,
-      Salt: 'salt',
-      SRPSession: 'srp-session',
+    MockedAuthApiClient.mockImplementation(() => ({ logout } as unknown as AuthApiClient));
+    mockedCreateKeyPasswordStore.mockReturnValue({
+      provider: 'git-credential',
+      host: 'proton-drive-key.proton-lfs-cli.local',
+      store: jest.fn(),
+      load: jest.fn(),
+      remove: removeKeyPassword,
+      verify: jest.fn(),
     });
-    authenticate.mockResolvedValue(baseAuthResponse);
-    complete2FA.mockResolvedValue(undefined);
-
-    MockedAuthApiClient.mockImplementation(() => ({
-      getAuthInfo,
-      authenticate,
-      complete2FA,
-      refreshToken,
-      logout,
-    } as unknown as AuthApiClient));
-
-    mockedSRPClient.computeHandshake.mockResolvedValue({
-      clientEphemeral: 'client-ephemeral',
-      clientProof: 'client-proof',
-      expectedServerProof: 'server-proof',
-    });
-    mockedSRPClient.verifyServerProof.mockReturnValue(true);
-
-    mockedSessionManager.hashUsername.mockReturnValue('user-hash');
-    mockedSessionManager.getSessionFilePath.mockReturnValue('/tmp/session.json');
-    mockedSessionManager.saveSession.mockResolvedValue(undefined);
   });
 
-  it('saves a session when no second factor is required', async () => {
-    const service = new AuthService();
+  it('returns the saved browser-fork session without refreshing when still valid', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(session);
 
-    const session = await service.login('user@proton.me', 'login-password');
+    await expect(new AuthService().getSession()).resolves.toEqual(session);
 
-    expect(complete2FA).not.toHaveBeenCalled();
-    expect(mockedSessionManager.saveSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        uid: 'uid-123',
-        accessToken: 'access-token',
-        refreshToken: 'refresh-token',
-        passwordMode: 1,
-        userHash: 'user-hash',
-      })
+    expect(mockedSessionManager.refreshSession).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a locally expiring session', async () => {
+    const expiring = { ...session, accessToken: jwtExpiringIn(30) };
+    const refreshed = { ...session, accessToken: jwtExpiringIn(3600) };
+    mockedSessionManager.loadSession.mockResolvedValue(expiring);
+    mockedSessionManager.refreshSession.mockResolvedValue(refreshed);
+
+    await expect(new AuthService(undefined, 'external-drive-test@1.0.0').getSession())
+      .resolves.toEqual(refreshed);
+
+    expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(
+      undefined,
+      'external-drive-test@1.0.0',
     );
-    expect(session.uid).toBe('uid-123');
   });
 
-  it('does not persist a session when TOTP is required but missing', async () => {
-    authenticate.mockResolvedValue({
-      ...baseAuthResponse,
-      '2FA': {
-        Enabled: 1,
-        FIDO2: { RegisteredKeys: [] },
-        TOTP: 1,
-      },
-    });
-    const service = new AuthService();
+  it('fails closed when no session exists', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(null);
 
-    await expect(service.login('user@proton.me', 'login-password'))
-      .rejects.toMatchObject({
-        code: ErrorCode.TWO_FACTOR_REQUIRED,
-        details: expect.objectContaining({ twoFactorType: 'totp' }),
-      });
-
-    expect(complete2FA).not.toHaveBeenCalled();
-    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
+    await expect(new AuthService().getSession())
+      .rejects.toThrow('No valid session found. Please login first using browser sign-in');
   });
 
-  it('completes TOTP before persisting the session', async () => {
-    authenticate.mockResolvedValue({
-      ...baseAuthResponse,
-      '2FA': {
-        Enabled: 1,
-        FIDO2: { RegisteredKeys: [] },
-        TOTP: 1,
-      },
-    });
-    const service = new AuthService();
+  it('delegates auth status to the session manager', async () => {
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
 
-    await service.login('user@proton.me', 'login-password', {
-      secondFactorCode: '123456',
-    });
-
-    expect(complete2FA).toHaveBeenCalledWith(
-      'uid-123',
-      'access-token',
-      { TwoFactorCode: '123456' }
-    );
-    expect(mockedSessionManager.saveSession).toHaveBeenCalled();
+    await expect(new AuthService().isAuthenticated()).resolves.toBe(true);
   });
 
-  it('stops on FIDO2-only accounts without persisting the session', async () => {
-    authenticate.mockResolvedValue({
-      ...baseAuthResponse,
-      '2FA': {
-        Enabled: 2,
-        FIDO2: { RegisteredKeys: [{ keyHandle: 'key', publicKey: 'pub' }] },
-        TOTP: 0,
-      },
-    });
-    const service = new AuthService();
+  it('logs out, clears browser-fork key password, and removes local session state', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(session);
+    logout.mockResolvedValue(undefined);
+    removeKeyPassword.mockResolvedValue(undefined);
 
-    await expect(service.login('user@proton.me', 'login-password'))
-      .rejects.toMatchObject({
-        code: ErrorCode.TWO_FACTOR_REQUIRED,
-        details: expect.objectContaining({ twoFactorType: 'fido2' }),
-      });
+    await new AuthService().logout();
 
-    expect(complete2FA).not.toHaveBeenCalled();
-    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
+    expect(logout).toHaveBeenCalledWith(session.accessToken);
+    expect(removeKeyPassword).toHaveBeenCalledWith('uid-123');
+    expect(mockedSessionManager.clearSession).toHaveBeenCalled();
+    expect(mockedSessionManager.clearCryptoCache).toHaveBeenCalled();
   });
 
-  it('labels auth-info timeout failures without persisting the session', async () => {
-    getAuthInfo.mockRejectedValue(new HttpClientError('Request timed out', {
-      code: 'ECONNABORTED',
-    }));
-    const service = new AuthService();
-
-    await expect(service.login('user@proton.me', 'login-password'))
-      .rejects.toMatchObject({
-        code: ErrorCode.TIMEOUT,
-        message: 'Login failed during auth-info: Request timed out',
-        details: expect.objectContaining({
-          authStage: 'auth-info',
-          endpoint: '/auth/v4/info',
-          clientCode: 'ECONNABORTED',
-        }),
-      });
-
-    expect(authenticate).not.toHaveBeenCalled();
-    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
-  });
-
-  it('labels auth-submit API failures without persisting the session', async () => {
-    authenticate.mockRejectedValue(new HttpClientError('Request failed with status 401', {
-      response: {
-        data: { Code: 8002, Error: 'Invalid login credentials' },
-        status: 401,
-        headers: {},
-        config: {},
-      },
-    }));
-    const service = new AuthService();
-
-    await expect(service.login('user@proton.me', 'login-password'))
-      .rejects.toMatchObject({
-        code: ErrorCode.AUTH_FAILED,
-        message: 'Login failed during auth-submit: Request failed with status 401',
-        details: expect.objectContaining({
-          authStage: 'auth-submit',
-          endpoint: '/auth/v4',
-          httpStatus: 401,
-          protonCode: 8002,
-          apiMessage: 'Invalid login credentials',
-        }),
-      });
-
-    expect(mockedSessionManager.saveSession).not.toHaveBeenCalled();
+  it('does not expose a direct account login method', () => {
+    expect('login' in new AuthService()).toBe(false);
   });
 });

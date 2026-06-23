@@ -1,15 +1,7 @@
 # Proton Drive CLI
 
-End-to-end encrypted CLI for Proton Drive with Git LFS bridge support, powered by the official `@protontech/drive-sdk`.
-
-[![Documentation](https://img.shields.io/badge/docs-unified-blue)](https://sevenofnine-labs.github.io/proton-drive-cli/) [![npm version](https://img.shields.io/npm/v/@sevenofnine-ai/proton-drive-cli.svg)](https://www.npmjs.com/package/@sevenofnine-ai/proton-drive-cli) [![Tests](https://github.com/SevenOfNine-labs/proton-drive-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/SevenOfNine-labs/proton-drive-cli/actions/workflows/ci.yml)
-
-## Documentation
-
-📚 **[Complete Documentation](https://sevenofnine-labs.github.io/proton-drive-cli/)** with:
-
-- **[TypeScript API Reference](https://sevenofnine-labs.github.io/proton-drive-cli/typescript/)** - Full TSDoc API documentation
-- **[Architecture & Guides](https://sevenofnine-labs.github.io/proton-drive-cli/guides/)** - Setup, security, operations
+End-to-end encrypted CLI for Proton Drive with Git LFS bridge support, powered
+by the official `@protontech/drive-sdk`.
 
 ## Installation
 
@@ -17,173 +9,86 @@ End-to-end encrypted CLI for Proton Drive with Git LFS bridge support, powered b
 corepack enable
 yarn install
 yarn build
-
 ```
 
 For local development, invoke the CLI directly with `node dist/index.js`.
 
-## Credential Providers
+## Authentication
 
-Passwords are never accepted via CLI flags or environment variables. This prevents leaks via `ps`, `/proc/pid/environ`, and shell history.
-
-### Git Credential Manager (recommended)
-
-Uses the system credential helper (macOS Keychain, Windows Credential Manager, Linux Secret Service) via `git credential fill`.
+Account authentication is browser-fork only. The CLI never accepts the Proton
+account password through flags, stdin, environment variables, bridge JSON, or
+credential-provider lookup.
 
 ```bash
-
-# Store credentials in the system credential helper
-
-proton-drive-cli credential store -u your.email@proton.me
-
-# Verify credentials are stored
-
-proton-drive-cli credential verify
-
-# Login using stored credentials
-
-proton-drive-cli login --credential-provider git
-
-# Use with any command
-
-proton-drive-cli ls / --credential-provider git
-
-# Remove stored credentials
-
-proton-drive-cli credential remove -u your.email@proton.me
-
-```
-
-### pass-cli (Git LFS integration)
-
-When used through `proton-lfs-cli`, the Go adapter resolves credentials via `pass-cli` and spawns `proton-drive-cli bridge` directly, passing credentials over stdin. Do not run `proton-drive-cli login` manually in this mode.
-
-```
-
-pass-cli → Go adapter → proton-drive-cli bridge (stdin, memory only)
-
-```
-
-### Piped stdin (scripted usage)
-
-For CI or scripted environments where git-credential is not available:
-
-```bash
-printf '%s' 'password' | proton-drive-cli login -u user@proton.me --password-stdin
-printf '%s' 'password' | proton-drive-cli credential store -u user@proton.me --password-stdin
-
-```
-
-## Usage
-
-### Authentication
-
-```bash
-
-# Login with git-credential (recommended)
-
-proton-drive-cli login --credential-provider git
-
-# Login with piped password
-
-printf '%s' 'your-password' | proton-drive-cli login -u your.email@proton.me --password-stdin
-
-# Experimental browser session-fork login
-
-proton-drive-cli login --auth-mode browser-fork
-
-# Check authentication status
-
+proton-drive-cli login
+proton-drive-cli login --key-password-provider pass-cli
 proton-drive-cli status
-
-# Logout
-
 proton-drive-cli logout
-
 ```
 
-Session tokens (no passwords) are stored in `~/.proton-drive-cli/session.json` with `0600` permissions. Tokens are refreshed automatically on HTTP 401 and Proton error code 9101. Proton API rate-limit cooldowns are stored separately in `~/.proton-drive-cli/rate-limit-cooldown.json` so later commands wait locally instead of retrying too soon.
+The login command opens Proton's browser sign-in flow and stores only session
+tokens in `~/.proton-drive-cli/session.json`. The browser-derived key password
+is stored under a UID-scoped entry in the configured key-password provider.
 
-`--auth-mode browser-fork` mirrors Proton's official browser session-fork flow
-but is still experimental. It validates the encrypted browser payload and saves
-tokens only; the returned key password is not persisted until OS secret-store
-support is added, so Drive SDK operations still need an explicit mailbox/data
-password source.
+## Offline Readiness
 
-**CAPTCHA:** If CAPTCHA verification is required during login, the CLI guides you through the semi-automated token extraction process.
-
-### File Operations
+Run doctor before transfers or any guarded canary:
 
 ```bash
-
-# List files
-
-proton-drive-cli ls /
-proton-drive-cli ls /Documents --long
-
-# Upload files
-
-proton-drive-cli upload ./file.pdf /Documents
-cat data.json | proton-drive-cli upload - /Documents --name data.json
-
-# Download files
-
-proton-drive-cli download /Documents/file.pdf ./file.pdf
-
-# Create folders
-
-proton-drive-cli mkdir /Documents Projects
-
-# Show file/folder metadata
-
-proton-drive-cli info /Documents/file.pdf
-
-# Stream file contents to stdout
-
-proton-drive-cli cat /Documents/file.txt
-
-# Move or rename files/folders
-
-proton-drive-cli mv /Documents/old-name.pdf /Documents/new-name.pdf
-
-# Remove files/folders
-
-proton-drive-cli rm /Documents/old-file.pdf
-proton-drive-cli rm /Documents/old-file.pdf --permanent
-
+proton-drive-cli doctor
+proton-drive-cli doctor --json
 ```
 
-### Global Options
+`doctor` and `bridge auth-state` are local-only checks. They do not perform SRP
+login, token refresh, remote validation, or credential resolution for account
+passwords.
 
-| Flag                    | Description                                       |
-| ----------------------- | ------------------------------------------------- |
-| `-d, --debug`           | Enable debug output with full stack traces        |
-| `--verbose`             | Show detailed output (spinners, progress, tables) |
-| `-q, --quiet`           | Suppress all non-error output                     |
-| `-v, --version`         | Display version number                            |
-| `--credential-provider` | Credential source: `git` or default (stdin)       |
+## File Operations
 
-## Developer Documentation
+```bash
+proton-drive-cli ls /
+proton-drive-cli upload ./file.pdf /Documents
+proton-drive-cli download /Documents/file.pdf ./file.pdf
+proton-drive-cli mkdir /Documents Projects
+proton-drive-cli info /Documents/file.pdf
+proton-drive-cli cat /Documents/file.txt
+proton-drive-cli mv /Documents/old.pdf /Documents/new.pdf
+proton-drive-cli rm /Documents/old.pdf
+```
 
-See `docs/` for detailed documentation:
+All file operations require a ready browser-fork session. Two-password accounts
+may also require an explicit data-password source configured by the caller.
 
-- [Architecture](docs/architecture/overview.md) — Components, data flow, SDK adapter layer
-- [Credential Security](docs/security/credentials.md) — Credential flows, threat model, trust boundaries
-- [Configuration](docs/operations/configuration.md) — Environment variables, session management
+## Bridge Protocol
 
-When docs disagree, runtime behavior and tests win.
+The bridge is for Git LFS adapter subprocess use:
+
+```bash
+printf '%s\n' '{"command":"auth-state"}' | proton-drive-cli bridge auth-state
+```
+
+Supported commands are `auth-state`, `upload`, `download`, `list`, `exists`,
+`delete`, `refresh`, `init`, `batch-exists`, and `batch-delete`. The removed
+`auth` command and legacy login-shaped request fields are rejected.
+
+## Global Options
+
+| Flag | Description |
+| --- | --- |
+| `-d, --debug` | Enable debug output with stack traces |
+| `--verbose` | Show detailed output |
+| `-q, --quiet` | Suppress non-error output |
+| `-v, --version` | Display version number |
 
 ## Testing
 
 ```bash
-yarn test                        # Run all tests (fully mocked)
-yarn test --no-cache             # Without cache
-npx jest src/sdk/                # SDK adapter tests only
-npx jest src/cli/e2e.test        # E2E CLI tests
-
+yarn build
+yarn test --runInBand
 ```
 
-All tests are fully mocked and CI-safe — no Proton credentials required.
+All default tests are mocked/offline and CI-safe. Real Proton validation must
+use the separate guarded canary process from the parent `proton-lfs-cli` repo.
 
 ## License
 

@@ -165,33 +165,7 @@ async function readStdinJson(): Promise<BridgeRequest> {
 export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, validateBridgeRequestForCommand, errorToStatusCode } from '../bridge/validators';
 // formatCaptchaError is exported directly from this module (above)
 
-/**
- * Resolve credentials from request, using the unified credential provider
- * when credentialProvider is set (git-credential, pass-cli, etc.).
- */
-async function resolveRequestCredentials(request: BridgeRequest): Promise<{ username?: string; loginPassword?: string }> {
-  if (request.username && request.password) {
-    return { username: request.username, loginPassword: request.password };
-  }
-  if (request.password) {
-    return { loginPassword: request.password };
-  }
-  if (request.credentialProvider) {
-    const name = normalizeProviderName(request.credentialProvider);
-    const provider = createProvider(name);
-    const cred = await provider.resolve({ username: request.username });
-    return { username: cred.username, loginPassword: cred.password };
-  }
-  if (request.dataPassword) {
-    return { username: request.username };
-  }
-  if (request.username) {
-    return { username: request.username };
-  }
-  return {};
-}
-
-async function resolveDataPassword(request: BridgeRequest, username?: string): Promise<string | undefined> {
+async function resolveDataPassword(request: BridgeRequest): Promise<string | undefined> {
   if (request.dataPassword) {
     return request.dataPassword;
   }
@@ -203,7 +177,7 @@ async function resolveDataPassword(request: BridgeRequest, username?: string): P
   const provider = createProvider(name, {
     host: request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST,
   });
-  const cred = await provider.resolve({ username });
+  const cred = await provider.resolve({});
   return cred.password;
 }
 
@@ -221,13 +195,9 @@ export interface BridgeAuthStatePayload {
   keyPasswordAvailable?: boolean;
   keyPasswordProvider?: string;
   keyPasswordHost?: string;
-  usernamePresent: boolean;
-  hasExplicitLoginPassword: boolean;
   hasExplicitDataPassword: boolean;
-  loginCredentialProvider?: string;
   dataCredentialProvider?: string;
   dataCredentialHost?: string;
-  allowLogin: boolean;
   willAttemptNetwork: false;
   errors: string[];
   actions: string[];
@@ -266,11 +236,6 @@ function isLocallyExpired(session: SessionCredentials | null): boolean {
  */
 export async function getBridgeAuthState(request: BridgeRequest): Promise<BridgeAuthStatePayload> {
   const errors: string[] = [];
-  const loginCredentialProvider = normalizeProviderForAuthState(
-    request.credentialProvider,
-    'login credential',
-    errors,
-  );
   const dataCredentialProvider = normalizeProviderForAuthState(
     request.dataCredentialProvider,
     'data credential',
@@ -279,10 +244,7 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   const dataCredentialHost = dataCredentialProvider
     ? request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST
     : undefined;
-  const hasExplicitLoginPassword = Boolean(request.password);
   const hasExplicitDataPassword = Boolean(request.dataPassword);
-  const hasExplicitLoginPair = Boolean(request.username && request.password);
-  const allowLogin = Boolean(hasExplicitLoginPair || loginCredentialProvider);
   const session = await SessionManager.loadSession();
   const hasSession = Boolean(session);
   const sessionUidPresent = Boolean(session?.uid);
@@ -308,15 +270,10 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
 
   if (errors.length > 0) {
     state = 'configuration_error';
-    actions.push('Fix the credential provider name before attempting login or transfer commands.');
+    actions.push('Fix the credential provider name before attempting transfer commands.');
   } else if (!session) {
-    if (allowLogin) {
-      state = 'login_available';
-      actions.push('A full SRP login would be required; auth-state did not attempt it.');
-    } else {
-      state = 'needs_login';
-      actions.push('Run interactive proton-drive login after offline gates pass, or provide a login credential provider.');
-    }
+    state = 'needs_login';
+    actions.push('Run proton-drive login to complete browser sign-in before transfers.');
   } else if (!sessionValid) {
     state = sessionExpired ? 'session_expired' : 'session_invalid';
     actions.push('Refresh or replace the saved session after offline gates pass; auth-state did not refresh tokens.');
@@ -346,13 +303,9 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
     keyPasswordAvailable,
     keyPasswordProvider: session?.keyPasswordProvider,
     keyPasswordHost: session?.keyPasswordHost,
-    usernamePresent: Boolean(request.username),
-    hasExplicitLoginPassword,
     hasExplicitDataPassword,
-    loginCredentialProvider,
     dataCredentialProvider,
     dataCredentialHost,
-    allowLogin,
     willAttemptNetwork: false,
     errors,
     actions,
@@ -361,20 +314,14 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
 
 /**
  * Initialize ProtonDriveClient (SDK), authenticating if necessary.
- * Full SRP login requires username + login password. Existing sessions can be
- * unlocked with only the explicit/provider-backed mailbox data password.
+ * Existing browser-fork sessions can be unlocked with the stored browser-fork
+ * key password or an explicit/provider-backed mailbox data password.
  */
 export async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
-  const resolved = await resolveRequestCredentials(request);
-  const loginPassword = resolved.loginPassword;
-  const dataPassword = await resolveDataPassword(request, resolved.username);
+  const dataPassword = await resolveDataPassword(request);
 
   return createSDKClient({
-    username: resolved.username,
-    loginPassword,
     dataPassword,
-    secondFactorCode: request.secondFactorCode,
-    allowLogin: request.allowLogin ?? Boolean(resolved.username && loginPassword),
     appVersion: request.appVersion,
   });
 }
@@ -387,8 +334,6 @@ async function ensureBaseDir(client: ProtonDriveClient, storageBase: string): Pr
   await ensureFolderPath(client, `/${normalizedBase}`);
   return `/${normalizedBase}`;
 }
-
-// ─── CAPTCHA helper ─────────────────────────────────────────────────
 
 export function formatCaptchaError(error: CaptchaError): BridgeResponse {
   return {
@@ -405,35 +350,6 @@ export function formatCaptchaError(error: CaptchaError): BridgeResponse {
 }
 
 // ─── Command handlers ──────────────────────────────────────────────
-
-async function handleAuthCommand(request: BridgeRequest): Promise<void> {
-  try {
-    const resolved = await resolveRequestCredentials(request);
-    if (!resolved.username || !resolved.loginPassword) {
-      writeError('username and password are required', 400);
-      return;
-    }
-
-    // Session reuse: skip SRP if a valid session exists for this user
-    try {
-      if (await SessionManager.isSessionForUser(resolved.username)) {
-        writeSuccess({ authenticated: true, sessionReused: true });
-        return;
-      }
-    } catch {
-      // Session file corrupted or unreadable — fall through to full login
-    }
-
-    const authService = new AuthService(undefined, request.appVersion);
-
-    await authService.login(resolved.username, resolved.loginPassword, {
-      secondFactorCode: request.secondFactorCode,
-    });
-    writeSuccess({ authenticated: true });
-  } catch (error: any) {
-    handleBridgeError(error, 'Authentication failed');
-  }
-}
 
 async function handleAuthStateCommand(request: BridgeRequest): Promise<void> {
   try {
@@ -795,7 +711,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *   "command": "upload|download|exists|...",
  *   "oid": "abc123...",
  *   "path": "/tmp/file.bin",
- *   "credentialProvider": "git-credential|pass-cli",
  *   "storageBase": "LFS"
  * }
  * ```
@@ -820,7 +735,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *
  * # Supported Commands
  *
- * - **auth**: Authenticate with SRP, create session
  * - **auth-state**: Inspect local auth readiness without network or credential lookup
  * - **upload**: Upload file to Drive (OID-based path, change token caching)
  * - **download**: Download file from Drive by OID
@@ -835,9 +749,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * # Security Features
  *
  * - No output to stdout except JSON response (prevents Go adapter parsing errors)
- * - Credentials resolved via provider (never logged)
- * - Session reuse (avoids repeated SRP auth)
- * - CAPTCHA detection and guidance
+ * - Existing session reuse only; account login is browser-fork CLI only
  * - Rate-limit detection and retry guidance
  * - Change token caching (80% fewer uploads)
  *
@@ -845,7 +757,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *
  * - HTTP 400: Invalid request parameters
  * - HTTP 404: File not found
- * - HTTP 407: CAPTCHA required
  * - HTTP 429: Rate-limited by Proton API
  * - HTTP 500: Server error or operation failed
  *
@@ -862,7 +773,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * @example
  * ```bash
  * # Upload file via bridge protocol
- * echo '{"oid":"abc123...","path":"/tmp/file.bin","credentialProvider":"git-credential"}' \
+ * echo '{"oid":"abc123...","path":"/tmp/file.bin"}' \
  *   | proton-drive bridge upload
  *
  * # Download file via bridge protocol
@@ -872,10 +783,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * # Check if file exists
  * echo '{"oid":"abc123..."}' \
  *   | proton-drive bridge exists
- *
- * # Authenticate (session reuse supported)
- * echo '{"username":"user@proton.me","password":"..."}' \
- *   | proton-drive bridge auth
  *
  * # Batch exists check
  * echo '{"oids":["abc123...","def456..."]}' \
@@ -892,7 +799,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * bridge.stdin.write(JSON.stringify({
  *   oid: 'abc123...',
  *   path: '/tmp/file.bin',
- *   credentialProvider: 'git-credential',
  * }));
  * bridge.stdin.end();
  *
@@ -919,7 +825,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * @category CLI Commands
  * @see {@link handleUploadCommand} for upload implementation
  * @see {@link handleDownloadCommand} for download implementation
- * @see {@link handleAuthCommand} for authentication implementation
  * @see {@link ChangeTokenCache} for upload optimization
  * @since 0.1.0
  */
@@ -930,7 +835,7 @@ export function createBridgeCommand(): Command {
     .description(
       'Bridge mode for Git LFS integration — reads JSON from stdin, writes JSON to stdout'
     )
-    .argument('<command>', 'Bridge command: auth, auth-state, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
+    .argument('<command>', 'Bridge command: auth-state, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
     .action(async (command: string) => {
       // Suppress all non-JSON output
       logger.setLevel(LogLevel.ERROR);
@@ -951,9 +856,6 @@ export function createBridgeCommand(): Command {
         }
 
         switch (normalizedCommand) {
-          case 'auth':
-            await handleAuthCommand(request);
-            break;
           case 'auth-state':
             await handleAuthStateCommand(request);
             break;

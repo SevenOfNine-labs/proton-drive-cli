@@ -11,11 +11,13 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 
 import { SessionManager } from '../auth/session';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { createProvider, normalizeProviderName } from '../credentials';
 import type { ProviderName } from '../credentials';
-import { PROTON_CREDENTIAL_HOST, PROTON_DATA_CREDENTIAL_HOST } from '../constants';
+import { PROTON_DATA_CREDENTIAL_HOST, PROTON_KEY_PASSWORD_CREDENTIAL_HOST } from '../constants';
 import { getBridgeAuthState } from './bridge';
 import type { BridgeAuthStatePayload } from './bridge';
+import type { SessionCredentials } from '../types/auth';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail' | 'skip';
 
@@ -29,8 +31,8 @@ export interface DoctorCheck {
 }
 
 export interface DoctorOptions {
-  credentialProvider?: string;
-  credentialHost?: string;
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
   dataCredentialProvider?: string;
   dataCredentialHost?: string;
   driveCliBin?: string;
@@ -108,6 +110,17 @@ function normalizeStoredProvider(providerName: string): ProviderName {
   return normalized;
 }
 
+async function loadDoctorSession(options: DoctorOptions): Promise<SessionCredentials | null> {
+  const sessionFile = options.sessionFile || SessionManager.getSessionFilePath();
+  try {
+    if (!await fs.pathExists(sessionFile)) return null;
+    const session = await fs.readJson(sessionFile);
+    return isValidSessionShape(session) ? session as SessionCredentials : null;
+  } catch {
+    return null;
+  }
+}
+
 async function checkDriveCliBin(options: DoctorOptions): Promise<DoctorCheck> {
   const cliBin = options.driveCliBin || defaultDriveCliBin();
   const exists = await fs.pathExists(cliBin);
@@ -173,6 +186,78 @@ async function checkCredential(
       'fail',
       error instanceof Error ? error.message : 'Credential provider check failed.',
       { remediation: `Store or verify credentials for host ${host} before attempting SDK transfers.` },
+    );
+  }
+}
+
+async function checkKeyPasswordCredential(options: DoctorOptions): Promise<DoctorCheck> {
+  const session = await loadDoctorSession(options);
+  const providerName =
+    options.keyPasswordProvider ||
+    session?.keyPasswordProvider ||
+    process.env.PROTON_KEY_PASSWORD_PROVIDER ||
+    process.env.PROTON_CREDENTIAL_PROVIDER ||
+    'git-credential';
+  const host =
+    options.keyPasswordHost ||
+    session?.keyPasswordHost ||
+    process.env.PROTON_KEY_PASSWORD_HOST ||
+    PROTON_KEY_PASSWORD_CREDENTIAL_HOST;
+
+  if (!session) {
+    return makeCheck(
+      'key-password-credential',
+      'browser-fork key password',
+      'skip',
+      'No valid saved session UID is available for key-password verification.',
+      { remediation: 'Run browser-fork login after offline gates pass, then rerun doctor.' },
+    );
+  }
+
+  if (session.authMode !== 'browser-fork') {
+    return makeCheck(
+      'key-password-credential',
+      'browser-fork key password',
+      'fail',
+      'Saved session was not created by browser-fork authentication.',
+      { remediation: 'Clear the legacy session and run proton-drive login.' },
+    );
+  }
+
+  if (!session.keyPasswordPersisted) {
+    return makeCheck(
+      'key-password-credential',
+      'browser-fork key password',
+      'fail',
+      'Saved session does not record persisted browser-fork key material.',
+      { remediation: 'Clear the session and run proton-drive login again.' },
+    );
+  }
+
+  try {
+    const store = createKeyPasswordStore({ provider: providerName, host });
+    if (await store.verify(session.uid)) {
+      return makeCheck(
+        'key-password-credential',
+        'browser-fork key password',
+        'pass',
+        `Verified ${store.provider} key-password entry for session UID at ${store.host}.`,
+      );
+    }
+    return makeCheck(
+      'key-password-credential',
+      'browser-fork key password',
+      'fail',
+      `No key-password entry found for session UID at ${host}.`,
+      { remediation: 'Run proton-drive login again so browser-fork can store UID-scoped key material.' },
+    );
+  } catch (error) {
+    return makeCheck(
+      'key-password-credential',
+      'browser-fork key password',
+      'fail',
+      error instanceof Error ? error.message : 'Key-password provider check failed.',
+      { remediation: 'Configure --key-password-provider/--key-password-host or rerun browser-fork login.' },
     );
   }
 }
@@ -266,6 +351,24 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
         { remediation: 'Delete the session file, rotate the exposed password, and re-login interactively.' },
       );
     }
+    if (session.authMode !== 'browser-fork') {
+      return makeCheck(
+        'session-file',
+        'session file hygiene',
+        'fail',
+        'Session file was not created by browser-fork authentication.',
+        { remediation: 'Move the legacy session file aside and run proton-drive login.' },
+      );
+    }
+    if (!session.keyPasswordPersisted) {
+      return makeCheck(
+        'session-file',
+        'session file hygiene',
+        'fail',
+        'Session file is missing browser-fork key-password persistence metadata.',
+        { remediation: 'Move the incomplete session file aside and run proton-drive login.' },
+      );
+    }
     if (session.passwordMode === 2 && !options.dataCredentialProvider && !options.requireDataPassword) {
       return makeCheck(
         'session-file',
@@ -293,15 +396,22 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
-  const credentialProvider = options.credentialProvider || process.env.PROTON_CREDENTIAL_PROVIDER || 'pass-cli';
-  const credentialHost = options.credentialHost || PROTON_CREDENTIAL_HOST;
+  const keyPasswordProvider =
+    options.keyPasswordProvider ||
+    process.env.PROTON_KEY_PASSWORD_PROVIDER ||
+    process.env.PROTON_CREDENTIAL_PROVIDER ||
+    'git-credential';
+  const keyPasswordHost =
+    options.keyPasswordHost ||
+    process.env.PROTON_KEY_PASSWORD_HOST ||
+    PROTON_KEY_PASSWORD_CREDENTIAL_HOST;
   const dataCredentialProvider = options.dataCredentialProvider || process.env.PROTON_DATA_CREDENTIAL_PROVIDER;
   const dataCredentialHost = options.dataCredentialHost || process.env.PROTON_DATA_CREDENTIAL_HOST || PROTON_DATA_CREDENTIAL_HOST;
 
   const normalizedOptions: DoctorOptions = {
     ...options,
-    credentialProvider,
-    credentialHost,
+    keyPasswordProvider,
+    keyPasswordHost,
     dataCredentialProvider,
     dataCredentialHost,
   };
@@ -309,13 +419,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const checks: DoctorCheck[] = [
     await checkDriveCliBin(normalizedOptions),
     checkSecretEnvironment(),
-    await checkCredential(
-      'login-credential',
-      'login credential',
-      credentialProvider,
-      credentialHost,
-      normalizedOptions.username,
-    ),
+    await checkKeyPasswordCredential(normalizedOptions),
     await checkDataCredential(normalizedOptions),
     await checkSessionFile(normalizedOptions),
   ];
@@ -323,16 +427,11 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const summary = summarize(checks);
   const ok = summary.fail === 0 && (!normalizedOptions.strict || summary.warn === 0);
   const authState = await getBridgeAuthState({
-    username: normalizedOptions.username,
-    credentialProvider,
     dataCredentialProvider,
     dataCredentialHost,
   });
   const canAttemptTransfer = ok && authState.state === 'ready';
-  const canAttemptLiveCanary = ok && (
-    authState.state === 'ready' ||
-    authState.state === 'login_available'
-  );
+  const canAttemptLiveCanary = ok && (authState.state === 'ready' || authState.state === 'needs_login');
   return {
     ok,
     summary,
@@ -372,8 +471,8 @@ export function formatDoctorReport(report: DoctorReport): string {
 export function createDoctorCommand(): Command {
   return new Command('doctor')
     .description('Run offline auth/session preflight checks without logging in')
-    .option('--credential-provider <type>', 'Stored login credential provider: git-credential or pass-cli', process.env.PROTON_CREDENTIAL_PROVIDER || 'pass-cli')
-    .option('--credential-host <host>', 'Login credential host/key', PROTON_CREDENTIAL_HOST)
+    .option('--key-password-provider <type>', 'Browser-fork key password provider: git-credential or pass-cli', process.env.PROTON_KEY_PASSWORD_PROVIDER || process.env.PROTON_CREDENTIAL_PROVIDER || 'git-credential')
+    .option('--key-password-host <host>', 'Browser-fork key password credential host/key', process.env.PROTON_KEY_PASSWORD_HOST || PROTON_KEY_PASSWORD_CREDENTIAL_HOST)
     .option('--data-credential-provider <type>', 'Optional mailbox/data password credential provider', process.env.PROTON_DATA_CREDENTIAL_PROVIDER)
     .option('--data-credential-host <host>', 'Mailbox/data password credential host/key', process.env.PROTON_DATA_CREDENTIAL_HOST || PROTON_DATA_CREDENTIAL_HOST)
     .option('--require-data-password', 'Fail if no mailbox/data password provider is configured')

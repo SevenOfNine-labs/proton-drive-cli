@@ -30,22 +30,15 @@ import {
  * Bridge request payload from stdin
  */
 export interface BridgeRequest {
-  username?: string;
-  password?: string;
   dataPassword?: string;
   dataCredentialProvider?: string;
   dataCredentialHost?: string;
-  secondFactorCode?: string;
   appVersion?: string;
   oid?: string;
   path?: string;
   outputPath?: string;
   folder?: string;
   storageBase?: string;
-  /** When set to 'git-credential', the bridge resolves credentials itself via git credential fill */
-  credentialProvider?: string;
-  /** Explicitly controls whether SDK initialization may perform full SRP login */
-  allowLogin?: boolean;
   /** Array of OIDs for batch operations (batch-exists, batch-delete) */
   oids?: string[];
 }
@@ -100,7 +93,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function requestFieldType(field: BridgeRequestField): 'string' | 'boolean' | 'string-array' {
-  if (field === 'allowLogin') return 'boolean';
   if (field === 'oids') return 'string-array';
   return 'string';
 }

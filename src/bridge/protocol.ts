@@ -1,7 +1,6 @@
 import { ErrorCode } from '../errors/types';
 
 export const BRIDGE_COMMANDS = [
-  'auth',
   'auth-state',
   'upload',
   'download',
@@ -22,7 +21,6 @@ export function isBridgeCommand(command: string): command is BridgeCommand {
 
 export const BRIDGE_AUTH_STATES = [
   'ready',
-  'login_available',
   'needs_login',
   'needs_data_password',
   'needs_key_password',
@@ -34,20 +32,15 @@ export const BRIDGE_AUTH_STATES = [
 export type BridgeAuthState = typeof BRIDGE_AUTH_STATES[number];
 
 export const BRIDGE_REQUEST_FIELDS = [
-  'username',
-  'password',
   'dataPassword',
   'dataCredentialProvider',
   'dataCredentialHost',
-  'secondFactorCode',
   'appVersion',
   'oid',
   'path',
   'outputPath',
   'folder',
   'storageBase',
-  'credentialProvider',
-  'allowLogin',
   'oids',
 ] as const;
 
@@ -59,23 +52,14 @@ export interface BridgeCommandRequestFields {
 }
 
 export const BRIDGE_COMMON_REQUEST_FIELDS = [
-  'username',
-  'password',
   'dataPassword',
   'dataCredentialProvider',
   'dataCredentialHost',
-  'secondFactorCode',
   'appVersion',
   'storageBase',
-  'credentialProvider',
-  'allowLogin',
 ] as const satisfies readonly BridgeRequestField[];
 
 export const BRIDGE_COMMAND_REQUEST_FIELDS = {
-  auth: {
-    required: [],
-    allowed: BRIDGE_COMMON_REQUEST_FIELDS,
-  },
   'auth-state': {
     required: [],
     allowed: BRIDGE_COMMON_REQUEST_FIELDS,

@@ -3,7 +3,6 @@ import { Writable } from 'stream';
 import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the cat command for the CLI.
@@ -44,7 +43,7 @@ import { resolvePassword } from '../credentials';
  * - End-to-end decryption using OpenPGP
  * - No temporary files created (direct streaming)
  * - Manifest signature verification (integrity check)
- * - Password resolved via credential provider (never logged)
+ * - Uses an existing browser-fork session; account passwords are never handled
  *
  * # Exit Codes
  *
@@ -76,8 +75,9 @@ import { resolvePassword } from '../credentials';
  * # Save to local file
  * proton-drive cat /Documents/report.pdf > local-report.pdf
  *
- * # Use with git-credential provider
- * proton-drive cat /file.txt --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive cat /file.txt
  * ```
  *
  * @example
@@ -102,12 +102,9 @@ export function createCatCommand(): Command {
   cat
     .description('Stream file contents from Proton Drive to stdout')
     .argument('<path>', 'Path to the file in Proton Drive (e.g., /Documents/file.txt)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
-    .action(async (filePath: string, options) => {
+    .action(async (filePath: string) => {
       try {
-        const password = await resolvePassword(options);
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         const nodeUid = await resolvePathToNodeUid(client, filePath);
         const downloader = await client.getFileDownloader(nodeUid);

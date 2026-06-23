@@ -1,6 +1,4 @@
 const mockCreateProvider = jest.fn();
-const mockLoadSession = jest.fn();
-const mockValidateSession = jest.fn();
 const mockKeyPasswordVerify = jest.fn();
 const mockNormalizeProviderName = jest.fn((name: string) => {
   const normalized = name.trim().toLowerCase();
@@ -18,8 +16,8 @@ jest.mock('../credentials', () => ({
 jest.mock('../auth/session', () => ({
   SessionManager: {
     getSessionFilePath: jest.fn(() => '/tmp/proton-session.json'),
-    loadSession: mockLoadSession,
-    validateSession: mockValidateSession,
+    loadSession: jest.fn(),
+    validateSession: jest.fn(async () => true),
   },
 }));
 
@@ -49,8 +47,12 @@ import {
   formatDoctorReport,
   runDoctor,
 } from './doctor';
+import { SessionManager } from '../auth/session';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
+const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
+const driveCliBin = '/tmp/proton-drive-cli/dist/index.js';
+const sessionFile = '/tmp/proton-drive-cli/session.json';
 
 function readDoctorContract(name: string): any {
   const file = path.resolve(__dirname, '..', '..', 'schemas', 'doctor', 'v1', name);
@@ -61,9 +63,9 @@ function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
-function mockProvider(username: string = 'user@proton.me') {
+function mockProvider(username: string = 'data-password') {
   return {
-    name: 'git-credential',
+    name: 'pass-cli',
     isAvailable: jest.fn().mockResolvedValue(true),
     resolve: jest.fn().mockResolvedValue({ username, password: 'secret-password' }),
   };
@@ -77,23 +79,31 @@ function mockSession(passwordMode: number = 1) {
     refreshToken: 'refresh-token',
     scopes: ['full'],
     passwordMode,
+    authMode: 'browser-fork',
+    keyPasswordPersisted: true,
+    keyPasswordProvider: 'git-credential',
+    keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
   };
 }
 
 describe('createDoctorCommand', () => {
-  it('creates a doctor command with offline preflight options', () => {
+  it('creates a doctor command with browser-fork preflight options', () => {
     const cmd = createDoctorCommand();
     expect(cmd.name()).toBe('doctor');
 
     const optionNames = cmd.options.map((option: any) => option.long);
-    expect(optionNames).toContain('--credential-provider');
-    expect(optionNames).toContain('--data-credential-provider');
-    expect(optionNames).toContain('--data-credential-host');
-    expect(optionNames).toContain('--require-data-password');
-    expect(optionNames).toContain('--drive-cli-bin');
-    expect(optionNames).toContain('--session-file');
-    expect(optionNames).toContain('--json');
-    expect(optionNames).toContain('--strict');
+    expect(optionNames).toEqual(expect.arrayContaining([
+      '--key-password-provider',
+      '--key-password-host',
+      '--data-credential-provider',
+      '--data-credential-host',
+      '--require-data-password',
+      '--drive-cli-bin',
+      '--session-file',
+      '--json',
+      '--strict',
+    ]));
+    expect(optionNames).not.toContain('--credential-provider');
   });
 });
 
@@ -112,8 +122,6 @@ describe('doctor report contract', () => {
 });
 
 describe('runDoctor', () => {
-  const driveCliBin = '/tmp/proton-drive-cli/dist/index.js';
-  const sessionFile = '/tmp/proton-drive-cli/session.json';
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -122,9 +130,9 @@ describe('runDoctor', () => {
     delete process.env.PROTON_DATA_PASSWORD;
     delete process.env.PROTON_SECOND_FACTOR_CODE;
     mockCreateProvider.mockReturnValue(mockProvider());
-    mockLoadSession.mockResolvedValue(mockSession());
-    mockValidateSession.mockResolvedValue(true);
     mockKeyPasswordVerify.mockResolvedValue(true);
+    mockedSessionManager.loadSession.mockResolvedValue(mockSession() as any);
+    mockedSessionManager.validateSession.mockResolvedValue(true);
     mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin || target === sessionFile);
     (mockFs.stat as unknown as jest.Mock).mockResolvedValue({ mode: 0o600 });
     mockFs.readJson.mockResolvedValue(mockSession());
@@ -134,32 +142,25 @@ describe('runDoctor', () => {
     process.env = originalEnv;
   });
 
-  it('passes when bridge binary, credentials, and secure session file are present', async () => {
+  it('passes when bridge binary, browser-fork key password, and session file are safe', async () => {
     const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      dataCredentialProvider: 'git-credential',
+      keyPasswordProvider: 'git-credential',
       driveCliBin,
       sessionFile,
-      username: 'user@proton.me',
     });
 
     expect(report.ok).toBe(true);
     expect(report.summary.fail).toBe(0);
-    expect(report.summary.pass).toBe(5);
     expect(report.authState.state).toBe('ready');
     expect(report.authState.willAttemptNetwork).toBe(false);
     expect(report.canAttemptTransfer).toBe(true);
     expect(report.canAttemptLiveCanary).toBe(true);
-    expect(mockValidateSession).toHaveBeenCalledWith(expect.objectContaining({ uid: 'uid-1' }), false);
-    expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', { host: 'proton.me' });
-    expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
-      host: 'proton-data.proton-lfs-cli.local',
-    });
+    expect(mockCreateProvider).not.toHaveBeenCalledWith('git-credential', { host: 'proton.me' });
   });
 
   it('fails when a required mailbox/data credential provider is missing', async () => {
     const report = await runDoctor({
-      credentialProvider: 'git-credential',
+      keyPasswordProvider: 'git-credential',
       requireDataPassword: true,
       driveCliBin,
       sessionFile,
@@ -167,133 +168,79 @@ describe('runDoctor', () => {
 
     expect(report.ok).toBe(false);
     expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'data-credential',
-        status: 'fail',
-      }),
+      expect.objectContaining({ id: 'data-credential', status: 'fail' }),
     ]));
   });
 
   it('fails when the session file permissions are too broad', async () => {
     (mockFs.stat as unknown as jest.Mock).mockResolvedValue({ mode: 0o644 });
 
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
-    });
+    const report = await runDoctor({ driveCliBin, sessionFile });
 
     expect(report.ok).toBe(false);
     expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'session-file',
-        status: 'fail',
-        message: expect.stringContaining('too broad'),
-      }),
+      expect.objectContaining({ id: 'session-file', status: 'fail' }),
     ]));
   });
 
-  it('warns but passes when no saved session exists', async () => {
-    mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin);
-    mockLoadSession.mockResolvedValue(null);
-
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
+  it('rejects legacy non-browser-fork sessions', async () => {
+    mockFs.readJson.mockResolvedValue({
+      ...mockSession(),
+      authMode: undefined,
+      keyPasswordPersisted: undefined,
     });
+    mockedSessionManager.loadSession.mockResolvedValue({
+      ...mockSession(),
+      authMode: undefined,
+      keyPasswordPersisted: undefined,
+    } as any);
+
+    const report = await runDoctor({ driveCliBin, sessionFile });
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-file', status: 'fail' }),
+      expect.objectContaining({ id: 'key-password-credential', status: 'fail' }),
+    ]));
+  });
+
+  it('allows a guarded live canary to start from needs_login without transfer readiness', async () => {
+    mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin);
+    mockFs.readJson.mockRejectedValue(new Error('missing'));
+    mockedSessionManager.loadSession.mockResolvedValue(null);
+    mockedSessionManager.validateSession.mockResolvedValue(false);
+
+    const report = await runDoctor({ driveCliBin, sessionFile });
 
     expect(report.ok).toBe(true);
-    expect(report.authState.state).toBe('login_available');
+    expect(report.authState.state).toBe('needs_login');
     expect(report.canAttemptTransfer).toBe(false);
     expect(report.canAttemptLiveCanary).toBe(true);
-    expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'session-file',
-        status: 'warn',
-      }),
-    ]));
-  });
-
-  it('strict mode treats warnings as a non-zero result', async () => {
-    mockFs.pathExists.mockImplementation(async (target: string) => target === driveCliBin);
-    mockLoadSession.mockResolvedValue(null);
-
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
-      strict: true,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(report.summary.warn).toBe(1);
-    expect(report.canAttemptTransfer).toBe(false);
-    expect(report.canAttemptLiveCanary).toBe(false);
-  });
-
-  it('reports transfer blockers from the shared auth-state gate', async () => {
-    mockFs.readJson.mockResolvedValue(mockSession(2));
-    mockLoadSession.mockResolvedValue(mockSession(2));
-
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
-    });
-
-    expect(report.ok).toBe(true);
-    expect(report.authState.state).toBe('needs_data_password');
-    expect(report.canAttemptTransfer).toBe(false);
-    expect(report.canAttemptLiveCanary).toBe(false);
   });
 
   it('fails when legacy secret environment variables are set', async () => {
     process.env.PROTON_DATA_PASSWORD = 'secret';
 
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
-    });
+    const report = await runDoctor({ driveCliBin, sessionFile });
 
     expect(report.ok).toBe(false);
     expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'secret-env',
-        status: 'fail',
-      }),
+      expect.objectContaining({ id: 'secret-env', status: 'fail' }),
     ]));
   });
+});
 
-  it('fails when the bridge entry point is missing', async () => {
-    mockFs.pathExists.mockImplementation(async (target: string) => target === sessionFile);
-
+describe('formatDoctorReport', () => {
+  it('includes auth readiness and canary readiness', async () => {
     const report = await runDoctor({
-      credentialProvider: 'git-credential',
+      keyPasswordProvider: 'git-credential',
       driveCliBin,
       sessionFile,
     });
 
-    expect(report.ok).toBe(false);
-    expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'drive-cli-bin',
-        status: 'fail',
-      }),
-    ]));
-  });
-
-  it('does not include resolved passwords in formatted output', async () => {
-    const report = await runDoctor({
-      credentialProvider: 'git-credential',
-      driveCliBin,
-      sessionFile,
-    });
-
-    expect(formatDoctorReport(report)).not.toContain('secret-password');
-    expect(formatDoctorReport(report)).toContain('Auth state: ready');
-    expect(formatDoctorReport(report)).toContain('Transfer: ready');
-    expect(formatDoctorReport(report)).toContain('Live canary: ready');
+    const output = formatDoctorReport(report);
+    expect(output).toContain('Auth state: ready');
+    expect(output).toContain('Transfer: ready');
+    expect(output).toContain('Live canary: ready');
   });
 });

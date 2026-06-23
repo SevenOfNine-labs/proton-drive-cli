@@ -61,8 +61,8 @@ describe('shared bridge exports', () => {
   });
 
   it('BridgeRequest type is usable', () => {
-    const req: BridgeRequest = { username: 'test', password: 'pass' };
-    expect(req.username).toBe('test');
+    const req: BridgeRequest = { dataCredentialProvider: 'pass-cli' };
+    expect(req.dataCredentialProvider).toBe('pass-cli');
   });
 
   it('BridgeResponse type is usable', () => {

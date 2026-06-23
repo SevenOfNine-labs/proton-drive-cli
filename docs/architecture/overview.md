@@ -4,102 +4,62 @@
 
 ```
 proton-drive-cli
-├── CLI layer        — Commander.js commands (login, ls, upload, download, bridge, credential)
-├── SDK adapter      — Bridges @protontech/drive-sdk with Proton API
-├── Auth service     — SRP-6a authentication with session management
+├── CLI layer        — browser-fork login, file commands, doctor, bridge
+├── SDK adapter      — wraps @protontech/drive-sdk for CLI transfer use
+├── Auth lifecycle   — existing-session refresh/logout only
+├── Browser fork     — official Proton browser session-fork login
 ├── Crypto service   — OpenPGP key management via @protontech/openpgp
 └── Bridge protocol  — JSON stdin/stdout interface for Git LFS integration
 ```
 
-## Data Flow
+## Auth Model
 
-### Standalone Usage
+The only account authentication path is Proton browser session-fork:
+
+1. `proton-drive login` starts `GET /auth/v4/sessions/forks`.
+2. The user signs in on `account.proton.me`.
+3. The CLI polls the fork selector.
+4. The encrypted fork payload is decrypted locally.
+5. Session tokens are saved to `session.json`.
+6. The browser-derived key password is stored in the configured key-password
+   provider and verified by readback before the session is accepted.
+
+Direct SRP account-password login is not part of production runtime. SRP code
+that remains is SDK/key-derivation plumbing and is not an account-login path.
+
+## Git LFS Integration
 
 ```
-User → CLI command → SDK adapter → Proton API
-                         ↓
-                   DriveCrypto (encrypt/decrypt locally)
-```
-
-### Git LFS Integration (pass-cli)
-
-```
-pass-cli (stored credentials)
+Git LFS custom transfer adapter
     ↓
-Go adapter (resolves via pass-cli, spawns proton-drive-cli directly)
+proton-drive-cli bridge auth-state  (local-only readiness gate)
     ↓
-proton-drive-cli bridge (stdin: username + password)
+proton-drive-cli bridge init/upload/download
     ↓
-AuthService.login() → SRP handshake → Session tokens
+createSDKClient(existing browser-fork session)
     ↓
-DriveCrypto.initialize(password) → Decrypt user keys
-    ↓
-ProtonDriveClient ready for upload/download
+ProtonDriveClient
 ```
 
-### Git LFS Integration (git-credential)
-
-```
-proton-drive-cli bridge (credentialProvider: "git-credential")
-    ↓
-gitCredentialFill() → git credential fill (local subprocess)
-    ↓
-Same auth flow as above (credentials never sent over HTTP)
-```
-
-## SDK Adapter Layer
-
-The `src/sdk/` directory adapts `@protontech/drive-sdk` for CLI usage:
-
-| Adapter                | Purpose                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `httpClientAdapter.ts` | HTTP client with auto token refresh, `x-pm-appversion` header injection |
-| `cryptoProxy.ts`       | OpenPGP crypto proxy for drive-sdk                                      |
-| `accountAdapter.ts`    | Account and address key provider                                        |
-| `srpAdapter.ts`        | SRP module adapter                                                      |
-| `pathResolver.ts`      | Human-readable path to Proton Drive UID resolution                      |
-| `client.ts`            | `ProtonDriveClient` factory with session reuse                          |
-
-## Source Layout
-
-```
-src/
-├── api/           — Proton API clients (auth, user)
-├── auth/          — SRP-6a authentication and session management
-│   └── srp/       — SRP protocol implementation
-├── bridge/        — Shared types and validators for the bridge protocol
-├── cli/           — Command implementations
-├── crypto/        — OpenPGP key management, Drive crypto
-├── errors/        — Error types, codes, CLI error handler
-├── sdk/           — @protontech/drive-sdk adapter layer
-├── types/         — TypeScript type definitions
-└── utils/         — Logging, password handling, git-credential, validation
-```
+The bridge cannot create a Proton account session. It can refresh existing
+tokens, unlock browser-fork key material, and consume data-password inputs for
+two-password accounts.
 
 ## Bridge Protocol
 
-The `proton-drive bridge <command>` interface reads JSON from stdin and writes JSON to stdout using a `{ ok, payload, error, code }` envelope. Requests are validated against the per-command field matrix in `schemas/bridge/v1/request-field-rules.json` before credential resolution, SDK initialization, or local file operations.
+The bridge writes a strict `{ ok, payload, error, code, details }` envelope.
+Requests are validated against `schemas/bridge/v1/request-field-rules.json`
+before credential lookup, network access, or local file operations.
 
-**Commands:** `auth`, `auth-state`, `upload`, `download`, `list`, `exists`, `delete`, `refresh`, `init`, `batch-exists`, `batch-delete`
+Supported commands: `auth-state`, `upload`, `download`, `list`, `exists`,
+`delete`, `refresh`, `init`, `batch-exists`, and `batch-delete`.
 
-**Request format:**
-
-```json
-{
-  "username": "...",
-  "password": "...",
-  "credentialProvider": "git-credential",
-  "oid": "<64-hex>",
-  "path": "./file",
-  "outputPath": "./out"
-}
-```
-
-Credentials are resolved from `username`/`password` fields, or locally via `gitCredentialFill()` when `credentialProvider` is set.
+Legacy login-shaped request fields are rejected.
 
 ## Non-Negotiables
 
-- All crypto operations use `@protontech/openpgp` (not plain `openpgp`) to avoid module instance isolation bugs
-- Passwords flow via stdin or git-credential only — never CLI flags or environment variables
-- Session tokens are the only data persisted to disk
-- `execFile` for all subprocess calls (not `exec`)
+- Account password entry happens only in Proton's browser sign-in page.
+- No production path may submit account passwords or SRP auth proofs.
+- `auth-state` and `doctor` stay offline and local-only.
+- Session files store tokens and metadata only, never passwords.
+- The bridge fails closed unless the local auth state is `ready`.

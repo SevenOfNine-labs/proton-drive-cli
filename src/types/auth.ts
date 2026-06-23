@@ -28,7 +28,7 @@ export interface Auth2FARequest {
   FIDO2?: unknown;
 }
 
-export type AuthMode = 'srp' | 'browser-fork';
+export type AuthMode = 'browser-fork';
 
 export interface SessionCredentials {
   sessionId: string;
@@ -37,7 +37,7 @@ export interface SessionCredentials {
   refreshToken: string;
   scopes: string[];
   passwordMode: number;
-  // Authentication path that created the session. Missing means legacy SRP.
+  // Authentication path that created the session.
   authMode?: AuthMode;
   // Browser-fork auth returns a key password that must be protected by an OS
   // secret store. It is never written to session.json.

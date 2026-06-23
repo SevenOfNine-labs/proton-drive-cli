@@ -7,7 +7,6 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 import { getNodeName } from '../sdk/nodeEntity';
 
 function formatSize(bytes: number): string {
@@ -91,8 +90,9 @@ function getNodeIcon(type: string): string {
  * # Quiet mode (names only, for scripts)
  * proton-drive ls /Documents --quiet
  *
- * # List with git-credential provider
- * proton-drive ls / --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive ls /
  * ```
  *
  * @example
@@ -118,19 +118,14 @@ export function createLsCommand(): Command {
     .description('List files and folders in your Proton Drive')
     .argument('[path]', 'Path to list (defaults to root "/")', '/')
     .option('-l, --long', 'Use long listing format with details')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (path: string, options) => {
       try {
-        // Resolve password for key decryption
-        const password = await resolvePassword(options);
-
         // Create and initialize SDK client
         let spinner;
         if (isVerbose()) {
           spinner = ora('Loading folder contents...').start();
         }
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         // Resolve path to UID
         const folderUid = await resolvePathToNodeUid(client, path);

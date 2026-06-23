@@ -385,7 +385,7 @@ export class PassCliProvider implements CredentialProvider {
       });
       throw new Error(
         'No Proton login entry found in pass-cli vaults. ' +
-        'Create one with a proton.me URL, or use --credential-provider git-credential.',
+        'Create one with a matching credential URL or configure a different key/data password provider.',
       );
     }
 
