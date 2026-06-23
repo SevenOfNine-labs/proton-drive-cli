@@ -48,7 +48,7 @@ class ProviderBackedKeyPasswordStore implements KeyPasswordStore {
     if (!provider.store) {
       throw new Error(`Provider ${this.provider} cannot store key passwords`);
     }
-    await provider.store(uid, keyPassword);
+    await provider.store(uid, keyPassword, { exhaustiveLookup: false });
   }
 
   async load(uid: string): Promise<string | undefined> {

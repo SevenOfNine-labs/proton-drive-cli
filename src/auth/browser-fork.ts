@@ -16,8 +16,10 @@ import { SessionManager } from './session';
 
 export const PROTON_ACCOUNT_URL = 'https://account.proton.me';
 export const DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID = 'external-drive';
-export const BROWSER_FORK_INITIAL_DELAY_MS = 5_000;
-export const BROWSER_FORK_POLL_INTERVAL_MS = 5_000;
+export const BROWSER_FORK_INITIAL_DELAY_MS = 1_000;
+export const BROWSER_FORK_POLL_INTERVAL_MS = 1_000;
+export const BROWSER_FORK_FAST_POLL_TIME_MS = 15_000;
+export const BROWSER_FORK_BACKOFF_POLL_INTERVAL_MS = 5_000;
 export const BROWSER_FORK_MAX_POLL_TIME_MS = 10 * 60 * 1_000;
 
 const FORK_AAD = Buffer.from('fork', 'utf8');
@@ -46,6 +48,8 @@ export interface BrowserForkLoginOptions {
   authClientId?: string;
   initialDelayMs?: number;
   pollIntervalMs?: number;
+  fastPollTimeMs?: number;
+  backoffPollIntervalMs?: number;
   maxPollTimeMs?: number;
   onSignInUrl?: (signInUrl: string) => void | Promise<void>;
 }
@@ -168,9 +172,12 @@ export class BrowserForkAuthService {
     const startedAt = this.now();
     const maxPollTimeMs = options.maxPollTimeMs ?? BROWSER_FORK_MAX_POLL_TIME_MS;
     const pollIntervalMs = options.pollIntervalMs ?? BROWSER_FORK_POLL_INTERVAL_MS;
+    const fastPollTimeMs = options.fastPollTimeMs ?? BROWSER_FORK_FAST_POLL_TIME_MS;
+    const backoffPollIntervalMs = options.backoffPollIntervalMs ?? BROWSER_FORK_BACKOFF_POLL_INTERVAL_MS;
 
     while (true) {
-      if (this.now() - startedAt > maxPollTimeMs) {
+      const elapsedMs = this.now() - startedAt;
+      if (elapsedMs > maxPollTimeMs) {
         throw new AppError(
           'Browser authentication timed out',
           ErrorCode.TIMEOUT,
@@ -185,7 +192,7 @@ export class BrowserForkAuthService {
       } catch (error: unknown) {
         if (isPendingForkStatus(error)) {
           logger.debug('Browser fork authentication not ready yet');
-          await this.sleepMs(pollIntervalMs);
+          await this.sleepMs(elapsedMs < fastPollTimeMs ? pollIntervalMs : backoffPollIntervalMs);
           continue;
         }
         throw error;

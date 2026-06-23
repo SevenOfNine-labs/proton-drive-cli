@@ -38,7 +38,9 @@ describe('key-password-store', () => {
     expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
       host: PROTON_KEY_PASSWORD_CREDENTIAL_HOST,
     });
-    expect(mockProvider.store).toHaveBeenCalledWith('uid-123', 'key-password');
+    expect(mockProvider.store).toHaveBeenCalledWith('uid-123', 'key-password', {
+      exhaustiveLookup: false,
+    });
   });
 
   it('loads key passwords by UID-scoped username', async () => {

@@ -280,14 +280,17 @@ async function searchVault(
 async function searchProtonEntry(
   urlPattern?: RegExp,
   username?: string,
-  host: string = PROTON_CREDENTIAL_HOST
+  host: string = PROTON_CREDENTIAL_HOST,
+  options: { exhaustiveLookup?: boolean } = {},
 ): Promise<PassCliLoginItem | null> {
   const normalizedUsername = username?.trim().toLowerCase();
+  const exhaustiveLookup = options.exhaustiveLookup ?? true;
   const vaults = await listVaults();
   authTrace('credential.pass-cli.search.start', {
     host,
     username: maskIdentifier(username),
     vaultCount: vaults.length,
+    exhaustiveLookup,
   });
   const findInVaults = async (exhaustive: boolean): Promise<PassCliLoginItem | null> => {
     for (const vault of vaults) {
@@ -329,16 +332,20 @@ async function searchProtonEntry(
     return heuristicMatch;
   }
 
-  // `pass-cli item list` can omit URL fields unless secrets are explicitly
-  // shown, which is not available for agent sessions. If title heuristics
-  // miss, hydrate every login item across every vault and inspect URLs from
-  // `item view`.
-  const exhaustiveMatch = await findInVaults(true);
+  let exhaustiveMatch: PassCliLoginItem | null = null;
+  if (exhaustiveLookup) {
+    // `pass-cli item list` can omit URL fields unless secrets are explicitly
+    // shown, which is not available for agent sessions. If title heuristics
+    // miss, hydrate every login item across every vault and inspect URLs from
+    // `item view`.
+    exhaustiveMatch = await findInVaults(true);
+  }
   if (!exhaustiveMatch) {
     authTrace('credential.pass-cli.search.miss', {
       host,
       username: maskIdentifier(username),
       vaultCount: vaults.length,
+      exhaustiveLookup,
     });
   }
   return exhaustiveMatch;
@@ -411,8 +418,10 @@ export class PassCliProvider implements CredentialProvider {
     return { username, password: entry.password };
   }
 
-  async store(username: string, password: string): Promise<void> {
-    const existing = await searchProtonEntry(this.urlPattern, username, this.host);
+  async store(username: string, password: string, options: { exhaustiveLookup?: boolean } = {}): Promise<void> {
+    const existing = await searchProtonEntry(this.urlPattern, username, this.host, {
+      exhaustiveLookup: options.exhaustiveLookup ?? true,
+    });
     if (existing?.id && existing.shareId) {
       await runPassCli([
         'item', 'update',

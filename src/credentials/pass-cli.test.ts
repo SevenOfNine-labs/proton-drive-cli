@@ -669,6 +669,30 @@ describe('PassCliProvider', () => {
     ]);
   });
 
+  it('store can skip exhaustive all-vault lookup before creating generated entries', async () => {
+    simulateSequentialCalls(
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: wrapItems([]) },
+      { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },
+      { stdout: '' },
+    );
+
+    const provider = new PassCliProvider('proton-drive-key.proton-lfs-cli.local');
+    await provider.store('uid-123', 'derived-key-password', { exhaustiveLookup: false });
+
+    expect(mockExecFile.mock.calls).toHaveLength(4);
+    expect(mockExecFile.mock.calls[0][1]).toEqual(['vault', 'list', '--output', 'json']);
+    expect(mockExecFile.mock.calls[1][1]).toContain('list');
+    expect(mockExecFile.mock.calls[2][1]).toEqual(['vault', 'list', '--output', 'json']);
+    expect(mockExecFile.mock.calls[3][1]).toEqual(expect.arrayContaining([
+      'item',
+      'create',
+      'login',
+      '--url',
+      'https://proton-drive-key.proton-lfs-cli.local',
+    ]));
+  });
+
   it('remove deletes an existing matching host and username entry by metadata', async () => {
     simulateSequentialCalls(
       { stdout: JSON.stringify({ vaults: [{ vault_id: 'v1', name: 'Personal' }] }) },

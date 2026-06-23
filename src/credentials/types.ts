@@ -23,7 +23,7 @@ export interface CredentialProvider {
   resolve(options?: { username?: string }): Promise<Credentials>;
 
   /** Store credentials (optional — not all providers support this). */
-  store?(username: string, password: string): Promise<void>;
+  store?(username: string, password: string, options?: { exhaustiveLookup?: boolean }): Promise<void>;
 
   /** Remove credentials (optional). */
   remove?(username: string): Promise<void>;

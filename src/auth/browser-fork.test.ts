@@ -197,6 +197,41 @@ describe('BrowserForkAuthService', () => {
     expect(mockSaveSession).not.toHaveBeenCalled();
   });
 
+  it('backs off polling after the fast browser-fork window', async () => {
+    const encryptionKey = Buffer.alloc(32, 12);
+    let now = 0;
+    const sleepMs = jest.fn(async (ms: number) => {
+      now += ms;
+    });
+    const authApi = {
+      initSessionFork: jest.fn().mockResolvedValue({
+        Code: 1000,
+        Selector: 'selector-123',
+        UserCode: 'user-code-123',
+      }),
+      getSessionForkStatus: jest.fn().mockRejectedValue(pendingForkError()),
+    };
+    const service = new BrowserForkAuthService({
+      authApi,
+      sleepMs,
+      now: () => now,
+      encryptionKeyFactory: () => encryptionKey,
+      keyPasswordStore: mockKeyPasswordStore,
+    });
+
+    await expect(service.login({
+      initialDelayMs: 0,
+      pollIntervalMs: 100,
+      fastPollTimeMs: 150,
+      backoffPollIntervalMs: 500,
+      maxPollTimeMs: 700,
+    })).rejects.toMatchObject({
+      code: ErrorCode.TIMEOUT,
+    });
+
+    expect(sleepMs.mock.calls.map(([ms]) => ms)).toEqual([0, 100, 100, 500, 500]);
+  });
+
   it('refuses to persist a fork session without a refresh token', async () => {
     const encryptionKey = Buffer.alloc(32, 8);
     const encryptedPayload = encryptForkPayload(encryptionKey, {
