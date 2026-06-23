@@ -158,6 +158,24 @@ describe('runDoctor', () => {
     expect(mockCreateProvider).not.toHaveBeenCalledWith('git-credential', { host: 'proton.me' });
   });
 
+  it('passes two-password browser-fork sessions when key password is stored', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(mockSession(2) as any);
+    mockFs.readJson.mockResolvedValue(mockSession(2));
+
+    const report = await runDoctor({
+      keyPasswordProvider: 'git-credential',
+      driveCliBin,
+      sessionFile,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.summary.warn).toBe(0);
+    expect(report.authState.state).toBe('ready');
+    expect(report.authState.passwordMode).toBe(2);
+    expect(report.canAttemptTransfer).toBe(true);
+    expect(report.canAttemptLiveCanary).toBe(true);
+  });
+
   it('fails when a required mailbox/data credential provider is missing', async () => {
     const report = await runDoctor({
       keyPasswordProvider: 'git-credential',

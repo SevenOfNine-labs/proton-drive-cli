@@ -72,6 +72,8 @@ export interface SessionForkStatusResponse {
   AccessToken: string;
   RefreshToken?: string;
   Scopes?: string[];
+  // Session-fork may omit PasswordMode; browser-fork then defaults to
+  // one-password readiness because the payload carries the user-key password.
   PasswordMode?: number;
   ExpiresIn?: number;
 }

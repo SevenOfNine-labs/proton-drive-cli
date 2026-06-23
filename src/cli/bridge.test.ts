@@ -167,6 +167,23 @@ describe('getBridgeAuthState', () => {
     expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
+  it('reports ready for browser-fork two-password sessions with key password present', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
+
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'ready',
+      passwordMode: 2,
+      authMode: 'browser-fork',
+      keyPasswordAvailable: true,
+      hasExplicitDataPassword: false,
+      willAttemptNetwork: false,
+    });
+
+    expectNoAuthStateNetworkOrCredentialSideEffects();
+  });
+
   it('reports needs_key_password when a browser-fork session cannot be unlocked', async () => {
     mockLoadSession.mockResolvedValue(makeSession());
     mockValidateSession.mockResolvedValue(true);
@@ -178,19 +195,19 @@ describe('getBridgeAuthState', () => {
     });
   });
 
-  it('reports needs_data_password for two-password sessions without data source', async () => {
+  it.each([1, 2])('reports needs_data_password for legacy password mode %i sessions without data source', async (passwordMode) => {
     mockLoadSession.mockResolvedValue(makeSession({
       authMode: undefined,
       keyPasswordPersisted: undefined,
       keyPasswordProvider: undefined,
       keyPasswordHost: undefined,
-      passwordMode: 2,
+      passwordMode,
     }));
     mockValidateSession.mockResolvedValue(true);
 
     await expect(getBridgeAuthState({})).resolves.toMatchObject({
       state: 'needs_data_password',
-      passwordMode: 2,
+      passwordMode,
     });
   });
 

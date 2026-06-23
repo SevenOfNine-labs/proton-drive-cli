@@ -21,6 +21,7 @@ import { HttpClientError } from '../api/http-client';
 import { ErrorCode } from '../errors/types';
 import {
   BrowserForkAuthService,
+  DEFAULT_BROWSER_FORK_PASSWORD_MODE,
   generateBrowserForkSignInUrl,
   parseBrowserForkUserKeyPassword,
 } from './browser-fork';
@@ -159,6 +160,42 @@ describe('BrowserForkAuthService', () => {
       keyPasswordPersisted: true,
       keyPasswordProvider: 'git-credential',
       keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    }));
+  });
+
+  it('defaults omitted PasswordMode to one-password browser-fork readiness', async () => {
+    const encryptionKey = Buffer.alloc(32, 13);
+    const encryptedPayload = encryptForkPayload(encryptionKey, {
+      keyPassword: 'derived-user-key-password',
+    });
+    const authApi = {
+      initSessionFork: jest.fn().mockResolvedValue({
+        Code: 1000,
+        Selector: 'selector-123',
+        UserCode: 'user-code-123',
+      }),
+      getSessionForkStatus: jest.fn().mockResolvedValue({
+        Code: 1000,
+        Payload: encryptedPayload,
+        UID: 'uid-123',
+        AccessToken: 'access-token',
+        RefreshToken: 'refresh-token',
+        Scopes: ['drive'],
+      }),
+    };
+    const service = new BrowserForkAuthService({
+      authApi,
+      sleepMs: jest.fn(async () => {}),
+      encryptionKeyFactory: () => encryptionKey,
+      keyPasswordStore: mockKeyPasswordStore,
+    });
+
+    await service.login({ initialDelayMs: 0 });
+
+    expect(mockSaveSession).toHaveBeenCalledWith(expect.objectContaining({
+      passwordMode: DEFAULT_BROWSER_FORK_PASSWORD_MODE,
+      authMode: 'browser-fork',
+      keyPasswordPersisted: true,
     }));
   });
 

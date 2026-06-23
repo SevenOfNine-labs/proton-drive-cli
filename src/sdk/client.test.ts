@@ -111,6 +111,21 @@ describe('createSDKClient', () => {
     expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
   });
 
+  it('uses stored browser-fork key password even for two-password sessions', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue({
+      ...browserForkSession,
+      passwordMode: 2,
+    } as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+
+    await createSDKClient({});
+
+    expect(mockKeyPasswordLoad).toHaveBeenCalledWith('uid-1');
+    expect(mockDriveCryptoInitializeWithUserKeyPassword)
+      .toHaveBeenCalledWith('stored-user-key-password');
+    expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+  });
+
   it('lets an explicit data password override browser-fork key-password lookup', async () => {
     mockedSessionManager.loadSession.mockResolvedValue(browserForkSession as any);
     mockedSessionManager.hasValidSession.mockResolvedValue(true);

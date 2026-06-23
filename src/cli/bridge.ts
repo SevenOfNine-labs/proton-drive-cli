@@ -265,6 +265,10 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   const browserForkNeedsKeyPassword =
     session?.authMode === 'browser-fork' &&
     !keyPasswordAvailable;
+  const legacySessionNeedsDataPassword =
+    session?.authMode !== 'browser-fork' &&
+    !hasExplicitDataPassword &&
+    !dataCredentialProvider;
   const actions: string[] = [];
   let state: BridgeAuthState;
 
@@ -283,9 +287,9 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
   } else if (browserForkNeedsKeyPassword && !hasExplicitDataPassword && !dataCredentialProvider) {
     state = 'needs_key_password';
     actions.push('Browser-fork session is missing its stored key password; run browser login again or provide an explicit mailbox/data password source.');
-  } else if (session.passwordMode === 2 && !hasExplicitDataPassword && !dataCredentialProvider) {
+  } else if (legacySessionNeedsDataPassword) {
     state = 'needs_data_password';
-    actions.push(`Configure a mailbox/data password source, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+    actions.push(`Configure a mailbox/data password source for the legacy session, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
   } else {
     state = 'ready';
     actions.push('Local auth inputs are sufficient for SDK initialization; auth-state did not contact Proton.');

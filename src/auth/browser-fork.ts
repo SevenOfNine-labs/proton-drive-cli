@@ -21,6 +21,7 @@ export const BROWSER_FORK_POLL_INTERVAL_MS = 1_000;
 export const BROWSER_FORK_FAST_POLL_TIME_MS = 15_000;
 export const BROWSER_FORK_BACKOFF_POLL_INTERVAL_MS = 5_000;
 export const BROWSER_FORK_MAX_POLL_TIME_MS = 10 * 60 * 1_000;
+export const DEFAULT_BROWSER_FORK_PASSWORD_MODE = 1;
 
 const FORK_AAD = Buffer.from('fork', 'utf8');
 
@@ -237,7 +238,7 @@ export class BrowserForkAuthService {
       accessToken: status.AccessToken,
       refreshToken: status.RefreshToken,
       scopes: status.Scopes ?? [],
-      passwordMode: status.PasswordMode ?? 2,
+      passwordMode: status.PasswordMode ?? DEFAULT_BROWSER_FORK_PASSWORD_MODE,
       authMode: 'browser-fork',
       keyPasswordPersisted: true,
       keyPasswordProvider: keyPasswordStore.provider,

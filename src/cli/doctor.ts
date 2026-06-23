@@ -279,7 +279,7 @@ async function checkDataCredential(options: DoctorOptions): Promise<DoctorCheck>
       'data-credential',
       'mailbox/data credential',
       'skip',
-      'No data credential provider configured; this is okay for single-password accounts.',
+      'No data credential provider configured; this is okay for browser-fork sessions with stored key material.',
     );
   }
 
@@ -367,15 +367,6 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
         'fail',
         'Session file is missing browser-fork key-password persistence metadata.',
         { remediation: 'Move the incomplete session file aside and run proton-drive login.' },
-      );
-    }
-    if (session.passwordMode === 2 && !options.dataCredentialProvider && !options.requireDataPassword) {
-      return makeCheck(
-        'session-file',
-        'session file hygiene',
-        'warn',
-        'Saved session is for a two-password account but no data credential provider is configured.',
-        { remediation: 'Configure --data-credential-provider before running transfers.' },
       );
     }
     return makeCheck(
