@@ -1,6 +1,7 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
 import { RateLimitError } from '../errors/types';
+import { DEFAULT_PROTON_APP_VERSION } from '../constants';
 
 // Mock dependencies
 jest.mock('../auth/session');
@@ -233,7 +234,7 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       });
 
-      expect(headers.get('x-pm-appversion')).toBe('external-drive-proton-lfs-cli@0.1.2');
+      expect(headers.get('x-pm-appversion')).toBe(DEFAULT_PROTON_APP_VERSION);
     });
 
     it('allows constructor app version override', async () => {
@@ -290,7 +291,7 @@ describe('HTTPClientAdapter', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(SessionManager.refreshSession).toHaveBeenCalledWith(
         fakeSession,
-        'external-drive-proton-lfs-cli@0.1.2'
+        DEFAULT_PROTON_APP_VERSION
       );
     });
 
@@ -380,7 +381,7 @@ describe('HTTPClientAdapter', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(SessionManager.refreshSession).toHaveBeenCalledWith(
         fakeSession,
-        'external-drive-proton-lfs-cli@0.1.2'
+        DEFAULT_PROTON_APP_VERSION
       );
     });
 

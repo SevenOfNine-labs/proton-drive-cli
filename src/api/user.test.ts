@@ -1,6 +1,7 @@
 import { HttpClient } from './http-client';
 import { UserApiClient } from './user';
 import { SessionManager } from '../auth/session';
+import { DEFAULT_PROTON_APP_VERSION } from '../constants';
 
 jest.mock('./http-client');
 jest.mock('../auth/session');
@@ -51,7 +52,7 @@ describe('UserApiClient', () => {
           baseURL: 'https://test.example.com',
           timeout: 30000,
           headers: expect.objectContaining({
-            'x-pm-appversion': 'external-drive-proton-lfs-cli@0.1.2',
+            'x-pm-appversion': DEFAULT_PROTON_APP_VERSION,
           }),
         })
       );
@@ -113,7 +114,7 @@ describe('UserApiClient', () => {
 
       expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(
         fakeSession,
-        'external-drive-proton-lfs-cli@0.1.2'
+        DEFAULT_PROTON_APP_VERSION
       );
       expect(mockHttpInstance.request).toHaveBeenCalledWith(
         expect.objectContaining({

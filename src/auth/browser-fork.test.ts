@@ -123,7 +123,7 @@ describe('BrowserForkAuthService', () => {
       sleepMs,
       now: () => now,
       encryptionKeyFactory: () => encryptionKey,
-      appVersion: 'external-drive-proton-lfs-cli@0.1.2',
+      appVersion: 'external-drive-protonlfscli@0.1.2',
       keyPasswordStore: mockKeyPasswordStore,
     });
 

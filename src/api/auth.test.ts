@@ -3,6 +3,7 @@ import { AuthApiClient } from './auth';
 import { CaptchaError } from '../errors/types';
 import { LogLevel, logger } from '../utils/logger';
 import { REDACTED_VALUE } from '../utils/redaction';
+import { DEFAULT_PROTON_APP_VERSION } from '../constants';
 
 jest.mock('./http-client');
 const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
@@ -39,7 +40,7 @@ describe('AuthApiClient', () => {
       expect(MockedHttpClient.create).toHaveBeenCalledWith(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-pm-appversion': 'external-drive-proton-lfs-cli@0.1.2',
+            'x-pm-appversion': DEFAULT_PROTON_APP_VERSION,
           }),
         })
       );
