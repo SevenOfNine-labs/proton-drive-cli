@@ -71,6 +71,23 @@ function makePassCliItem(opts: {
   };
 }
 
+function makePassCliMetadataItem(opts: {
+  title: string;
+  id?: string;
+  shareId?: string;
+  vaultId?: string;
+}) {
+  return {
+    id: opts.id || 'item-id',
+    share_id: opts.shareId || 'share-id',
+    vault_id: opts.vaultId || 'vault-id',
+    title: opts.title,
+    item_type: 'login',
+    state: 'Active',
+    flags: [],
+  };
+}
+
 /** Wrap items in { items: [...] } like real pass-cli output. */
 function wrapItems(items: any[]) {
   return JSON.stringify({ items });
@@ -197,6 +214,35 @@ describe('searchVault', () => {
 
     const results = await searchVault('Personal');
     expect(results).toHaveLength(1);
+  });
+
+  it('hydrates metadata-only proton title matches through item view', async () => {
+    simulateSequentialCalls(
+      { stdout: wrapItems([
+        makePassCliMetadataItem({ title: 'proton.me', id: 'item-123', shareId: 'share-456' }),
+        makePassCliMetadataItem({ title: 'github.com' }),
+      ]) },
+      { stdout: JSON.stringify({
+        item: makePassCliItem({
+          title: 'proton.me',
+          email: 'user@proton.me',
+          password: 'pass',
+          urls: ['https://proton.me/'],
+        }),
+      }) },
+    );
+
+    const results = await searchVault('Seven of Nine [dev]');
+    expect(results).toHaveLength(1);
+    expect(results[0].email).toBe('user@proton.me');
+    expect(results[0].password).toBe('pass');
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      2,
+      'pass-cli',
+      ['item', 'view', '--output', 'json', '--share-id', 'share-456', '--item-id', 'item-123'],
+      expect.objectContaining({ timeout: 15_000 }),
+      expect.any(Function),
+    );
   });
 });
 
