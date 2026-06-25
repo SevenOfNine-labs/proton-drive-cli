@@ -75,6 +75,33 @@ describe('SessionManager', () => {
       expect(mockAuthApi.prototype.refreshToken).toHaveBeenCalled();
     });
 
+    it('returns already-refreshed session without consuming refresh token', async () => {
+      const staleSession = {
+        ...mockSession,
+        accessToken: 'old_access_token',
+        refreshToken: 'old_refresh_token',
+        tokenExpiresAt: Date.now() + (4 * 60 * 1000),
+      };
+      const refreshedByOtherProcess = {
+        ...mockSession,
+        accessToken: 'new_access_token',
+        refreshToken: 'new_refresh_token',
+        tokenExpiresAt: Date.now() + (60 * 60 * 1000),
+      };
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue(refreshedByOtherProcess);
+      mockFs.ensureDir.mockResolvedValue(undefined);
+
+      const { AuthApiClient } = await import('../api/auth');
+      const mockAuthApi = AuthApiClient as jest.MockedClass<typeof AuthApiClient>;
+      mockAuthApi.prototype.refreshToken = jest.fn();
+
+      const result = await SessionManager.refreshSession(staleSession);
+
+      expect(result).toEqual(refreshedByOtherProcess);
+      expect(mockAuthApi.prototype.refreshToken).not.toHaveBeenCalled();
+    });
+
     it('should fallback to current session if proactive refresh fails', async () => {
       const expiringSession = {
         ...mockSession,
@@ -183,28 +210,27 @@ describe('SessionManager', () => {
       // Should not perform SRP auth
     });
 
-    it('should create new session if no session exists', async () => {
+    it('should fail closed instead of creating a session if no session exists', async () => {
       mockFs.pathExists.mockResolvedValue(false);
 
       const { AuthService } = await import('./index');
       const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
-      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
+      mockAuthService.prototype.login = jest.fn();
 
-      const result = await SessionManager.getOrCreateSession(
+      await expect(SessionManager.getOrCreateSession(
         'user@example.com',
         'password123'
-      );
+      )).rejects.toThrow('No valid browser-fork session found');
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalledWith(
-        'user@example.com',
-        'password123'
-      );
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
 
-    it('should create new session if user changed', async () => {
+    it('should reuse a valid browser-fork session without username matching', async () => {
       const existingSession = {
         ...mockSession,
         userHash: SessionManager.hashUsername('old@example.com'),
+        authMode: 'browser-fork' as const,
+        keyPasswordPersisted: true,
       };
       mockFs.pathExists.mockResolvedValue(true);
       mockFs.readJson.mockResolvedValue(existingSession);
@@ -218,10 +244,11 @@ describe('SessionManager', () => {
         'password123'
       );
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+      expect(result).toEqual(existingSession);
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
 
-    it('should create new session if validation fails', async () => {
+    it('should fail closed if validation fails', async () => {
       const invalidSession = {
         ...mockSession,
         tokenExpiresAt: Date.now() - 1000, // Expired
@@ -232,14 +259,14 @@ describe('SessionManager', () => {
 
       const { AuthService } = await import('./index');
       const mockAuthService = AuthService as jest.MockedClass<typeof AuthService>;
-      mockAuthService.prototype.login = jest.fn().mockResolvedValue(mockSession);
+      mockAuthService.prototype.login = jest.fn();
 
-      const result = await SessionManager.getOrCreateSession(
+      await expect(SessionManager.getOrCreateSession(
         'user@example.com',
         'password123'
-      );
+      )).rejects.toThrow('No valid browser-fork session found');
 
-      expect(mockAuthService.prototype.login).toHaveBeenCalled();
+      expect(mockAuthService.prototype.login).not.toHaveBeenCalled();
     });
   });
 
@@ -282,6 +309,73 @@ describe('SessionManager', () => {
       await SessionManager.saveSession(mockSession);
 
       expect(mockFs.remove).toHaveBeenCalledWith(expect.stringContaining('.lock'));
+    });
+  });
+
+  describe('rate-limit cooldown', () => {
+    const now = Date.UTC(2026, 5, 21, 12, 0, 0);
+    let nowSpy: jest.SpyInstance<number, []>;
+
+    beforeEach(() => {
+      nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockFs.ensureDir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+      mockFs.writeJson.mockResolvedValue(undefined);
+      mockFs.move.mockResolvedValue(undefined);
+      mockFs.remove.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      nowSpy.mockRestore();
+    });
+
+    it('records a persisted cooldown with restrictive permissions', async () => {
+      const cooldown = await SessionManager.recordRateLimitCooldown({
+        retryAfter: 120,
+        protonCode: 2028,
+        message: 'Too many requests',
+      });
+
+      expect(cooldown.retryAfter).toBe(120);
+      expect(cooldown.cooldownUntil).toBe(now + 120_000);
+      expect(mockFs.writeJson).toHaveBeenCalledWith(
+        expect.stringContaining('rate-limit-cooldown.json.tmp-'),
+        expect.objectContaining({
+          cooldownUntil: now + 120_000,
+          retryAfter: 120,
+          protonCode: 2028,
+          message: 'Too many requests',
+        }),
+        { spaces: 2, mode: 0o600 }
+      );
+    });
+
+    it('returns active cooldown with remaining retryAfter seconds', async () => {
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue({
+        cooldownUntil: now + 90_000,
+        retryAfter: 120,
+        recordedAt: new Date(now).toISOString(),
+      });
+
+      const cooldown = await SessionManager.getActiveRateLimitCooldown(now);
+
+      expect(cooldown?.retryAfter).toBe(90);
+      expect(mockFs.remove).not.toHaveBeenCalledWith(expect.stringContaining('rate-limit-cooldown.json'));
+    });
+
+    it('clears expired cooldowns', async () => {
+      mockFs.pathExists.mockResolvedValue(true);
+      mockFs.readJson.mockResolvedValue({
+        cooldownUntil: now - 1,
+        retryAfter: 60,
+        recordedAt: new Date(now - 60_000).toISOString(),
+      });
+
+      const cooldown = await SessionManager.getActiveRateLimitCooldown(now);
+
+      expect(cooldown).toBeNull();
+      expect(mockFs.remove).toHaveBeenCalledWith(expect.stringContaining('rate-limit-cooldown.json'));
     });
   });
 

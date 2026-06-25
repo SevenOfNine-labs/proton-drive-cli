@@ -14,6 +14,8 @@
  *   - isHttpClientError(err) type guard
  */
 
+import { SessionManager } from '../auth/session';
+
 export interface HttpClientConfig {
     baseURL: string;
     timeout?: number;
@@ -156,6 +158,7 @@ export class HttpClient {
         }
 
         const url = `${this.baseURL}${path}`;
+        await SessionManager.assertNotRateLimited();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
 
@@ -198,6 +201,11 @@ export class HttpClient {
                     // Extract retry-after header if present
                     const retryAfterHeader = res.headers.get('retry-after');
                     const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+                    const cooldown = await SessionManager.recordRateLimitCooldown({
+                        retryAfter,
+                        protonCode,
+                        message: data?.Error,
+                    });
 
                     const error = new HttpClientError(
                         data?.Error || `Rate limit exceeded (HTTP ${res.status}, Proton Code ${protonCode})`,
@@ -212,7 +220,7 @@ export class HttpClient {
                         }
                     );
                     // Store retry metadata for downstream error handling
-                    (error as any).retryAfter = retryAfter;
+                    (error as any).retryAfter = cooldown.retryAfter;
                     (error as any).protonCode = protonCode;
 
                     // Run response error interceptors

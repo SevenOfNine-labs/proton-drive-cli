@@ -7,6 +7,8 @@ export enum ErrorCode {
   SESSION_EXPIRED = 'SESSION_EXPIRED',
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
   TWO_FACTOR_REQUIRED = 'TWO_FACTOR_REQUIRED',
+  DATA_PASSWORD_REQUIRED = 'DATA_PASSWORD_REQUIRED',
+  KEY_PASSWORD_REQUIRED = 'KEY_PASSWORD_REQUIRED',
 
   // Network errors
   NETWORK_ERROR = 'NETWORK_ERROR',
@@ -15,6 +17,7 @@ export enum ErrorCode {
 
   // API errors
   API_ERROR = 'API_ERROR',
+  INSUFFICIENT_SCOPE = 'INSUFFICIENT_SCOPE',
   RATE_LIMITED = 'RATE_LIMITED',
   QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
   NOT_FOUND = 'NOT_FOUND',
@@ -67,6 +70,9 @@ export class AppError extends Error {
   toUserMessage(): string {
     switch (this.code) {
       case ErrorCode.AUTH_FAILED:
+        if (this.message?.startsWith('Login failed during ')) {
+          return this.message;
+        }
         return 'Authentication failed. Please check your credentials and try again.';
 
       case ErrorCode.SESSION_EXPIRED:
@@ -75,10 +81,22 @@ export class AppError extends Error {
       case ErrorCode.INVALID_CREDENTIALS:
         return 'Invalid email or password. Please check your credentials.';
 
+      case ErrorCode.TWO_FACTOR_REQUIRED:
+        return 'Two-factor authentication is required.';
+
+      case ErrorCode.DATA_PASSWORD_REQUIRED:
+        return 'Mailbox/data password required for this two-password Proton account.';
+
+      case ErrorCode.KEY_PASSWORD_REQUIRED:
+        return 'Stored browser-fork key password is missing or unreadable.';
+
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
 
       case ErrorCode.TIMEOUT:
+        if (this.message?.startsWith('Login failed during ')) {
+          return this.message;
+        }
         return 'Request timed out. The server took too long to respond.';
 
       case ErrorCode.CONNECTION_REFUSED:
@@ -107,6 +125,9 @@ export class AppError extends Error {
 
       case ErrorCode.RATE_LIMITED:
         return this.message || 'Too many requests. Please try again later.';
+
+      case ErrorCode.INSUFFICIENT_SCOPE:
+        return 'Proton rejected this session or app authorization scope.';
 
       case ErrorCode.QUOTA_EXCEEDED:
         return 'Storage quota exceeded. Please free up space in your Proton Drive.';
@@ -149,6 +170,15 @@ export class AppError extends Error {
       case ErrorCode.SESSION_EXPIRED:
         return 'Run: proton-drive login';
 
+      case ErrorCode.TWO_FACTOR_REQUIRED:
+        return 'Run: proton-drive login interactively, or provide a TOTP code through the bridge request';
+
+      case ErrorCode.DATA_PASSWORD_REQUIRED:
+        return 'Provide the mailbox/data password for key decryption';
+
+      case ErrorCode.KEY_PASSWORD_REQUIRED:
+        return 'Run browser login again, or provide an explicit mailbox/data password source';
+
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.TIMEOUT:
       case ErrorCode.CONNECTION_REFUSED:
@@ -156,6 +186,9 @@ export class AppError extends Error {
 
       case ErrorCode.RATE_LIMITED:
         return 'Wait a few moments before trying again';
+
+      case ErrorCode.INSUFFICIENT_SCOPE:
+        return 'Re-login only after the app/version scope requirement is understood';
 
       case ErrorCode.QUOTA_EXCEEDED:
         return 'Free up space in your Proton Drive or upgrade your plan';

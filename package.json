@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-runtime.mjs",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
@@ -32,12 +32,11 @@
     "docs:watch": "typedoc --watch",
     "docs:serve": "npx http-server docs/api -p 8080"
   },
-  "bin": {
-    "proton-drive-cli": "./dist/index.js"
-  },
+  "bin": "./dist/index.js",
   "files": [
     "dist/**/*",
     "!dist/**/*.test.*",
+    "schemas/**/*",
     "README.md",
     "LICENSE"
   ],
@@ -53,12 +52,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SevenOfNine-ai/proton-drive-cli.git"
+    "url": "git+https://github.com/SevenOfNine-labs/proton-drive-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/SevenOfNine-ai/proton-git-lfs/issues"
+    "url": "https://github.com/SevenOfNine-labs/proton-drive-cli/issues"
   },
-  "homepage": "https://github.com/SevenOfNine-ai/proton-git-lfs/tree/main/submodules/proton-drive-cli#readme",
+  "homepage": "https://github.com/SevenOfNine-labs/proton-drive-cli#readme",
   "bundledDependencies": [
     "@protontech/drive-sdk"
   ],
@@ -87,7 +86,8 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@protontech/drive-sdk": "portal:./submodules/sdk/js/sdk",
+    "@protontech/crypto": "^2.0.0",
+    "@protontech/drive-sdk": "portal:./submodules/sdk/client/js",
     "@protontech/openpgp": "^6.2.2",
     "bcryptjs": "^3.0.3",
     "boxen": "^7.1.1",
@@ -100,5 +100,8 @@
     "mime-types": "^3.0.2",
     "openpgp": "npm:@protontech/openpgp@^6.2.2",
     "ora": "^9.0.0"
+  },
+  "resolutions": {
+    "lodash": "^4.18.1"
   }
 }

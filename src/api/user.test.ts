@@ -1,6 +1,7 @@
 import { HttpClient } from './http-client';
 import { UserApiClient } from './user';
 import { SessionManager } from '../auth/session';
+import { DEFAULT_PROTON_APP_VERSION } from '../constants';
 
 jest.mock('./http-client');
 jest.mock('../auth/session');
@@ -29,6 +30,10 @@ beforeEach(() => {
   };
   MockedHttpClient.create = jest.fn().mockReturnValue(mockHttpInstance as any);
   mockedSessionManager.loadSession.mockResolvedValue(fakeSession as any);
+  mockedSessionManager.refreshSession.mockResolvedValue({
+    ...fakeSession,
+    accessToken: 'new-token',
+  } as any);
 });
 
 function captureInterceptors() {
@@ -46,6 +51,21 @@ describe('UserApiClient', () => {
         expect.objectContaining({
           baseURL: 'https://test.example.com',
           timeout: 30000,
+          headers: expect.objectContaining({
+            'x-pm-appversion': DEFAULT_PROTON_APP_VERSION,
+          }),
+        })
+      );
+    });
+
+    test('allows app version override', () => {
+      new UserApiClient('https://test.example.com', 'external-drive-custom@1.0.0');
+
+      expect(MockedHttpClient.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-pm-appversion': 'external-drive-custom@1.0.0',
+          }),
         })
       );
     });
@@ -75,6 +95,37 @@ describe('UserApiClient', () => {
   });
 
   describe('response interceptor', () => {
+    test('refreshes session through SessionManager on 401 and retries request', async () => {
+      new UserApiClient();
+      captureInterceptors();
+
+      const originalConfig = { headers: {}, _retried: false };
+      const error = {
+        response: {
+          status: 401,
+          data: {},
+          config: originalConfig,
+        },
+      };
+
+      mockHttpInstance.request.mockResolvedValue({ data: { Code: 1000 } });
+
+      await responseInterceptorReject(error);
+
+      expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(
+        fakeSession,
+        DEFAULT_PROTON_APP_VERSION
+      );
+      expect(mockHttpInstance.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer new-token',
+            'x-pm-uid': 'test-uid',
+          }),
+        })
+      );
+    });
+
     test('throws session expired on 401 when refresh fails', async () => {
       new UserApiClient();
       captureInterceptors();

@@ -1,61 +1,117 @@
 import { Command } from 'commander';
-import inquirer from 'inquirer';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
+import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../auth/browser-fork';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
-import { promptForToken } from '../auth/captcha-helper';
-import { CaptchaError } from '../errors/types';
-import { handleError } from '../errors/handler';
+import { AppError } from '../errors/types';
+import { handleError, toAppError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { readPasswordFromStdin, resolveCredentials, normalizeProviderName, createProvider } from '../credentials';
+import { openBrowserUrl } from '../utils/open-browser';
+import { authTrace } from '../utils/auth-trace';
+import { redactSensitive } from '../utils/redaction';
+
+export interface BrowserForkKeyPasswordOptions {
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
+}
+
+export function resolveBrowserForkKeyPasswordOptions(
+  options: BrowserForkKeyPasswordOptions = {}
+): BrowserForkAuthServiceOptions {
+  const keyPasswordProvider =
+    options.keyPasswordProvider?.trim() ||
+    process.env.PROTON_KEY_PASSWORD_PROVIDER?.trim() ||
+    process.env.PROTON_CREDENTIAL_PROVIDER?.trim();
+  const keyPasswordHost =
+    options.keyPasswordHost?.trim() ||
+    process.env.PROTON_KEY_PASSWORD_HOST?.trim();
+
+  return {
+    ...(keyPasswordProvider ? { keyPasswordProvider } : {}),
+    ...(keyPasswordHost ? { keyPasswordHost } : {}),
+  };
+}
+
+export async function loginWithBrowserFork(
+  authService: BrowserForkAuthService = new BrowserForkAuthService()
+): Promise<void> {
+  authTrace('cli.login.browser-fork.start');
+  let spinner: ReturnType<typeof ora> | undefined;
+  if (isVerbose()) {
+    spinner = ora('Starting browser sign-in...').start();
+  }
+
+  try {
+    await authService.login({
+      onSignInUrl: (signInUrl: string) => {
+        if (spinner) {
+          spinner.stop();
+          spinner = undefined;
+        }
+
+        const opened = openBrowserUrl(signInUrl);
+        if (!isQuiet()) {
+          console.log(chalk.cyan('Complete Proton sign-in in your browser.'));
+          console.log(chalk.dim(opened
+            ? 'A browser window was opened for Proton account sign-in.'
+            : 'Could not open a browser automatically.'
+          ));
+          console.log(chalk.dim('If needed, open this URL manually:'));
+          console.log(signInUrl);
+        }
+
+        if (isVerbose()) {
+          spinner = ora('Waiting for browser sign-in...').start();
+        }
+      },
+    });
+
+    if (spinner) {
+      spinner.succeed(chalk.green('Browser login successful!'));
+    }
+    if (isVerbose()) {
+      console.log(chalk.dim('Session saved (tokens only). Browser key password stored in the configured credential provider.'));
+    } else if (!isQuiet()) {
+      outputResult('OK');
+    }
+    authTrace('cli.login.browser-fork.success');
+  } catch (error: unknown) {
+    if (spinner) {
+      spinner.stop();
+    }
+    authTrace('cli.login.browser-fork.failure', traceErrorFields(error));
+    throw error;
+  }
+}
 
 /**
  * Create the login command for the CLI.
  *
- * Authenticates with Proton Drive using the SRP (Secure Remote Password) protocol.
- * The command supports multiple credential input methods and includes CAPTCHA handling
- * for enhanced security. Successful authentication creates a session with access and
- * refresh tokens stored in ~/.proton-drive-cli/session.json.
- *
- * Credential sources are prioritized in this order:
- * 1. `--credential-provider git` - Resolves both username and password via Git Credential Manager
- * 2. `--credential-provider pass-cli` - Resolves credentials from Proton Pass vault
- * 3. `--password-stdin` - Reads password from stdin (safe from process listing leaks)
- * 4. `-u/--username` flag - Username only (password must come from another source)
- * 5. Interactive prompts - If TTY is available, prompts for missing credentials
+ * Authenticates with Proton Drive through Proton's browser session-fork flow.
+ * The command never accepts or resolves the Proton account password.
  *
  * # Security Features
  *
- * - Passwords are NEVER accepted via CLI flags or environment variables
- * - Session reuse: Skips login if already authenticated as the same user
- * - CAPTCHA support: Automatically prompts for verification token when required
- * - Secure storage: Only session tokens are persisted (never passwords)
- * - Process isolation: Credentials passed via stdin to child processes
+ * - Account password is entered only in Proton's browser sign-in page
+ * - Session tokens are persisted in the CLI session file
+ * - Browser-derived key password is stored in the configured credential provider
  *
  * # Exit Codes
  *
  * - 0: Login successful or already authenticated
- * - 1: Authentication failed (invalid credentials, network error, CAPTCHA failed)
+ * - 1: Authentication failed, timed out, or browser approval was cancelled
  *
  * @returns Commander Command instance configured for login
  *
  * @example
  * ```bash
- * # Interactive login (prompts for username and password)
+ * # Browser login
  * proton-drive login
  *
- * # Login with username flag (prompts for password)
- * proton-drive login -u user@proton.me
- *
- * # Login with piped password (for scripts)
- * echo "password" | proton-drive login -u user@proton.me --password-stdin
- *
- * # Login via Git Credential Manager
- * proton-drive login --credential-provider git-credential
- *
- * # Login via Proton Pass CLI
- * proton-drive login --credential-provider pass-cli
+ * # Store browser-derived key password in Proton Pass
+ * proton-drive login --key-password-provider pass-cli
  * ```
  *
  * @example
@@ -71,197 +127,51 @@ import { readPasswordFromStdin, resolveCredentials, normalizeProviderName, creat
  * @category CLI Commands
  * @see {@link createLogoutCommand} for logging out
  * @see {@link createStatusCommand} for checking authentication status
- * @see {@link AuthService.login} for underlying authentication logic
  * @since 0.1.0
  */
 export function createLoginCommand(): Command {
   const command = new Command('login');
 
   command
-    .description('Authenticate with Proton Drive')
-    .option('-u, --username <email|username>', 'Proton account email or username')
-    .option('--password-stdin', 'Read password from stdin (for scripts with special characters)')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
+    .description('Authenticate with Proton Drive through browser sign-in')
+    .option('--key-password-provider <type>', 'Credential provider for browser-fork key password: git-credential or pass-cli')
+    .option('--key-password-host <host>', 'Credential host/key for browser-fork key password')
     .action(async (options) => {
       try {
-        let username = options.username;
-        let password: string | undefined;
-
-        // Handle --credential-provider (git-credential, pass-cli, etc.)
-        if (options.credentialProvider) {
-          const name = normalizeProviderName(options.credentialProvider);
-          const provider = createProvider(name);
-          const creds = await provider.resolve({ username });
-          username = creds.username || username;
-          password = creds.password;
-          if (!isQuiet()) {
-            console.log(chalk.dim(`[INFO] Credentials resolved via ${name} for ${username}`));
-          }
-        }
-
-        // Handle --password-stdin flag or detect piped stdin
-        if (!password && (options.passwordStdin || !process.stdin.isTTY)) {
-          try {
-            password = await readPasswordFromStdin();
-            if (!isQuiet()) {
-              console.log(chalk.dim('[INFO] Password read from stdin'));
-            }
-          } catch (err) {
-            console.error(chalk.red('Error reading password from stdin:'), err);
-            process.exit(1);
-          }
-        }
-
-        // Session reuse: skip login if already authenticated as this user.
-        // If username is known, check if the session belongs to the same user.
-        // If the session belongs to a different user, fall through to re-login.
-        try {
-          if (username) {
-            if (await SessionManager.isSessionForUser(username)) {
-              if (!isQuiet()) {
-                console.log('Already authenticated. Log out first to log in again.');
-              } else {
-                outputResult('OK');
-              }
-              return;
-            }
-          } else {
-            // No username yet (will prompt interactively) — just check session exists
-            const authCheck = new AuthService();
-            if (await authCheck.isAuthenticated()) {
-              if (!isQuiet()) {
-                console.log('Already authenticated. Log out first to log in again.');
-              } else {
-                outputResult('OK');
-              }
-              return;
-            }
-          }
-        } catch {
-          // Session file corrupted or unreadable — fall through to login
-        }
-
-        if (!username || !password) {
-          // Check if we can prompt interactively
-          if (!process.stdin.isTTY || !process.stdout.isTTY) {
-            // Non-interactive mode - can't prompt
-            if (!username) {
-              console.error(chalk.red('Error: Username required.'));
-              console.error(chalk.dim('Use -u flag or run interactively.'));
-            }
-            if (!password) {
-              console.error(chalk.red('Error: Password required.'));
-              console.error(chalk.dim('Use --password-stdin or run interactively.'));
-            }
-            console.error(chalk.dim('\nExamples:'));
-            console.error(chalk.dim('  echo "password" | proton-drive login -u user@example.com --password-stdin'));
-            console.error(chalk.dim('  proton-drive login   # interactive prompts'));
-            process.exit(1);
-          }
-
-          const answers = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'username',
-              message: 'Email or username:',
-              when: !username,
-              validate: (input: string) => {
-                if (!input || input.trim().length === 0) {
-                  return 'Please enter your Proton email or username';
-                }
-                return true;
-              },
-            },
-            {
-              type: 'password',
-              name: 'password',
-              message: 'Password:',
-              when: !password,
-              mask: '*',
-              validate: (input: string) => {
-                if (!input || input.length < 1) {
-                  return 'Password is required';
-                }
-                return true;
-              },
-            },
-          ]);
-
-          username = username || answers.username;
-          password = password || answers.password;
-        }
-
-        // At this point both username and password are guaranteed defined
-        const finalUsername = username as string;
-        const finalPassword = password as string;
-
-        // Authenticate with spinner
-        let spinner;
-        if (isVerbose()) {
-          spinner = ora('Authenticating...').start();
-        }
-        const authService = new AuthService();
-
-        try {
-          await authService.login(finalUsername.trim(), finalPassword);
-          if (spinner) {
-            spinner.succeed(chalk.green('Login successful!'));
-          }
-          if (isVerbose()) {
-            console.log(chalk.dim('Session saved (tokens only — password is not stored on disk).'));
-            console.log('\nYou can now use the CLI to upload files to Proton Drive.');
-          } else if (!isQuiet()) {
-            outputResult('OK');
-          }
-        } catch (error: unknown) {
-          if (spinner) {
-            spinner.stop();
-          }
-
-          // CAPTCHA required — capture verification token
-          if (error instanceof CaptchaError) {
-            if (isVerbose()) {
-              console.log(chalk.dim(`  Verification methods: ${error.verificationMethods.join(', ') || 'none'}`));
-              console.log(chalk.dim(`  Challenge token: ${error.captchaToken}`));
-              console.log(chalk.dim(`  URL: ${error.captchaUrl}`));
-            }
-
-            const verificationToken = await promptForToken(
-              error.captchaUrl,
-              error.captchaToken
-            );
-
-            if (!verificationToken) {
-              console.error(chalk.red('No verification token received. Login cancelled.'));
-              process.exit(1);
-            }
-
-            // Retry login with the captured token
-            const verifySpinner = ora('Retrying authentication with verification token...').start();
-            try {
-              await authService.login(finalUsername.trim(), finalPassword, verificationToken);
-              verifySpinner.succeed(chalk.green('Login successful!'));
-              if (isVerbose()) {
-                console.log(chalk.dim('Session saved (tokens only).'));
-              } else if (!isQuiet()) {
-                outputResult('OK');
-              }
-            } catch (retryError: unknown) {
-              verifySpinner.fail();
-              throw retryError;
-            }
-            return;
-          } else {
-            throw error;
-          }
-        }
+        authTrace('cli.login.start', {
+          authMode: 'browser-fork',
+          keyPasswordProvider: options.keyPasswordProvider,
+          keyPasswordHost: options.keyPasswordHost,
+        });
+        await loginWithBrowserFork(new BrowserForkAuthService(
+          resolveBrowserForkKeyPasswordOptions(options)
+        ));
       } catch (error) {
+        authTrace('cli.login.failure', traceErrorFields(error));
         handleError(error, process.env.DEBUG === 'true');
         process.exit(1);
       }
     });
 
   return command;
+}
+
+function traceErrorFields(error: unknown): Record<string, unknown> {
+  if (error instanceof AppError) {
+    return {
+      errorName: error.name,
+      errorCode: error.code,
+      errorMessage: error.message,
+      details: error.details,
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+    };
+  }
+  return { errorMessage: String(error) };
 }
 
 /**
@@ -413,6 +323,15 @@ export function createStatusCommand(): Command {
           console.log(`  ${chalk.dim('Session ID:')} ${session.sessionId.substring(0, 20)}...`);
           console.log(`  ${chalk.dim('Scopes:')} ${session.scopes.join(', ')}`);
           console.log(`  ${chalk.dim('Password Mode:')} ${session.passwordMode === 1 ? 'Single' : 'Two-password'}`);
+          console.log(`  ${chalk.dim('Auth Mode:')} ${session.authMode || 'srp'}`);
+          if (session.authMode === 'browser-fork') {
+            const keyPasswordStore = createKeyPasswordStore({
+              provider: session.keyPasswordProvider,
+              host: session.keyPasswordHost,
+            });
+            const keyPasswordAvailable = await keyPasswordStore.verify(session.uid);
+            console.log(`  ${chalk.dim('Key Password:')} ${keyPasswordAvailable ? 'Stored' : 'Missing'}`);
+          }
         } else {
           console.log(chalk.yellow('✗ Not authenticated'));
           console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive login'));
@@ -501,19 +420,36 @@ export function createSessionRefreshCommand(): Command {
   command
     .command('refresh')
     .description('Refresh the access token (used by tray heartbeat)')
-    .action(async () => {
+    .option('--json', 'Emit a structured machine-readable refresh result')
+    .action(async (options: { json?: boolean } = {}) => {
       try {
         const session = await SessionManager.loadSession();
         if (!session) {
-          // No session — nothing to refresh, silent success
+          if (options.json) {
+            console.log(JSON.stringify({
+              ok: true,
+              refreshed: false,
+              state: 'no_session',
+              action: 'none',
+            }));
+          }
           process.exit(0);
         }
 
-        const authService = new AuthService();
-        await authService.refreshSession();
-        // Silent success
+        const updated = await SessionManager.refreshSession(session);
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            refreshed: true,
+            state: 'refreshed',
+            uidFingerprint: fingerprintForRefresh(updated.uid),
+            tokenExpiresAt: updated.tokenExpiresAt,
+          }));
+        }
       } catch (error) {
-        if (process.env.DEBUG === 'true') {
+        if (options.json) {
+          console.log(JSON.stringify(refreshErrorEnvelope(error)));
+        } else if (process.env.DEBUG === 'true') {
           handleError(error, true);
         }
         process.exit(1);
@@ -521,4 +457,39 @@ export function createSessionRefreshCommand(): Command {
     });
 
   return command;
+}
+
+function refreshErrorEnvelope(error: unknown): Record<string, unknown> {
+  const appError = toAppError(error);
+  const details = redactSensitive(appError.details || {}) as Record<string, unknown>;
+  const statusCode = typeof details.statusCode === 'number' ? details.statusCode : undefined;
+  const apiError = typeof details.apiError === 'object' && details.apiError !== null
+    ? details.apiError as Record<string, unknown>
+    : undefined;
+  const protonCode = apiError?.Code;
+  const protonError = apiError?.Error;
+
+  return {
+    ok: false,
+    state: 'refresh_failed',
+    error: appError.toUserMessage(),
+    errorCode: appError.code,
+    recoverable: appError.isRecoverable,
+    ...(statusCode !== undefined && { statusCode }),
+    ...(protonCode !== undefined && { protonCode }),
+    ...(typeof protonError === 'string' && protonError !== '' && { protonError }),
+    action: appError.isRecoverable
+      ? 'retry_after_backoff'
+      : 'stop: refresh token rejected or session invalid; run browser login after offline gates pass',
+    details,
+  };
+}
+
+function fingerprintForRefresh(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
 }

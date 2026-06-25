@@ -3,10 +3,13 @@ import {
   BridgeResponse,
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
   oidToPath,
   pathToOid,
   OID_PATTERN,
+  BRIDGE_COMMAND_REQUEST_FIELDS,
+  isBridgeCommand,
 } from './index';
 
 const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
@@ -33,6 +36,16 @@ describe('shared bridge exports', () => {
     expect(() => validateLocalPath('../etc/passwd')).toThrow('Path traversal');
   });
 
+  it('exports command request validation helpers', () => {
+    expect(isBridgeCommand('auth-state')).toBe(true);
+    expect(isBridgeCommand('not-a-command')).toBe(false);
+    expect(BRIDGE_COMMAND_REQUEST_FIELDS.upload.required).toContain('oid');
+    expect(() => validateBridgeRequestForCommand('upload', {
+      oid: VALID_OID,
+      path: '/tmp/file.txt',
+    })).not.toThrow();
+  });
+
   it('exports errorToStatusCode', () => {
     expect(typeof errorToStatusCode({ message: 'not found' })).toBe('number');
   });
@@ -48,8 +61,8 @@ describe('shared bridge exports', () => {
   });
 
   it('BridgeRequest type is usable', () => {
-    const req: BridgeRequest = { username: 'test', password: 'pass' };
-    expect(req.username).toBe('test');
+    const req: BridgeRequest = { dataCredentialProvider: 'pass-cli' };
+    expect(req.dataCredentialProvider).toBe('pass-cli');
   });
 
   it('BridgeResponse type is usable', () => {

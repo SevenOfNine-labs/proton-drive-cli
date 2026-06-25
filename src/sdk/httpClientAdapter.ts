@@ -7,11 +7,15 @@
  * - HTTP 403 with Proton error code 9101 (Insufficient scope)
  */
 
-import type { ProtonDriveHTTPClient } from '@protontech/drive-sdk';
+import type {
+  ProtonDriveHTTPClient,
+  ProtonDriveHTTPClientBlobRequest,
+  ProtonDriveHTTPClientJsonRequest,
+} from '@protontech/drive-sdk';
 import { SessionManager } from '../auth/session';
-import { AuthApiClient } from '../api/auth';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
+import { getProtonAppVersion } from '../constants';
 
 // Inline request types to avoid deep import issues
 interface HTTPClientBaseRequest {
@@ -27,16 +31,11 @@ interface HTTPClientJsonRequest extends HTTPClientBaseRequest {
 }
 
 interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
-  body?: Uint8Array | ArrayBuffer | string | Blob | ReadableStream;
+  body?: ProtonDriveHTTPClientBlobRequest['body'];
   onProgress?: (progress: number) => void;
 }
 
 const API_BASE_URL = 'https://drive-api.proton.me';
-
-// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
-const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
-const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
-const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
 
 // Proton API error codes that indicate the access token needs refresh
 const AUTH_REFRESH_ERROR_CODES = new Set([
@@ -52,17 +51,23 @@ const RATE_LIMIT_ERROR_CODES = new Set([
 
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   private refreshInProgress: Promise<void> | null = null;
+  private readonly appVersion: string;
+
+  constructor(appVersion?: string) {
+    this.appVersion = getProtonAppVersion(appVersion);
+  }
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
+    await SessionManager.assertNotRateLimited();
+
     // Use getValidSession() to proactively refresh tokens if expiring soon
-    const session = await SessionManager.getValidSession();
+    const session = await SessionManager.getValidSession(this.appVersion);
     if (session) {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
     }
-    // Use official Proton Drive desktop app version string
     if (!headers.has('x-pm-appversion')) {
-      headers.set('x-pm-appversion', APP_VERSION);
+      headers.set('x-pm-appversion', this.appVersion);
     }
   }
 
@@ -82,9 +87,13 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get('retry-after');
       const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+      const cooldown = await SessionManager.recordRateLimitCooldown({
+        retryAfter,
+        message: 'Rate limit exceeded (HTTP 429)',
+      });
       throw new RateLimitError(
         `Rate limit exceeded (HTTP 429)`,
-        { retryAfter }
+        { retryAfter: cooldown.retryAfter }
       );
     }
 
@@ -95,9 +104,13 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const body: any = await clone.json();
         if (body?.Code && RATE_LIMIT_ERROR_CODES.has(body.Code)) {
           logger.warn(`Proton API rate-limit error ${body.Code}: ${body.Error || 'unknown'}`);
+          const cooldown = await SessionManager.recordRateLimitCooldown({
+            protonCode: body.Code,
+            message: body.Error,
+          });
           throw new RateLimitError(
             body.Error || `Rate limit exceeded (Proton code ${body.Code})`,
-            { protonCode: body.Code }
+            { retryAfter: cooldown.retryAfter, protonCode: body.Code }
           );
         }
       } catch (err) {
@@ -155,21 +168,8 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         // Store original access token to detect cross-process updates
         const originalAccessToken = session.accessToken;
 
-        const authApi = new AuthApiClient();
         try {
-          const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
-
-          // Calculate token expiration time
-          const tokenExpiresAt = refreshResult.ExpiresIn
-            ? Date.now() + (refreshResult.ExpiresIn * 1000)
-            : undefined;
-
-          await SessionManager.saveSession({
-            ...session,
-            accessToken: refreshResult.AccessToken,
-            refreshToken: refreshResult.RefreshToken,
-            tokenExpiresAt,
-          });
+          await SessionManager.refreshSession(session, this.appVersion);
           logger.info('Token refreshed successfully (reactive, after 401)');
         } catch (refreshErr) {
           // Refresh token may have been consumed by another subprocess.
@@ -246,7 +246,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     }
   }
 
-  async fetchJson(request: HTTPClientJsonRequest): Promise<Response> {
+  async fetchJson(request: ProtonDriveHTTPClientJsonRequest): Promise<Response> {
     await this.injectAuthHeaders(request.headers);
     const url = this.resolveUrl(request.url);
 
@@ -263,7 +263,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     return this.fetchWithRefresh(url, fetchOpts, request.headers, request.timeoutMs, request.signal);
   }
 
-  async fetchBlob(request: HTTPClientBlobRequest): Promise<Response> {
+  async fetchBlob(request: ProtonDriveHTTPClientBlobRequest): Promise<Response> {
     await this.injectAuthHeaders(request.headers);
     const url = this.resolveUrl(request.url);
 

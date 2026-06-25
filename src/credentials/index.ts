@@ -16,7 +16,5 @@ export { InteractiveProvider } from './interactive';
 export {
   createProvider,
   normalizeProviderName,
-  resolveCredentials,
-  resolvePassword,
 } from './factory';
-export type { ProviderOptions, ResolveOptions } from './factory';
+export type { ProviderOptions } from './factory';

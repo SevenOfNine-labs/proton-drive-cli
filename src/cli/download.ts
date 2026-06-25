@@ -7,7 +7,6 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the download command for the CLI.
@@ -66,8 +65,9 @@ import { resolvePassword } from '../credentials';
  * # Download without signature verification (not recommended)
  * proton-drive download /Backups/data.bin ./data.bin --skip-verification
  *
- * # Download with git-credential provider
- * proton-drive download /Documents/file.pdf ./file.pdf --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive download /Documents/file.pdf ./file.pdf
  *
  * # Quiet mode (for scripts)
  * proton-drive download /file.txt ./file.txt --quiet
@@ -95,22 +95,17 @@ export function createDownloadCommand(): Command {
     .argument('<source>', 'Source path in Drive (e.g., /Documents/file.pdf)')
     .argument('<output>', 'Output path on local filesystem (e.g., ./file.pdf)')
     .option('--skip-verification', 'Skip manifest signature verification (not recommended)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(downloadCommand);
 }
 
 async function downloadCommand(sourcePath: string, outputPath: string, options: any) {
   try {
-    // Resolve password for key decryption
-    const password = await resolvePassword(options);
-
     let initSpinner;
     if (isVerbose()) {
       initSpinner = ora('Initializing Drive client...').start();
     }
 
-    const client = await createSDKClient(password);
+    const client = await createSDKClient({});
 
     if (initSpinner) {
       initSpinner.succeed('Drive client initialized');

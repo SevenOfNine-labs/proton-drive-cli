@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './auth/srp/uint8array-extensions';
 import { program } from 'commander';
 import chalk from 'chalk';
 import { version as pkgVersion } from '../package.json';
@@ -8,7 +9,7 @@ import { createUploadCommand } from './cli/upload';
 import { createDownloadCommand } from './cli/download';
 import { createMkdirCommand } from './cli/mkdir';
 import { createBridgeCommand } from './cli/bridge';
-import { createCredentialCommand } from './cli/credential';
+import { createDoctorCommand } from './cli/doctor';
 import { createRmCommand } from './cli/rm';
 import { createMvCommand } from './cli/mv';
 import { createCatCommand } from './cli/cat';
@@ -96,8 +97,8 @@ program.addCommand(createInfoCommand());
 // Add bridge command (for Git LFS integration)
 program.addCommand(createBridgeCommand());
 
-// Add credential management command
-program.addCommand(createCredentialCommand());
+// Add offline preflight command
+program.addCommand(createDoctorCommand());
 
 // Custom help
 program.on('--help', () => {
@@ -105,19 +106,18 @@ program.on('--help', () => {
   console.log(chalk.bold('Command Groups:'));
   console.log('');
   console.log(`  ${chalk.cyan('Authentication')}  login, logout, status, session refresh`);
-  console.log(`  ${chalk.cyan('Credentials')}    credential store/remove/verify`);
+  console.log(`  ${chalk.cyan('Preflight')}      doctor`);
   console.log(`  ${chalk.cyan('Drive')}          ls, upload, download, mkdir, rm, mv, cat, info`);
   console.log(`  ${chalk.cyan('Git LFS')}        bridge`);
   console.log('');
-  console.log(chalk.bold('Credential Providers:'));
-  console.log(`  ${chalk.dim('--credential-provider git-credential')}  macOS Keychain / Windows Credential Manager`);
-  console.log(`  ${chalk.dim('--credential-provider pass-cli')}        Proton Pass CLI`);
+  console.log(chalk.bold('Key Password Providers:'));
+  console.log(`  ${chalk.dim('--key-password-provider git-credential')}  macOS Keychain / Windows Credential Manager`);
+  console.log(`  ${chalk.dim('--key-password-provider pass-cli')}        Proton Pass CLI`);
   console.log('');
   console.log(chalk.bold('Examples:'));
   console.log('  $ proton-drive login');
-  console.log('  $ proton-drive login --credential-provider pass-cli');
-  console.log('  $ proton-drive credential store --provider pass-cli');
-  console.log('  $ proton-drive credential verify --provider git-credential');
+  console.log('  $ proton-drive login --key-password-provider pass-cli');
+  console.log('  $ proton-drive doctor');
   console.log('  $ proton-drive upload ./file.pdf /Documents');
   console.log('  $ proton-drive ls /Documents');
   console.log('');

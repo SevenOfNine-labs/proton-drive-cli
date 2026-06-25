@@ -10,13 +10,16 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
 import * as fs from 'fs/promises';
+import { createReadStream, createWriteStream } from 'fs';
 import * as path from 'path';
 import { Readable, Writable } from 'stream';
+import { jwtDecode } from 'jwt-decode';
 import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath } from '../sdk/pathResolver';
 import { AuthService } from '../auth';
 import { SessionManager } from '../auth/session';
+import { createKeyPasswordStore } from '../auth/key-password-store';
 import { AppError, ErrorCode, CaptchaError, RateLimitError, isRateLimitError, isCaptchaError } from '../errors/types';
 import { logger, LogLevel } from '../utils/logger';
 import {
@@ -30,11 +33,16 @@ import {
   BridgeResponse,
   validateOid,
   validateLocalPath,
+  validateBridgeRequestForCommand,
   errorToStatusCode,
   oidToPath,
 } from '../bridge/validators';
+import { isBridgeCommand, type BridgeAuthState } from '../bridge/protocol';
 import { createProvider, normalizeProviderName } from '../credentials';
+import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
 import { ChangeTokenCache } from '../drive/change-tokens';
+import type { AuthMode, SessionCredentials } from '../types/auth';
+import { createRetryConfig, retryWithBackoff, type RetryConfig } from '../utils/retry';
 
 /**
  * Write JSON response to stdout (single line, no extra output)
@@ -49,6 +57,45 @@ function writeSuccess(payload: any = {}): void {
 
 function writeError(message: string, code: number = 500, details: string = ''): void {
   writeResponse({ ok: false, error: message, code, details });
+}
+
+function appErrorDetails(error: AppError): string {
+  return JSON.stringify({
+    errorCode: error.code,
+    ...(error.details || {}),
+  });
+}
+
+function isInsufficientScopeError(error: unknown): boolean {
+  const candidate = error as {
+    response?: { data?: { Code?: unknown; Error?: unknown }; status?: unknown };
+    code?: unknown;
+    message?: unknown;
+  };
+  const protonCode = candidate?.response?.data?.Code ?? candidate?.code;
+  if (protonCode === 9101 || protonCode === '9101') {
+    return true;
+  }
+
+  const message = String(candidate?.message || candidate?.response?.data?.Error || '').toLowerCase();
+  return message.includes('9101') || message.includes('sufficient scope');
+}
+
+export function formatInsufficientScopeError(error: unknown): BridgeResponse {
+  const message = error instanceof Error && error.message
+    ? error.message
+    : 'Access token does not have sufficient Proton scope';
+
+  return {
+    ok: false,
+    error: message,
+    code: 403,
+    details: JSON.stringify({
+      errorCode: ErrorCode.INSUFFICIENT_SCOPE,
+      protonCode: 9101,
+      action: 'stop: app/session scope is insufficient; do not retry login loops',
+    }),
+  };
 }
 
 /**
@@ -72,7 +119,24 @@ function handleBridgeError(error: any, fallbackMessage: string = 'Operation fail
     const message = retryAfter
       ? `Rate limited by Proton API — wait ${retryAfter}s and retry`
       : 'Rate limited by Proton API — wait and retry';
-    writeError(message, 429);
+    writeError(message, 429, JSON.stringify({
+      errorCode: ErrorCode.RATE_LIMITED,
+      retryAfter,
+    }));
+    return;
+  }
+
+  if (isInsufficientScopeError(error)) {
+    writeResponse(formatInsufficientScopeError(error));
+    return;
+  }
+
+  if (error instanceof AppError) {
+    writeError(
+      error.message || fallbackMessage,
+      errorToStatusCode(error),
+      appErrorDetails(error)
+    );
     return;
   }
 
@@ -135,46 +199,172 @@ async function readStdinJson(): Promise<BridgeRequest> {
 }
 
 // Re-export validators for existing consumers (e.g., bridge.test.ts)
-export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, errorToStatusCode } from '../bridge/validators';
+export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, validateBridgeRequestForCommand, errorToStatusCode } from '../bridge/validators';
 // formatCaptchaError is exported directly from this module (above)
 
+async function resolveDataPassword(request: BridgeRequest): Promise<string | undefined> {
+  if (request.dataPassword) {
+    return request.dataPassword;
+  }
+  if (!request.dataCredentialProvider) {
+    return undefined;
+  }
+
+  const name = normalizeProviderName(request.dataCredentialProvider);
+  const provider = createProvider(name, {
+    host: request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST,
+  });
+  const cred = await provider.resolve({});
+  return cred.password;
+}
+
+export type { BridgeAuthState } from '../bridge/protocol';
+
+export interface BridgeAuthStatePayload {
+  state: BridgeAuthState;
+  hasSession: boolean;
+  sessionValid: boolean;
+  sessionExpired: boolean;
+  sessionUidPresent: boolean;
+  passwordMode?: number;
+  authMode?: AuthMode;
+  keyPasswordPersisted?: boolean;
+  keyPasswordAvailable?: boolean;
+  keyPasswordProvider?: string;
+  keyPasswordHost?: string;
+  hasExplicitDataPassword: boolean;
+  dataCredentialProvider?: string;
+  dataCredentialHost?: string;
+  willAttemptNetwork: false;
+  errors: string[];
+  actions: string[];
+}
+
+function normalizeProviderForAuthState(providerName: string | undefined, label: string, errors: string[]): string | undefined {
+  if (!providerName) return undefined;
+
+  try {
+    return normalizeProviderName(providerName);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Unknown ${label} provider`;
+    errors.push(message);
+    return undefined;
+  }
+}
+
+function isLocallyExpired(session: SessionCredentials | null): boolean {
+  if (!session) return false;
+  if (session.tokenExpiresAt && Date.now() >= session.tokenExpiresAt) return true;
+
+  try {
+    const decoded = jwtDecode<{ exp?: number }>(session.accessToken);
+    return Boolean(decoded.exp && decoded.exp <= Math.floor(Date.now() / 1000));
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Resolve credentials from request, using the unified credential provider
- * when credentialProvider is set (git-credential, pass-cli, etc.).
+ * Inspect bridge auth readiness without resolving credentials or contacting Proton.
+ *
+ * This is intentionally local-only: it reads the saved session, performs local
+ * expiry checks, and reports which credential sources would be needed by a
+ * later non-dry bridge command.
  */
-async function resolveRequestCredentials(request: BridgeRequest): Promise<{ username?: string; password?: string }> {
-  if (request.username && request.password) {
-    return { username: request.username, password: request.password };
+export async function getBridgeAuthState(request: BridgeRequest): Promise<BridgeAuthStatePayload> {
+  const errors: string[] = [];
+  const dataCredentialProvider = normalizeProviderForAuthState(
+    request.dataCredentialProvider,
+    'data credential',
+    errors,
+  );
+  const dataCredentialHost = dataCredentialProvider
+    ? request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST
+    : undefined;
+  const hasExplicitDataPassword = Boolean(request.dataPassword);
+  const session = await SessionManager.loadSession();
+  const hasSession = Boolean(session);
+  const sessionUidPresent = Boolean(session?.uid);
+  const sessionValid = session ? await SessionManager.validateSession(session, false) : false;
+  const sessionExpired = isLocallyExpired(session);
+  let keyPasswordAvailable = false;
+  if (session?.authMode === 'browser-fork' && session.keyPasswordPersisted) {
+    try {
+      keyPasswordAvailable = await createKeyPasswordStore({
+        provider: session.keyPasswordProvider,
+        host: session.keyPasswordHost,
+      }).verify(session.uid);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid key password store configuration';
+      errors.push(message);
+    }
   }
-  if (request.password) {
-    return { password: request.password };
+  const browserForkNeedsKeyPassword =
+    session?.authMode === 'browser-fork' &&
+    !keyPasswordAvailable;
+  const legacySessionNeedsDataPassword =
+    session?.authMode !== 'browser-fork' &&
+    !hasExplicitDataPassword &&
+    !dataCredentialProvider;
+  const actions: string[] = [];
+  let state: BridgeAuthState;
+
+  if (errors.length > 0) {
+    state = 'configuration_error';
+    actions.push('Fix the credential provider name before attempting transfer commands.');
+  } else if (!session) {
+    state = 'needs_login';
+    actions.push('Run proton-drive login to complete browser sign-in before transfers.');
+  } else if (!sessionValid) {
+    state = sessionExpired ? 'session_expired' : 'session_invalid';
+    actions.push('Refresh or replace the saved session after offline gates pass; auth-state did not refresh tokens.');
+  } else if (session.passwordMode !== 1 && session.passwordMode !== 2) {
+    state = 'session_invalid';
+    actions.push(`Unexpected Proton password mode ${session.passwordMode}; replace the saved session before transfers.`);
+  } else if (browserForkNeedsKeyPassword && !hasExplicitDataPassword && !dataCredentialProvider) {
+    state = 'needs_key_password';
+    actions.push('Browser-fork session is missing its stored key password; run browser login again or provide an explicit mailbox/data password source.');
+  } else if (legacySessionNeedsDataPassword) {
+    state = 'needs_data_password';
+    actions.push(`Configure a mailbox/data password source for the legacy session, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+  } else {
+    state = 'ready';
+    actions.push('Local auth inputs are sufficient for SDK initialization; auth-state did not contact Proton.');
   }
-  if (request.credentialProvider) {
-    const name = normalizeProviderName(request.credentialProvider);
-    const provider = createProvider(name);
-    const cred = await provider.resolve({ username: request.username });
-    return { username: cred.username, password: cred.password };
-  }
-  return {};
+
+  return {
+    state,
+    hasSession,
+    sessionValid,
+    sessionExpired,
+    sessionUidPresent,
+    passwordMode: session?.passwordMode,
+    authMode: session?.authMode,
+    keyPasswordPersisted: session?.keyPasswordPersisted,
+    keyPasswordAvailable,
+    keyPasswordProvider: session?.keyPasswordProvider,
+    keyPasswordHost: session?.keyPasswordHost,
+    hasExplicitDataPassword,
+    dataCredentialProvider,
+    dataCredentialHost,
+    willAttemptNetwork: false,
+    errors,
+    actions,
+  };
 }
 
 /**
  * Initialize ProtonDriveClient (SDK), authenticating if necessary.
- * Password is always required — it flows via stdin from pass-cli,
- * or is resolved via git-credential when credentialProvider is set.
+ * Existing browser-fork sessions can be unlocked with the stored browser-fork
+ * key password or an explicit/provider-backed mailbox data password.
  */
-async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
-  const resolved = await resolveRequestCredentials(request);
-  const password = resolved.password;
+export async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
+  const dataPassword = await resolveDataPassword(request);
 
-  if (!password) {
-    throw Object.assign(
-      new Error('No session found and credentials not provided'),
-      { code: ErrorCode.AUTH_FAILED }
-    );
-  }
-
-  return createSDKClient(password, resolved.username);
+  return createSDKClient({
+    dataPassword,
+    appVersion: request.appVersion,
+  });
 }
 
 /**
@@ -185,8 +375,6 @@ async function ensureBaseDir(client: ProtonDriveClient, storageBase: string): Pr
   await ensureFolderPath(client, `/${normalizedBase}`);
   return `/${normalizedBase}`;
 }
-
-// ─── CAPTCHA helper ─────────────────────────────────────────────────
 
 export function formatCaptchaError(error: CaptchaError): BridgeResponse {
   return {
@@ -204,58 +392,75 @@ export function formatCaptchaError(error: CaptchaError): BridgeResponse {
 
 // ─── Command handlers ──────────────────────────────────────────────
 
-async function handleAuthCommand(request: BridgeRequest): Promise<void> {
+async function handleAuthStateCommand(request: BridgeRequest): Promise<void> {
   try {
-    const resolved = await resolveRequestCredentials(request);
-    if (!resolved.username || !resolved.password) {
-      writeError('username and password are required', 400);
-      return;
-    }
-
-    // Session reuse: skip SRP if a valid session exists for this user
-    try {
-      if (await SessionManager.isSessionForUser(resolved.username)) {
-        writeSuccess({ authenticated: true, sessionReused: true });
-        return;
-      }
-    } catch {
-      // Session file corrupted or unreadable — fall through to full login
-    }
-
-    const authService = new AuthService();
-
-    await authService.login(resolved.username, resolved.password, undefined);
-    writeSuccess({ authenticated: true });
+    writeSuccess(await getBridgeAuthState(request));
   } catch (error: any) {
-    // CAPTCHA required (use centralized detection)
-    if (isCaptchaError(error)) {
-      if (error instanceof CaptchaError) {
-        writeResponse(formatCaptchaError(error));
-      } else {
-        writeError('CAPTCHA verification required — run: proton-drive login', 407);
-      }
-      return;
-    }
-
-    // Rate-limit (use centralized detection)
-    if (isRateLimitError(error)) {
-      const retryAfter = (error as any).retryAfter;
-      const message = retryAfter
-        ? `Rate limited by Proton API — wait ${retryAfter}s and retry`
-        : 'Rate limited by Proton API — wait and retry';
-      writeError(message, 429);
-      return;
-    }
-
-    writeError(
-      error.message || 'Authentication failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Auth state inspection failed');
   }
 }
 
 // Singleton change token cache instance
 const changeTokenCache = new ChangeTokenCache();
+
+export const BRIDGE_TRANSFER_RETRY_CONFIG = createRetryConfig({
+  maxAttempts: 3,
+  initialDelayMs: 1_000,
+  maxDelayMs: 5_000,
+});
+
+export async function uploadFileWithRetry(
+  client: ProtonDriveClient,
+  parentUid: string,
+  fileName: string,
+  filePath: string,
+  expectedSize: number,
+  retryConfig: RetryConfig = BRIDGE_TRANSFER_RETRY_CONFIG,
+  context = `Bridge upload ${fileName}`
+): Promise<string> {
+  const result = await retryWithBackoff(async () => {
+    const fileStream = createReadStream(filePath);
+    try {
+      const webStream = Readable.toWeb(fileStream) as ReadableStream;
+      const uploader = await client.getFileUploader(parentUid, fileName, {
+        mediaType: 'application/octet-stream',
+        expectedSize,
+      });
+      const ctrl = await uploader.uploadFromStream(webStream, []);
+      return await ctrl.completion();
+    } catch (error) {
+      fileStream.destroy();
+      throw error;
+    }
+  }, retryConfig, context);
+
+  return result.nodeUid;
+}
+
+export async function downloadFileWithRetry(
+  client: ProtonDriveClient,
+  nodeUid: string,
+  outputPath: string,
+  retryConfig: RetryConfig = BRIDGE_TRANSFER_RETRY_CONFIG,
+  context = `Bridge download ${nodeUid}`
+): Promise<number> {
+  await retryWithBackoff(async () => {
+    const fileStream = createWriteStream(outputPath);
+    try {
+      const webStream = Writable.toWeb(fileStream) as WritableStream;
+      const downloader = await client.getFileDownloader(nodeUid);
+      const ctrl = downloader.downloadToStream(webStream);
+      await ctrl.completion();
+    } catch (error) {
+      fileStream.destroy();
+      await fs.rm(outputPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }, retryConfig, context);
+
+  const stat = await fs.stat(outputPath);
+  return stat.size;
+}
 
 async function handleUploadCommand(request: BridgeRequest): Promise<void> {
   const { oid, path: filePath, storageBase = 'LFS' } = request;
@@ -289,6 +494,22 @@ async function handleUploadCommand(request: BridgeRequest): Promise<void> {
     const client = await getInitializedClient(request);
     await ensureBaseDir(client, storageBase);
 
+    const existingNodeUid = await findFileByOid(client, storageBase, oid);
+    if (existingNodeUid) {
+      logger.info(`Upload skipped for ${oid} (remote object already exists)`);
+      await changeTokenCache.recordUpload(oid, filePath);
+      await changeTokenCache.save();
+      writeSuccess({
+        oid,
+        fileId: existingNodeUid,
+        revisionId: '',
+        uploaded: false,
+        cached: false,
+        deduplicated: true,
+      });
+      return;
+    }
+
     // Ensure prefix folder exists (first 2 chars of OID)
     const prefix = oid.substring(0, 2).toLowerCase();
     await ensureOidFolder(client, `/${storageBase}`, prefix);
@@ -306,15 +527,15 @@ async function handleUploadCommand(request: BridgeRequest): Promise<void> {
     const parentUid = await ensureFolderPath(client, parentPath);
     const stat = await fs.stat(filePath);
 
-    const fileStream = (await import('fs')).createReadStream(filePath);
-    const webStream = Readable.toWeb(fileStream) as ReadableStream;
-
-    const uploader = await client.getFileUploader(parentUid, fileName, {
-      mediaType: 'application/octet-stream',
-      expectedSize: stat.size,
-    });
-    const ctrl = await uploader.uploadFromStream(webStream, []);
-    const { nodeUid } = await ctrl.completion();
+    const nodeUid = await uploadFileWithRetry(
+      client,
+      parentUid,
+      fileName,
+      filePath,
+      stat.size,
+      BRIDGE_TRANSFER_RETRY_CONFIG,
+      `Bridge upload ${oid}`
+    );
 
     // Record successful upload in change token cache
     await changeTokenCache.recordUpload(oid, filePath);
@@ -352,20 +573,18 @@ async function handleDownloadCommand(request: BridgeRequest): Promise<void> {
       return;
     }
 
-    // Download via SDK
-    const downloader = await client.getFileDownloader(nodeUid);
-    const fileStream = (await import('fs')).createWriteStream(outputPath);
-    const webStream = Writable.toWeb(fileStream) as WritableStream;
-
-    const ctrl = downloader.downloadToStream(webStream);
-    await ctrl.completion();
-
-    const stat = await fs.stat(outputPath);
+    const size = await downloadFileWithRetry(
+      client,
+      nodeUid,
+      outputPath,
+      BRIDGE_TRANSFER_RETRY_CONFIG,
+      `Bridge download ${oid}`
+    );
 
     writeSuccess({
       oid,
       outputPath,
-      size: stat.size,
+      size,
       downloaded: true,
     });
   } catch (error: any) {
@@ -391,10 +610,7 @@ async function handleListCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ files });
   } catch (error: any) {
-    writeError(
-      error.message || 'List failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'List failed');
   }
 }
 
@@ -414,10 +630,7 @@ async function handleExistsCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ oid, exists: !!nodeUid });
   } catch (error: any) {
-    writeError(
-      error.message || 'Exists check failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Exists check failed');
   }
 }
 
@@ -442,23 +655,17 @@ async function handleDeleteCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ oid, deleted: true });
   } catch (error: any) {
-    writeError(
-      error.message || 'Delete failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Delete failed');
   }
 }
 
 async function handleRefreshCommand(request: BridgeRequest): Promise<void> {
   try {
-    const authService = new AuthService();
+    const authService = new AuthService(undefined, request.appVersion);
     const session = await authService.refreshSession();
     writeSuccess({ refreshed: true, uid: session.uid });
   } catch (error: any) {
-    writeError(
-      error.message || 'Session refresh failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Session refresh failed');
   }
 }
 
@@ -471,10 +678,7 @@ async function handleInitCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ storageBase, path: basePath, initialized: true });
   } catch (error: any) {
-    writeError(
-      error.message || 'Init failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Init failed');
   }
 }
 
@@ -501,10 +705,7 @@ async function handleBatchExistsCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ results });
   } catch (error: any) {
-    writeError(
-      error.message || 'Batch exists failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Batch exists failed');
   }
 }
 
@@ -530,10 +731,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
 
     writeSuccess({ results });
   } catch (error: any) {
-    writeError(
-      error.message || 'Batch delete failed',
-      errorToStatusCode(error)
-    );
+    handleBridgeError(error, 'Batch delete failed');
   }
 }
 
@@ -554,7 +752,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *   "command": "upload|download|exists|...",
  *   "oid": "abc123...",
  *   "path": "/tmp/file.bin",
- *   "credentialProvider": "git-credential|pass-cli",
  *   "storageBase": "LFS"
  * }
  * ```
@@ -579,7 +776,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *
  * # Supported Commands
  *
- * - **auth**: Authenticate with SRP, create session
+ * - **auth-state**: Inspect local auth readiness without network or credential lookup
  * - **upload**: Upload file to Drive (OID-based path, change token caching)
  * - **download**: Download file from Drive by OID
  * - **list**: List files in folder
@@ -593,9 +790,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * # Security Features
  *
  * - No output to stdout except JSON response (prevents Go adapter parsing errors)
- * - Credentials resolved via provider (never logged)
- * - Session reuse (avoids repeated SRP auth)
- * - CAPTCHA detection and guidance
+ * - Existing session reuse only; account login is browser-fork CLI only
  * - Rate-limit detection and retry guidance
  * - Change token caching (80% fewer uploads)
  *
@@ -603,7 +798,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  *
  * - HTTP 400: Invalid request parameters
  * - HTTP 404: File not found
- * - HTTP 407: CAPTCHA required
  * - HTTP 429: Rate-limited by Proton API
  * - HTTP 500: Server error or operation failed
  *
@@ -620,7 +814,7 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * @example
  * ```bash
  * # Upload file via bridge protocol
- * echo '{"oid":"abc123...","path":"/tmp/file.bin","credentialProvider":"git-credential"}' \
+ * echo '{"oid":"abc123...","path":"/tmp/file.bin"}' \
  *   | proton-drive bridge upload
  *
  * # Download file via bridge protocol
@@ -630,10 +824,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * # Check if file exists
  * echo '{"oid":"abc123..."}' \
  *   | proton-drive bridge exists
- *
- * # Authenticate (session reuse supported)
- * echo '{"username":"user@proton.me","password":"..."}' \
- *   | proton-drive bridge auth
  *
  * # Batch exists check
  * echo '{"oids":["abc123...","def456..."]}' \
@@ -650,7 +840,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * bridge.stdin.write(JSON.stringify({
  *   oid: 'abc123...',
  *   path: '/tmp/file.bin',
- *   credentialProvider: 'git-credential',
  * }));
  * bridge.stdin.end();
  *
@@ -677,7 +866,6 @@ async function handleBatchDeleteCommand(request: BridgeRequest): Promise<void> {
  * @category CLI Commands
  * @see {@link handleUploadCommand} for upload implementation
  * @see {@link handleDownloadCommand} for download implementation
- * @see {@link handleAuthCommand} for authentication implementation
  * @see {@link ChangeTokenCache} for upload optimization
  * @since 0.1.0
  */
@@ -688,17 +876,29 @@ export function createBridgeCommand(): Command {
     .description(
       'Bridge mode for Git LFS integration — reads JSON from stdin, writes JSON to stdout'
     )
-    .argument('<command>', 'Bridge command: auth, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
+    .argument('<command>', 'Bridge command: auth-state, upload, download, list, exists, delete, refresh, init, batch-exists, batch-delete')
     .action(async (command: string) => {
       // Suppress all non-JSON output
       logger.setLevel(LogLevel.ERROR);
 
       try {
         const request = await readStdinJson();
+        const normalizedCommand = command.toLowerCase();
+        if (!isBridgeCommand(normalizedCommand)) {
+          writeError(`Unknown bridge command: ${command}`, 400);
+          return;
+        }
 
-        switch (command.toLowerCase()) {
-          case 'auth':
-            await handleAuthCommand(request);
+        try {
+          validateBridgeRequestForCommand(normalizedCommand, request);
+        } catch (error) {
+          writeError(error instanceof Error ? error.message : 'Invalid bridge request', 400);
+          return;
+        }
+
+        switch (normalizedCommand) {
+          case 'auth-state':
+            await handleAuthStateCommand(request);
             break;
           case 'upload':
             await handleUploadCommand(request);
@@ -727,14 +927,9 @@ export function createBridgeCommand(): Command {
           case 'batch-delete':
             await handleBatchDeleteCommand(request);
             break;
-          default:
-            writeError(`Unknown bridge command: ${command}`, 400);
         }
       } catch (error: any) {
-        writeError(
-          error.message || 'Bridge command failed',
-          errorToStatusCode(error)
-        );
+        handleBridgeError(error, 'Bridge command failed');
         process.exit(1);
       }
     });

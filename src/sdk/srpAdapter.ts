@@ -7,6 +7,7 @@
 
 import { SRPClient } from '../auth/srp';
 import { deriveKeyPassphrase } from '../crypto/key-password';
+import { randomBytes } from 'crypto';
 
 // SRPModule interface is defined in the SDK's crypto internals but not
 // re-exported from the top-level package. We implement the shape directly.
@@ -54,5 +55,9 @@ export class SRPModuleAdapter {
 
   async computeKeyPassword(password: string, salt: string): Promise<string> {
     return deriveKeyPassphrase(password, salt);
+  }
+
+  generateKeySalt(): string {
+    return randomBytes(16).toString('base64');
   }
 }

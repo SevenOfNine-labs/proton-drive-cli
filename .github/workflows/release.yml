@@ -33,7 +33,7 @@ jobs:
           corepack prepare yarn@4.1.1 --activate
 
       - name: Build vendored SDK
-        run: cd submodules/sdk/js/sdk && npm install && npm run build
+        run: cd submodules/sdk/client/js && npm ci && npm run build
 
       - name: Install dependencies
         run: YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install

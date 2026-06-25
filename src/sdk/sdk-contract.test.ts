@@ -22,15 +22,13 @@ import {
   VERSION,
 } from '@protontech/drive-sdk';
 import type {
-  OpenPGPCryptoProxy,
   ProtonDriveHTTPClient,
   ProtonDriveAccount,
   ProtonDriveAccountAddress,
   ProtonDriveClientContructorParameters,
-  MaybeNode,
+  InvalidNameError,
   MaybeMissingNode,
   NodeEntity,
-  DegradedNode,
   NodeResult,
   NodeResultWithNewUid,
   FileDownloader,
@@ -95,8 +93,8 @@ describe('ProtonDriveClient constructor parameter shape', () => {
     // Verify that our concrete adapter classes are assignable to the expected interfaces.
     // If the SDK changes the interface shape, TypeScript compilation will fail.
 
-    // CryptoProxy: our ProtonOpenPGPCryptoProxy implements OpenPGPCryptoProxy
-    const proxy: OpenPGPCryptoProxy = new ProtonOpenPGPCryptoProxy();
+    // CryptoProxy: our ProtonOpenPGPCryptoProxy is accepted by the SDK wrapper
+    const proxy = new ProtonOpenPGPCryptoProxy();
     expect(proxy).toBeDefined();
 
     // HTTPClient: our HTTPClientAdapter implements ProtonDriveHTTPClient
@@ -185,7 +183,7 @@ describe('adapter interface compliance', () => {
 
   describe('SRPModuleAdapter methods', () => {
     const srp = new SRPModuleAdapter();
-    const expectedMethods = ['getSrp', 'getSrpVerifier', 'computeKeyPassword'];
+    const expectedMethods = ['getSrp', 'getSrpVerifier', 'computeKeyPassword', 'generateKeySalt'];
 
     for (const method of expectedMethods) {
       test(`has method: ${method}`, () => {
@@ -201,10 +199,10 @@ describe('adapter interface compliance', () => {
 describe('SDK type shapes', () => {
   test('NodeResult union has ok/uid fields', () => {
     const success: NodeResult = { uid: 'test', ok: true };
-    const failure: NodeResult = { uid: 'test', ok: false, error: 'fail' };
+    const failure: NodeResult = { uid: 'test', ok: false, error: new Error('fail') };
     expect(success.ok).toBe(true);
     expect(failure.ok).toBe(false);
-    expect(failure.error).toBe('fail');
+    expect(failure.error.message).toBe('fail');
   });
 
   test('NodeResultWithNewUid has newUid on success', () => {
@@ -219,7 +217,7 @@ describe('SDK type shapes', () => {
     // Compile-time check: if NodeEntity shape changes, this will error
     const _verifyShape = (node: NodeEntity) => {
       const _uid: string = node.uid;
-      const _name: string = node.name;
+      const _name: Result<string, Error | InvalidNameError> = node.name;
       const _type: NodeType = node.type;
       const _isShared: boolean = node.isShared;
       const _creationTime: Date = node.creationTime;

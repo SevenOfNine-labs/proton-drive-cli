@@ -1,147 +1,74 @@
 import { HttpClient } from './http-client';
-import { AuthInfoResponse, AuthResponse } from '../types/auth';
-import { CaptchaError } from '../errors/types';
-import { logger } from '../utils/logger';
-
-// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
-const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
-const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
-const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
+import {
+  SessionForkInitResponse,
+  SessionForkStatusResponse,
+} from '../types/auth';
+import { getProtonAppVersion } from '../constants';
 
 /**
- * Authentication API client for Proton API
- * Handles SRP authentication flow with Proton's API
+ * Authentication API client for the Proton API surfaces this CLI is allowed to
+ * use in production: browser session-fork, token refresh, and logout.
+ *
+ * Direct account-password/SRP login is intentionally not implemented here.
  */
 export class AuthApiClient {
   private client: HttpClient;
-  private baseUrl: string;
 
-  constructor(baseUrl: string = 'https://drive-api.proton.me') {
-    this.baseUrl = baseUrl;
+  constructor(
+    baseUrl: string = 'https://drive-api.proton.me',
+    appVersion?: string
+  ) {
+    const resolvedAppVersion = getProtonAppVersion(appVersion);
     this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': APP_VERSION,
+        'x-pm-appversion': resolvedAppVersion,
       },
     });
   }
 
   /**
-   * Get authentication info (Step 1 of SRP auth)
-   * @param username - User's email address
-   * @param captchaToken - Optional CAPTCHA verification token
-   * @returns Auth info including SRP parameters
+   * Start Proton's browser session-fork login flow.
+   *
+   * This mirrors the official SDK CLI's unauthenticated
+   * GET /auth/v4/sessions/forks call. The returned UserCode is embedded into
+   * the account.proton.me desktop-login URL; Selector is used for polling.
    */
-  async getAuthInfo(username: string, captchaToken?: string): Promise<AuthInfoResponse> {
-    try {
-      const headers: any = {};
-      if (captchaToken) {
-        // Proton API requires TWO separate headers for human verification
-        // See: https://github.com/ProtonMail/proton-python-client
-        headers['X-PM-Human-Verification-Token-Type'] = 'captcha';
-        headers['X-PM-Human-Verification-Token'] = captchaToken;
-        logger.debug(`Sending CAPTCHA headers to getAuthInfo`);
-        logger.debug(`  X-PM-Human-Verification-Token-Type: captcha`);
-      }
+  async initSessionFork(): Promise<SessionForkInitResponse> {
+    const response = await this.client.get<SessionForkInitResponse>(
+      '/auth/v4/sessions/forks'
+    );
 
-      const response = await this.client.post<AuthInfoResponse>(
-        '/auth/v4/info',
-        { Username: username },
-        { headers }
-      );
-      return response.data;
-    } catch (error: any) {
-      this.throwIfHumanVerification(error, 'getAuthInfo');
-      if (error.response) {
-        logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
-        logger.debug('Status:', error.response.status);
-      }
-      throw error;
+    const data = response.data;
+    if (!data.Selector || !data.UserCode) {
+      throw new Error('Incomplete session fork init response');
     }
+    return data;
   }
 
   /**
-   * Authenticate with SRP proofs (Step 2 of SRP auth)
-   * @param username - User's email address
-   * @param clientEphemeral - Client ephemeral value (base64)
-   * @param clientProof - Client proof (base64)
-   * @param srpSession - SRP session ID from auth/info
-   * @param captchaToken - Optional CAPTCHA verification token
-   * @returns Authentication response with tokens
+   * Poll Proton's browser session-fork login flow.
+   *
+   * Proton returns HTTP 422 while the browser sign-in is still pending. Callers
+   * should handle that status as "not ready yet" and keep polling within their
+   * own timeout budget.
    */
-  async authenticate(
-    username: string,
-    clientEphemeral: string,
-    clientProof: string,
-    srpSession: string,
-    captchaToken?: string
-  ): Promise<AuthResponse> {
-    try {
-      const headers: any = {};
-      if (captchaToken) {
-        // Proton API requires TWO separate headers for human verification
-        // See: https://github.com/ProtonMail/proton-python-client
-        headers['X-PM-Human-Verification-Token-Type'] = 'captcha';
-        headers['X-PM-Human-Verification-Token'] = captchaToken;
-        logger.debug(`Sending CAPTCHA headers to authenticate()`);
-        logger.debug(`  X-PM-Human-Verification-Token-Type: captcha`);
-      }
+  async getSessionForkStatus(selector: string): Promise<SessionForkStatusResponse> {
+    const response = await this.client.get<SessionForkStatusResponse>(
+      `/auth/v4/sessions/forks/${encodeURIComponent(selector)}`
+    );
 
-      const response = await this.client.post<AuthResponse>(
-        '/auth/v4',
-        {
-          Username: username,
-          ClientEphemeral: clientEphemeral,
-          ClientProof: clientProof,
-          SRPSession: srpSession,
-        },
-        { headers }
-      );
-
-      const data = response.data;
-      if (!data.UID || !data.AccessToken || !data.RefreshToken || !data.ServerProof) {
-        throw new Error('Incomplete auth response: missing required tokens');
-      }
-      return data;
-    } catch (error: any) {
-      this.throwIfHumanVerification(error, 'authenticate');
-      if (error.response) {
-        logger.debug('API Error Response:', JSON.stringify(error.response.data, null, 2));
-        logger.debug('Status:', error.response.status);
-      }
-      throw error;
+    const data = response.data;
+    if (!data.Payload || !data.UID || !data.AccessToken) {
+      throw new Error('Incomplete session fork status response');
     }
+    return data;
   }
 
   /**
-   * Check if an API error requires human verification (CAPTCHA).
-   * Proton can signal this via code 9001 OR via HumanVerificationToken in
-   * Details on other error codes (e.g. 2028). Check the Details field
-   * regardless of the error code.
-   */
-  private throwIfHumanVerification(error: any, context: string): void {
-    const data = error.response?.data;
-    if (!data) return;
-
-    const details = data.Details;
-    if (details?.HumanVerificationToken) {
-      logger.debug(`${context} human verification required (Code: ${data.Code}):`,
-        JSON.stringify(details, null, 2));
-      throw new CaptchaError({
-        captchaUrl: details.WebUrl,
-        captchaToken: details.HumanVerificationToken,
-        verificationMethods: details.HumanVerificationMethods,
-      });
-    }
-  }
-
-  /**
-   * Refresh access token using refresh token
-   * @param uid - User ID
-   * @param refreshToken - Refresh token
-   * @returns New access and refresh tokens
+   * Refresh access token using refresh token.
    */
   async refreshToken(
     uid: string,
@@ -165,8 +92,7 @@ export class AuthApiClient {
   }
 
   /**
-   * Logout and revoke current session
-   * @param accessToken - Current access token
+   * Logout and revoke current session.
    */
   async logout(accessToken: string): Promise<void> {
     await this.client.delete('/auth/v4', {

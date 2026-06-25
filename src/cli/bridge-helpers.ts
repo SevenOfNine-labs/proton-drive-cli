@@ -9,6 +9,7 @@ import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { NodeType } from '@protontech/drive-sdk';
 import { logger } from '../utils/logger';
 import { resolvePathToNodeUid, ensureFolderPath, findFileInFolder } from '../sdk/pathResolver';
+import { describeNodeErrors, getNodeName } from '../sdk/nodeEntity';
 
 /** Node types we recognize. SDK 0.9.8+ added album/photo — skip them. */
 const KNOWN_NODE_TYPES = new Set<string>([NodeType.File, NodeType.Folder]);
@@ -101,23 +102,24 @@ export async function listFolder(
   const items: ListItem[] = [];
 
   for await (const child of client.iterateFolderChildren(folderUid)) {
-    if (child.ok) {
-      const nodeType = child.value.type;
-      if (!KNOWN_NODE_TYPES.has(nodeType)) {
-        logger.debug(`Skipping unknown node type "${nodeType}": ${child.value.name}`);
-        continue;
-      }
-      items.push({
-        name: child.value.name,
-        type: nodeType === NodeType.File ? 'file' : 'folder',
-        size: child.value.totalStorageSize || 0,
-        modifiedTime: child.value.modificationTime
-          ? Math.floor(child.value.modificationTime.getTime() / 1000)
-          : 0,
-      });
-    } else {
-      logger.debug(`Skipping degraded node: ${JSON.stringify(child.error)}`);
+    const nodeType = child.type;
+    if (!KNOWN_NODE_TYPES.has(nodeType)) {
+      logger.debug(`Skipping unknown node type "${nodeType}": ${getNodeName(child) ?? child.uid}`);
+      continue;
     }
+    const name = getNodeName(child);
+    if (!name) {
+      logger.debug(`Skipping degraded node: ${describeNodeErrors(child)}`);
+      continue;
+    }
+    items.push({
+      name,
+      type: nodeType === NodeType.File ? 'file' : 'folder',
+      size: child.totalStorageSize || 0,
+      modifiedTime: child.modificationTime
+        ? Math.floor(child.modificationTime.getTime() / 1000)
+        : 0,
+    });
   }
 
   return items;

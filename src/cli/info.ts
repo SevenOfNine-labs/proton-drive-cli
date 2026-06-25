@@ -4,7 +4,7 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
+import { getNodeDisplayName } from '../sdk/nodeEntity';
 
 /**
  * Create the info command for the CLI.
@@ -63,8 +63,9 @@ import { resolvePassword } from '../credentials';
  * # JSON output for parsing (normal mode)
  * proton-drive info /file.txt | jq .size
  *
- * # Use with git-credential provider
- * proton-drive info /Documents/file.pdf --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive info /Documents/file.pdf
  *
  * # Quiet mode (no output)
  * proton-drive info /file.txt --quiet
@@ -92,25 +93,17 @@ export function createInfoCommand(): Command {
   info
     .description('Show metadata for a file or folder in Proton Drive')
     .argument('<path>', 'Path to the file or folder (e.g., /Documents/file.pdf)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
-    .action(async (targetPath: string, options) => {
+    .action(async (targetPath: string) => {
       try {
-        const password = await resolvePassword(options);
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         const nodeUid = await resolvePathToNodeUid(client, targetPath);
-        const node = await client.getNode(nodeUid);
-
-        if (!node.ok) {
-          throw new Error(`Failed to get node info: ${JSON.stringify(node.error)}`);
-        }
-
-        const meta = node.value;
+        const meta = await client.getNode(nodeUid);
+        const name = getNodeDisplayName(meta);
 
         if (isVerbose()) {
           console.log(chalk.bold(`\nInfo: ${targetPath}\n`));
-          console.log(`  ${chalk.cyan('Name:')}     ${meta.name}`);
+          console.log(`  ${chalk.cyan('Name:')}     ${name}`);
           console.log(`  ${chalk.cyan('Type:')}     ${meta.type}`);
           console.log(`  ${chalk.cyan('Size:')}     ${meta.totalStorageSize || 0} bytes`);
           console.log(`  ${chalk.cyan('UID:')}      ${meta.uid}`);
@@ -122,7 +115,7 @@ export function createInfoCommand(): Command {
           }
         } else if (!isQuiet()) {
           outputResult(JSON.stringify({
-            name: meta.name,
+            name,
             type: meta.type,
             size: meta.totalStorageSize || 0,
             uid: meta.uid,

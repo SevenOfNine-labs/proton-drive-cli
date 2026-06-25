@@ -4,7 +4,6 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the rm command for the CLI.
@@ -66,8 +65,9 @@ import { resolvePassword } from '../credentials';
  * # Permanent folder deletion
  * proton-drive rm /Old-Folder --permanent
  *
- * # Delete with git-credential provider
- * proton-drive rm /file.pdf --credential-provider git-credential --permanent
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive rm /file.pdf --permanent
  *
  * # Quiet mode (for scripts)
  * proton-drive rm /file.pdf --quiet
@@ -96,12 +96,9 @@ export function createRmCommand(): Command {
     .description('Remove a file or folder from Proton Drive')
     .argument('<path>', 'Path to the file or folder to remove (e.g., /Documents/file.pdf)')
     .option('--permanent', 'Permanently delete (skip trash)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
     .action(async (targetPath: string, options) => {
       try {
-        const password = await resolvePassword(options);
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         if (isVerbose()) {
           console.log(chalk.cyan(`Removing "${targetPath}"...`));

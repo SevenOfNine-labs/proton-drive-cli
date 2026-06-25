@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request-field-rules.json",
+  "title": "proton-drive-cli bridge request field rules",
+  "commands": {
+    "auth-state": {
+      "required": [],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase"
+      ]
+    },
+    "upload": {
+      "required": ["oid", "path"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oid",
+        "path"
+      ]
+    },
+    "download": {
+      "required": ["oid", "outputPath"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oid",
+        "outputPath"
+      ]
+    },
+    "list": {
+      "required": [],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "folder"
+      ]
+    },
+    "exists": {
+      "required": ["oid"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oid"
+      ]
+    },
+    "delete": {
+      "required": ["oid"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oid"
+      ]
+    },
+    "refresh": {
+      "required": [],
+      "allowed": ["appVersion"]
+    },
+    "init": {
+      "required": [],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase"
+      ]
+    },
+    "batch-exists": {
+      "required": ["oids"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oids"
+      ]
+    },
+    "batch-delete": {
+      "required": ["oids"],
+      "allowed": [
+        "dataPassword",
+        "dataCredentialProvider",
+        "dataCredentialHost",
+        "appVersion",
+        "storageBase",
+        "oids"
+      ]
+    }
+  }
+}

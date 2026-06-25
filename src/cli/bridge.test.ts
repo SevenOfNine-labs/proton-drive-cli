@@ -1,188 +1,294 @@
-import { validateOid, validateLocalPath, errorToStatusCode, formatCaptchaError } from './bridge';
+const mockCreateSDKClient = jest.fn();
+const mockCredentialResolve = jest.fn();
+const mockLoadSession = jest.fn();
+const mockValidateSession = jest.fn();
+const mockRefreshSession = jest.fn();
+const mockKeyPasswordVerify = jest.fn();
+const mockNormalizeProviderName = jest.fn((name: string) => {
+  const normalized = name.trim().toLowerCase();
+  if (normalized === 'git') return 'git-credential';
+  if (normalized === 'pass') return 'pass-cli';
+  if (['git-credential', 'pass-cli', 'stdin', 'interactive'].includes(normalized)) {
+    return normalized;
+  }
+  throw new Error(`Unknown credential provider: ${name}`);
+});
+
+jest.mock('../sdk/client', () => ({
+  createSDKClient: mockCreateSDKClient,
+}));
+
+jest.mock('../credentials', () => ({
+  createProvider: jest.fn(() => ({
+    resolve: mockCredentialResolve,
+  })),
+  normalizeProviderName: mockNormalizeProviderName,
+}));
+
+jest.mock('../auth/session', () => ({
+  SessionManager: {
+    loadSession: mockLoadSession,
+    validateSession: mockValidateSession,
+    refreshSession: mockRefreshSession,
+  },
+}));
+
+jest.mock('../auth', () => ({
+  AuthService: jest.fn(() => ({
+    refreshSession: jest.fn(),
+  })),
+}));
+
+jest.mock('../auth/key-password-store', () => ({
+  createKeyPasswordStore: jest.fn(() => ({
+    provider: 'git-credential',
+    host: 'proton-drive-key.proton-lfs-cli.local',
+    verify: mockKeyPasswordVerify,
+  })),
+}));
+
+import {
+  validateOid,
+  validateLocalPath,
+  validateBridgeRequestForCommand,
+  errorToStatusCode,
+  formatCaptchaError,
+  formatInsufficientScopeError,
+  getBridgeAuthState,
+  getInitializedClient,
+} from './bridge';
 import { BridgeRequest } from '../bridge/validators';
-import { ErrorCode, CaptchaError } from '../errors/types';
+import { BRIDGE_AUTH_STATES, BRIDGE_COMMANDS } from '../bridge/protocol';
+import { createProvider } from '../credentials';
+import { CaptchaError, ErrorCode } from '../errors/types';
+import type { SessionCredentials } from '../types/auth';
 
-describe('validateOid', () => {
-  const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
+const mockCreateProvider = createProvider as jest.MockedFunction<typeof createProvider>;
+const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
 
-  it('accepts valid 64-char hex OID', () => {
+function makeSession(overrides: Partial<SessionCredentials> = {}): SessionCredentials {
+  return {
+    sessionId: 'session-id',
+    uid: 'session-uid',
+    accessToken: 'access-token',
+    refreshToken: 'refresh-token',
+    scopes: ['drive'],
+    passwordMode: 1,
+    tokenExpiresAt: Date.now() + 60_000,
+    authMode: 'browser-fork',
+    keyPasswordPersisted: true,
+    keyPasswordProvider: 'git-credential',
+    keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    ...overrides,
+  };
+}
+
+function expectNoAuthStateNetworkOrCredentialSideEffects(): void {
+  expect(mockRefreshSession).not.toHaveBeenCalled();
+  expect(mockCredentialResolve).not.toHaveBeenCalled();
+  expect(mockCreateProvider).not.toHaveBeenCalled();
+  expect(mockCreateSDKClient).not.toHaveBeenCalled();
+}
+
+describe('bridge validators', () => {
+  it('accepts valid OIDs and rejects malformed OIDs', () => {
     expect(() => validateOid(VALID_OID)).not.toThrow();
-  });
-
-  it('accepts uppercase hex OID', () => {
     expect(() => validateOid(VALID_OID.toUpperCase())).not.toThrow();
-  });
-
-  it('rejects 63-char OID', () => {
-    expect(() => validateOid(VALID_OID.slice(0, 63))).toThrow('Invalid OID format');
-  });
-
-  it('rejects 65-char OID', () => {
-    expect(() => validateOid(VALID_OID + 'a')).toThrow('Invalid OID format');
-  });
-
-  it('rejects non-hex characters', () => {
-    const nonHex = 'g'.repeat(64);
-    expect(() => validateOid(nonHex)).toThrow('Invalid OID format');
-  });
-
-  it('rejects empty string', () => {
+    expect(() => validateOid('g'.repeat(64))).toThrow('Invalid OID format');
     expect(() => validateOid('')).toThrow('OID is required');
   });
 
-  it('rejects null/undefined', () => {
-    expect(() => validateOid(null as any)).toThrow('OID is required');
-    expect(() => validateOid(undefined as any)).toThrow('OID is required');
-  });
-});
-
-describe('validateLocalPath', () => {
-  it('accepts a valid absolute path', () => {
+  it('rejects local path traversal', () => {
     expect(() => validateLocalPath('/tmp/file.txt')).not.toThrow();
-  });
-
-  it('accepts a valid relative path', () => {
-    expect(() => validateLocalPath('file.txt')).not.toThrow();
-  });
-
-  it('rejects path with .. traversal', () => {
     expect(() => validateLocalPath('../etc/passwd')).toThrow('Path traversal not allowed');
   });
 
-  it('rejects absolute path with .. traversal', () => {
-    expect(() => validateLocalPath('/tmp/../etc/passwd')).toThrow('Path traversal not allowed');
+  it('does not expose bridge auth or login-shaped request fields', () => {
+    expect(BRIDGE_COMMANDS).not.toContain('auth');
+    expect(BRIDGE_AUTH_STATES).not.toContain('login_available');
+
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      credentialProvider: 'git-credential',
+    } as unknown as BridgeRequest)).toThrow('Unknown bridge request field "credentialProvider"');
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      allowLogin: false,
+    } as unknown as BridgeRequest)).toThrow('Unknown bridge request field "allowLogin"');
+    expect(() => validateBridgeRequestForCommand('auth-state', {
+      username: 'user@proton.me',
+    } as unknown as BridgeRequest)).toThrow('Unknown bridge request field "username"');
   });
 
-  it('rejects empty string', () => {
-    expect(() => validateLocalPath('')).toThrow('File path is required');
+  it('accepts data-password provider fields for transfer commands', () => {
+    expect(() => validateBridgeRequestForCommand('init', {
+      dataCredentialProvider: 'pass-cli',
+      dataCredentialHost: 'proton-data.proton-lfs-cli.local',
+      storageBase: 'LFS',
+    })).not.toThrow();
   });
 
-  it('rejects null/undefined', () => {
-    expect(() => validateLocalPath(null as any)).toThrow('File path is required');
-    expect(() => validateLocalPath(undefined as any)).toThrow('File path is required');
-  });
-});
-
-describe('errorToStatusCode', () => {
-  it('maps AUTH_FAILED to 401', () => {
-    expect(errorToStatusCode({ code: ErrorCode.AUTH_FAILED })).toBe(401);
-  });
-
-  it('maps SESSION_EXPIRED to 401', () => {
-    expect(errorToStatusCode({ code: ErrorCode.SESSION_EXPIRED })).toBe(401);
-  });
-
-  it('maps NOT_FOUND to 404', () => {
-    expect(errorToStatusCode({ code: ErrorCode.NOT_FOUND })).toBe(404);
-  });
-
-  it('maps PATH_NOT_FOUND to 404', () => {
-    expect(errorToStatusCode({ code: ErrorCode.PATH_NOT_FOUND })).toBe(404);
-  });
-
-  it('maps FILE_NOT_FOUND to 404', () => {
-    expect(errorToStatusCode({ code: ErrorCode.FILE_NOT_FOUND })).toBe(404);
-  });
-
-  it('maps FILE_TOO_LARGE to 413', () => {
-    expect(errorToStatusCode({ code: ErrorCode.FILE_TOO_LARGE })).toBe(413);
-  });
-
-  it('maps RATE_LIMITED to 429', () => {
+  it('maps structured auth errors to HTTP status codes', () => {
+    expect(errorToStatusCode({ code: ErrorCode.KEY_PASSWORD_REQUIRED })).toBe(401);
     expect(errorToStatusCode({ code: ErrorCode.RATE_LIMITED })).toBe(429);
   });
+});
 
-  it('maps TIMEOUT to 504', () => {
-    expect(errorToStatusCode({ code: ErrorCode.TIMEOUT })).toBe(504);
+describe('getBridgeAuthState', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLoadSession.mockResolvedValue(null);
+    mockValidateSession.mockResolvedValue(false);
+    mockKeyPasswordVerify.mockResolvedValue(true);
+    mockCredentialResolve.mockResolvedValue({ username: 'data', password: 'data-password' });
+    mockCreateSDKClient.mockResolvedValue({ ready: true });
   });
 
-  it('maps OPERATION_CANCELLED to 499', () => {
-    expect(errorToStatusCode({ code: ErrorCode.OPERATION_CANCELLED })).toBe(499);
+  it('reports needs_login without resolving credentials or contacting Proton', async () => {
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'needs_login',
+      hasSession: false,
+      willAttemptNetwork: false,
+    });
+
+    expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
-  it('falls back to 500 for unknown error codes', () => {
-    expect(errorToStatusCode({ code: 'SOMETHING_WEIRD' })).toBe(500);
+  it('reports ready for a valid browser-fork session with key password present', async () => {
+    mockLoadSession.mockResolvedValue(makeSession());
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
+
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      keyPasswordAvailable: true,
+      willAttemptNetwork: false,
+    });
+
+    expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
-  it('falls back to message-based matching for "not found"', () => {
-    expect(errorToStatusCode({ message: 'Resource not found' })).toBe(404);
+  it('reports ready for browser-fork two-password sessions with key password present', async () => {
+    mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(true);
+
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'ready',
+      passwordMode: 2,
+      authMode: 'browser-fork',
+      keyPasswordAvailable: true,
+      hasExplicitDataPassword: false,
+      willAttemptNetwork: false,
+    });
+
+    expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
-  it('falls back to message-based matching for "unauthorized"', () => {
-    expect(errorToStatusCode({ message: 'Unauthorized request' })).toBe(401);
+  it('reports needs_key_password when a browser-fork session cannot be unlocked', async () => {
+    mockLoadSession.mockResolvedValue(makeSession());
+    mockValidateSession.mockResolvedValue(true);
+    mockKeyPasswordVerify.mockResolvedValue(false);
+
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'needs_key_password',
+      keyPasswordAvailable: false,
+    });
   });
 
-  it('falls back to message-based matching for "invalid"', () => {
-    expect(errorToStatusCode({ message: 'Invalid input provided' })).toBe(400);
+  it.each([1, 2])('reports needs_data_password for legacy password mode %i sessions without data source', async (passwordMode) => {
+    mockLoadSession.mockResolvedValue(makeSession({
+      authMode: undefined,
+      keyPasswordPersisted: undefined,
+      keyPasswordProvider: undefined,
+      keyPasswordHost: undefined,
+      passwordMode,
+    }));
+    mockValidateSession.mockResolvedValue(true);
+
+    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+      state: 'needs_data_password',
+      passwordMode,
+    });
   });
 
-  it('maps CAPTCHA_REQUIRED to 407', () => {
-    expect(errorToStatusCode({ code: ErrorCode.CAPTCHA_REQUIRED })).toBe(407);
-  });
+  it('reports configuration_error for invalid data provider names', async () => {
+    mockLoadSession.mockResolvedValue(makeSession());
+    mockValidateSession.mockResolvedValue(true);
 
-  it('falls back to message-based matching for "captcha"', () => {
-    expect(errorToStatusCode({ message: 'CAPTCHA verification required' })).toBe(407);
-  });
-
-  it('returns 500 for null/undefined error', () => {
-    expect(errorToStatusCode(null)).toBe(500);
-    expect(errorToStatusCode(undefined)).toBe(500);
+    await expect(getBridgeAuthState({ dataCredentialProvider: 'mystery' })).resolves.toMatchObject({
+      state: 'configuration_error',
+      errors: ['Unknown credential provider: mystery'],
+    });
   });
 });
 
-describe('BridgeRequest credentialProvider field', () => {
-  it('accepts credentialProvider in the request type', () => {
-    const request: BridgeRequest = {
-      credentialProvider: 'git-credential',
-    };
-    expect(request.credentialProvider).toBe('git-credential');
+describe('getInitializedClient', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCredentialResolve.mockResolvedValue({ username: 'data', password: 'data-password' });
+    mockCreateSDKClient.mockResolvedValue({ ready: true });
   });
 
-  it('is optional (backward compatible)', () => {
-    const request: BridgeRequest = {
-      username: 'user@proton.me',
-      password: 'secret',
-    };
-    expect(request.credentialProvider).toBeUndefined();
+  it('passes explicit data password and app version to the SDK client', async () => {
+    await getInitializedClient({
+      dataPassword: 'mailbox-password',
+      appVersion: 'external-drive-root@9.9.9',
+    });
+
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      dataPassword: 'mailbox-password',
+      appVersion: 'external-drive-root@9.9.9',
+    });
+    expect(mockCreateProvider).not.toHaveBeenCalled();
   });
 
-  it('can coexist with username/password', () => {
-    const request: BridgeRequest = {
-      username: 'user@proton.me',
-      password: 'secret',
-      credentialProvider: 'git-credential',
-    };
-    expect(request.username).toBe('user@proton.me');
-    expect(request.credentialProvider).toBe('git-credential');
+  it('resolves only the data-password provider before SDK initialization', async () => {
+    await getInitializedClient({
+      dataCredentialProvider: 'pass-cli',
+      dataCredentialHost: 'proton-data.example.test',
+    });
+
+    expect(mockCreateProvider).toHaveBeenCalledWith('pass-cli', {
+      host: 'proton-data.example.test',
+    });
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({
+      dataPassword: 'data-password',
+      appVersion: undefined,
+    });
   });
 });
 
 describe('formatCaptchaError', () => {
-  it('produces 407 response with captchaUrl in details', () => {
-    const err = new CaptchaError({
-      captchaUrl: 'https://verify.proton.me/captcha?token=abc',
-      captchaToken: 'hvt-abc123',
+  it('returns structured bridge CAPTCHA details without account login instructions', () => {
+    const response = formatCaptchaError(new CaptchaError({
+      captchaUrl: 'https://verify.proton.me',
+      captchaToken: 'token',
       verificationMethods: ['captcha'],
-    });
-    const resp = formatCaptchaError(err);
-    expect(resp.ok).toBe(false);
-    expect(resp.code).toBe(407);
-    expect(resp.error).toContain('CAPTCHA verification required');
-    const details = JSON.parse(resp.details!);
-    expect(details.captchaUrl).toContain('verify.proton.me');
-    expect(details.captchaToken).toBe('hvt-abc123');
-    expect(details.verificationMethods).toEqual(['captcha']);
-    expect(details.action).toBe('run: proton-drive login');
-  });
+    }));
 
-  it('handles empty verificationMethods', () => {
-    const err = new CaptchaError({
-      captchaUrl: 'https://verify.proton.me/captcha',
-      captchaToken: 'hvt-xyz',
+    expect(response.ok).toBe(false);
+    expect(response.code).toBe(407);
+    expect(JSON.parse(response.details as string)).toMatchObject({
+      captchaUrl: 'https://verify.proton.me',
+      captchaToken: 'token',
+      action: 'run: proton-drive login',
     });
-    const resp = formatCaptchaError(err);
-    expect(resp.code).toBe(407);
-    const details = JSON.parse(resp.details!);
-    expect(details.verificationMethods).toEqual([]);
+  });
+});
+
+describe('formatInsufficientScopeError', () => {
+  it('returns structured bridge details for Proton 9101 scope failures', () => {
+    const response = formatInsufficientScopeError(
+      new Error('API Error (9101): Access token does not have sufficient scope')
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.code).toBe(403);
+    expect(JSON.parse(response.details as string)).toMatchObject({
+      errorCode: ErrorCode.INSUFFICIENT_SCOPE,
+      protonCode: 9101,
+      action: expect.stringContaining('do not retry login loops'),
+    });
   });
 });

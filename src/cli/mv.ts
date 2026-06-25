@@ -5,7 +5,6 @@ import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid, ensureFolderPath } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
-import { resolvePassword } from '../credentials';
 
 /**
  * Create the mv command for the CLI.
@@ -40,7 +39,7 @@ import { resolvePassword } from '../credentials';
  * - All metadata updates encrypted before transmission
  * - New name encrypted with parent folder's key
  * - Original file content remains unchanged
- * - Password resolved via credential provider (never logged)
+ * - Uses an existing browser-fork session; account passwords are never handled
  *
  * # Exit Codes
  *
@@ -69,8 +68,9 @@ import { resolvePassword } from '../credentials';
  * # Rename folder
  * proton-drive mv /Old-Folder /New-Folder
  *
- * # Move with git-credential provider
- * proton-drive mv /Documents/file.pdf /Archive/file.pdf --credential-provider git-credential
+ * # Requires prior browser sign-in
+ * proton-drive login
+ * proton-drive mv /Documents/file.pdf /Archive/file.pdf
  * ```
  *
  * @example
@@ -96,12 +96,9 @@ export function createMvCommand(): Command {
     .description('Move or rename a file or folder in Proton Drive')
     .argument('<source>', 'Source path (e.g., /Documents/old-name.pdf)')
     .argument('<destination>', 'Destination path (e.g., /Archive/new-name.pdf)')
-    .option('--password-stdin', 'Read password for key decryption from stdin')
-    .option('--credential-provider <type>', 'Credential source: git-credential, pass-cli (default: interactive)')
-    .action(async (source: string, destination: string, options) => {
+    .action(async (source: string, destination: string) => {
       try {
-        const password = await resolvePassword(options);
-        const client = await createSDKClient(password);
+        const client = await createSDKClient({});
 
         if (isVerbose()) {
           console.log(chalk.cyan(`Moving "${source}" → "${destination}"...`));

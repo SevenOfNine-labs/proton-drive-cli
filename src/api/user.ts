@@ -1,11 +1,7 @@
 import { HttpClient } from './http-client';
 import { User, Address } from '../types/crypto';
 import { SessionManager } from '../auth/session';
-
-// Use official Proton Drive desktop app version strings (mimics proton-drive-sync)
-const PLATFORM_MAP: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'macos' };
-const PLATFORM = PLATFORM_MAP[process.platform] ?? 'macos';
-const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-drive@2.10.1';
+import { getProtonAppVersion } from '../constants';
 
 /**
  * User API client for fetching user keys and addresses.
@@ -18,6 +14,7 @@ const APP_VERSION = PLATFORM === 'windows' ? 'windows-drive@1.12.4' : 'macos-dri
 export class UserApiClient {
   private client: HttpClient;
   private baseUrl: string;
+  private readonly appVersion: string;
 
   // In-memory cache populated from disk on first access
   private _cryptoCache: {
@@ -26,14 +23,18 @@ export class UserApiClient {
     addresses?: Address[];
   } | null = null;
 
-  constructor(baseUrl: string = 'https://drive-api.proton.me') {
+  constructor(
+    baseUrl: string = 'https://drive-api.proton.me',
+    appVersion?: string
+  ) {
     this.baseUrl = baseUrl;
+    this.appVersion = getProtonAppVersion(appVersion);
     this.client = HttpClient.create({
       baseURL: baseUrl,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'x-pm-appversion': APP_VERSION,
+        'x-pm-appversion': this.appVersion,
       },
     });
 
@@ -68,30 +69,20 @@ export class UserApiClient {
               throw new Error('Session expired and refresh failed. Please login again.');
             }
             try {
-              const { AuthApiClient } = await import('./auth');
-              const authApi = new AuthApiClient();
+              let freshSession;
               try {
-                const refreshResult = await authApi.refreshToken(session.uid, session.refreshToken);
-                await SessionManager.saveSession({
-                  ...session,
-                  accessToken: refreshResult.AccessToken,
-                  refreshToken: refreshResult.RefreshToken,
-                });
+                freshSession = await SessionManager.refreshSession(session, this.appVersion);
               } catch {
-                // Refresh token may be consumed by another process — re-read session
+                // Refresh token may be consumed by another process — re-read session.
                 const updated = await SessionManager.loadSession();
                 if (!updated || updated.accessToken === session.accessToken) {
                   throw new Error('Session expired and refresh failed. Please login again.');
                 }
+                freshSession = updated;
               }
-              // Retry with refreshed token
-              const freshSession = await SessionManager.loadSession();
-              if (freshSession) {
-                originalConfig.headers['Authorization'] = `Bearer ${freshSession.accessToken}`;
-                originalConfig.headers['x-pm-uid'] = freshSession.uid;
-                return this.client.request(originalConfig);
-              }
-              throw new Error('Session expired and refresh failed. Please login again.');
+              originalConfig.headers['Authorization'] = `Bearer ${freshSession.accessToken}`;
+              originalConfig.headers['x-pm-uid'] = freshSession.uid;
+              return this.client.request(originalConfig);
             } catch (refreshErr) {
               if (refreshErr instanceof Error && refreshErr.message.includes('Session expired')) {
                 throw refreshErr;

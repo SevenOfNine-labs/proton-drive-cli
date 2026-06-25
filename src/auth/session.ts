@@ -20,6 +20,8 @@ const SESSION_DIR = path.join(homedir(), '.proton-drive-cli');
 const SESSION_FILE = path.join(SESSION_DIR, 'session.json');
 const SESSION_LOCK_FILE = path.join(SESSION_DIR, 'session.json.lock');
 const CRYPTO_CACHE_FILE = path.join(SESSION_DIR, 'crypto-cache.json');
+const RATE_LIMIT_COOLDOWN_FILE = path.join(SESSION_DIR, 'rate-limit-cooldown.json');
+const DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60;
 
 export interface CryptoCache {
   sessionUid: string;
@@ -27,6 +29,14 @@ export interface CryptoCache {
   user: any;
   addresses: any[];
   cachedAt: string;
+}
+
+export interface RateLimitCooldown {
+  cooldownUntil: number;
+  retryAfter: number;
+  protonCode?: number;
+  message?: string;
+  recordedAt: string;
 }
 
 export class SessionManager {
@@ -118,27 +128,119 @@ export class SessionManager {
       // Ensure directory exists with owner-only permissions
       await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
 
-      // Strip mailboxPassword — passwords are never persisted to disk.
-      // The password flows via stdin on every bridge invocation (from pass-cli).
-      const { mailboxPassword, ...safeSession } = session as SessionCredentials & { mailboxPassword?: string };
-
       // Use file lock to prevent concurrent writes
       await this.withFileLock(async () => {
-        // Write atomically: unique temp file with restrictive mode, then rename.
-        const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
-        const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
-        try {
-          await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
-          await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
-        } catch (writeErr) {
-          // Clean up temp file on error to avoid leaking session data
-          await fs.remove(tmpFile).catch(() => {});
-          throw writeErr;
-        }
+        await this.writeSessionFile(session);
       });
     } catch (error) {
       throw new Error(`Failed to save session: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  private static async writeSessionFile(session: SessionCredentials): Promise<void> {
+    // Strip mailboxPassword — passwords are never persisted to disk.
+    // The password flows via stdin on every bridge invocation (from pass-cli).
+    const { mailboxPassword, ...safeSession } = session as SessionCredentials & { mailboxPassword?: string };
+
+    // Write atomically: unique temp file with restrictive mode, then rename.
+    const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+    const tmpFile = `${SESSION_FILE}.tmp-${suffix}`;
+    try {
+      await fs.writeJson(tmpFile, safeSession, { spaces: 2, mode: 0o600 });
+      await fs.move(tmpFile, SESSION_FILE, { overwrite: true });
+    } catch (writeErr) {
+      // Clean up temp file on error to avoid leaking session data
+      await fs.remove(tmpFile).catch(() => {});
+      throw writeErr;
+    }
+  }
+
+  private static async writeJsonFileAtomic(filePath: string, value: unknown): Promise<void> {
+    const suffix = `${process.pid}-${randomBytes(4).toString('hex')}`;
+    const tmpFile = `${filePath}.tmp-${suffix}`;
+    try {
+      await fs.writeJson(tmpFile, value, { spaces: 2, mode: 0o600 });
+      await fs.move(tmpFile, filePath, { overwrite: true });
+    } catch (writeErr) {
+      await fs.remove(tmpFile).catch(() => {});
+      throw writeErr;
+    }
+  }
+
+  private static normalizeRetryAfterSeconds(retryAfter?: number): number {
+    if (retryAfter && Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.ceil(retryAfter);
+    }
+    return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS;
+  }
+
+  static async recordRateLimitCooldown(options: {
+    retryAfter?: number;
+    protonCode?: number;
+    message?: string;
+  } = {}): Promise<RateLimitCooldown> {
+    const retryAfter = this.normalizeRetryAfterSeconds(options.retryAfter);
+    const now = Date.now();
+    const cooldown: RateLimitCooldown = {
+      cooldownUntil: now + retryAfter * 1000,
+      retryAfter,
+      ...(options.protonCode !== undefined && { protonCode: options.protonCode }),
+      ...(options.message && { message: options.message }),
+      recordedAt: new Date(now).toISOString(),
+    };
+
+    await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
+    await this.withFileLock(async () => {
+      await this.writeJsonFileAtomic(RATE_LIMIT_COOLDOWN_FILE, cooldown);
+    });
+
+    return cooldown;
+  }
+
+  static async getActiveRateLimitCooldown(now: number = Date.now()): Promise<RateLimitCooldown | null> {
+    try {
+      if (!await fs.pathExists(RATE_LIMIT_COOLDOWN_FILE)) return null;
+
+      const cooldown = await fs.readJson(RATE_LIMIT_COOLDOWN_FILE) as Partial<RateLimitCooldown>;
+      if (!cooldown || typeof cooldown.cooldownUntil !== 'number') {
+        await this.clearRateLimitCooldown();
+        return null;
+      }
+
+      if (cooldown.cooldownUntil <= now) {
+        await this.clearRateLimitCooldown();
+        return null;
+      }
+
+      return {
+        cooldownUntil: cooldown.cooldownUntil,
+        retryAfter: Math.max(1, Math.ceil((cooldown.cooldownUntil - now) / 1000)),
+        ...(cooldown.protonCode !== undefined && { protonCode: cooldown.protonCode }),
+        ...(cooldown.message && { message: cooldown.message }),
+        recordedAt: cooldown.recordedAt || new Date(cooldown.cooldownUntil).toISOString(),
+      };
+    } catch (error) {
+      logger.warn('Failed to load rate-limit cooldown:', error);
+      return null;
+    }
+  }
+
+  static async assertNotRateLimited(): Promise<void> {
+    const cooldown = await this.getActiveRateLimitCooldown();
+    if (!cooldown) return;
+
+    const { RateLimitError } = await import('../errors/types');
+    throw new RateLimitError(
+      cooldown.message || 'Rate limited by Proton API',
+      {
+        retryAfter: cooldown.retryAfter,
+        protonCode: cooldown.protonCode,
+      },
+    );
+  }
+
+  static async clearRateLimitCooldown(): Promise<void> {
+    await fs.remove(RATE_LIMIT_COOLDOWN_FILE).catch(() => {});
   }
 
   /**
@@ -275,30 +377,74 @@ export class SessionManager {
     return timeUntilExpiry < this.REFRESH_THRESHOLD_MS && timeUntilExpiry > 0;
   }
 
+  private static calculateTokenExpiresAt(
+    accessToken: string,
+    expiresIn?: number,
+    fallback?: number,
+  ): number | undefined {
+    if (expiresIn) {
+      return Date.now() + (expiresIn * 1000);
+    }
+
+    try {
+      const decoded = jwtDecode<{ exp?: number }>(accessToken);
+      if (decoded.exp) return decoded.exp * 1000;
+    } catch {
+      // Non-JWT access token or malformed token — keep fallback if present.
+    }
+
+    return fallback;
+  }
+
   /**
    * Refresh session tokens using the refresh token.
    * Updates the session file with new tokens and expiration time.
-   * @param session - Current session to refresh
+   * @param expectedSession - Optional session observed before acquiring the lock
    * @returns Updated session with new tokens
    */
-  private static async refreshSessionTokens(session: SessionCredentials): Promise<SessionCredentials> {
-    // Import AuthApiClient here to avoid circular dependencies
-    const { AuthApiClient } = await import('../api/auth');
-    const authApi = new AuthApiClient();
+  static async refreshSession(expectedSession?: SessionCredentials, appVersion?: string): Promise<SessionCredentials> {
+    await fs.ensureDir(SESSION_DIR, { mode: 0o700 });
 
-    logger.debug(`Refreshing tokens for session ${session.uid}`);
-    const result = await authApi.refreshToken(session.uid, session.refreshToken);
+    return this.withFileLock(async () => {
+      const latest = await this.loadSession();
+      const session = latest || expectedSession;
+      if (!session) {
+        throw new Error('No session to refresh');
+      }
 
-    const updatedSession: SessionCredentials = {
-      ...session,
-      accessToken: result.AccessToken,
-      refreshToken: result.RefreshToken,
-      tokenExpiresAt: result.ExpiresIn ? Date.now() + (result.ExpiresIn * 1000) : undefined,
-    };
+      if (
+        expectedSession &&
+        latest &&
+        (latest.accessToken !== expectedSession.accessToken ||
+          latest.refreshToken !== expectedSession.refreshToken) &&
+        await this.validateSession(latest, false)
+      ) {
+        logger.info('Session was already refreshed by another process');
+        return latest;
+      }
 
-    await this.saveSession(updatedSession);
-    logger.info('Token refreshed successfully (proactive)');
-    return updatedSession;
+      // Import AuthApiClient here to avoid circular dependencies.
+      const { AuthApiClient } = await import('../api/auth');
+      const authApi = new AuthApiClient(undefined, appVersion);
+
+      logger.debug(`Refreshing tokens for session ${session.uid}`);
+      const result = await authApi.refreshToken(session.uid, session.refreshToken);
+
+      const updatedSession: SessionCredentials = {
+        ...session,
+        accessToken: result.AccessToken,
+        refreshToken: result.RefreshToken,
+        tokenExpiresAt: this.calculateTokenExpiresAt(
+          result.AccessToken,
+          result.ExpiresIn,
+          session.tokenExpiresAt,
+        ),
+      };
+
+      await this.writeSessionFile(updatedSession);
+      logger.info('Token refreshed successfully');
+      return updatedSession;
+    });
   }
 
   /**
@@ -308,7 +454,7 @@ export class SessionManager {
    *
    * @returns Valid session or null if no session exists
    */
-  static async getValidSession(): Promise<SessionCredentials | null> {
+  static async getValidSession(appVersion?: string): Promise<SessionCredentials | null> {
     const session = await this.loadSession();
     if (!session) return null;
 
@@ -316,7 +462,7 @@ export class SessionManager {
     if (this.isExpiringSoon(session)) {
       logger.info('Token expiring soon, proactively refreshing...');
       try {
-        return await this.refreshSessionTokens(session);
+        return await this.refreshSession(session, appVersion);
       } catch (error) {
         logger.warn('Proactive refresh failed, token may expire during operation:', error);
         // Continue with current session — will retry on 401
@@ -335,7 +481,7 @@ export class SessionManager {
    * @param remoteCheck - If true, makes an API call to verify the session is valid on the server
    * @returns True if session is valid
    */
-  static async validateSession(session: SessionCredentials, remoteCheck: boolean = false): Promise<boolean> {
+  static async validateSession(session: SessionCredentials, remoteCheck: boolean = false, appVersion?: string): Promise<boolean> {
     // Quick local validation: check if token is expired
     if (session.tokenExpiresAt && Date.now() >= session.tokenExpiresAt) {
       logger.debug('Session expired locally (tokenExpiresAt)');
@@ -361,7 +507,7 @@ export class SessionManager {
       try {
         // Import UserApiClient here to avoid circular dependencies
         const { UserApiClient } = await import('../api/user');
-        const userApi = new UserApiClient();
+        const userApi = new UserApiClient(undefined, appVersion);
         await userApi.getUser(); // Lightweight endpoint
         logger.debug('Session validated remotely (API call succeeded)');
         return true;
@@ -382,43 +528,29 @@ export class SessionManager {
   }
 
   /**
-   * Get an existing session or create a new one via SRP authentication.
-   * This method implements session reuse: if a valid session exists, it is returned
-   * immediately without performing SRP auth. This significantly reduces auth overhead.
+   * Get an existing browser-fork session.
    *
-   * @param username - Username for authentication (if new session needed)
-   * @param password - Password for authentication (if new session needed)
-   * @param remoteCheck - If true, validates existing session with an API call
-   * @returns Valid session (existing or newly created)
+   * This method intentionally never creates a new session. Account
+   * authentication must happen through the browser-fork login command.
    */
   static async getOrCreateSession(
-    username: string,
-    password: string,
+    _username: string,
+    _password: string,
     remoteCheck: boolean = false
   ): Promise<SessionCredentials> {
     const existing = await this.loadSession();
 
     if (existing) {
-      // Check if the session belongs to the same user
-      const expectedHash = this.hashUsername(username);
-      if (existing.userHash && existing.userHash !== expectedHash) {
-        logger.info('Existing session belongs to different user, creating new session...');
-      } else {
-        logger.debug('Found existing session, validating...');
-        const isValid = await this.validateSession(existing, remoteCheck);
-        if (isValid) {
-          logger.info('Reusing existing valid session (skipping SRP auth)');
-          return existing;
-        }
-        logger.info('Existing session invalid, creating new session...');
+      logger.debug('Found existing session, validating...');
+      const isValid = await this.validateSession(existing, remoteCheck);
+      if (isValid) {
+        logger.info('Reusing existing valid browser-fork session');
+        return existing;
       }
+      logger.info('Existing session invalid; browser-fork login is required');
     }
 
-    // No session or invalid session — perform full SRP auth
-    logger.info('Performing SRP authentication...');
-    const { AuthService } = await import('./index');
-    const authService = new AuthService();
-    return await authService.login(username, password);
+    throw new Error('No valid browser-fork session found. Run: proton-drive login');
   }
 
   // ─── Crypto-init cache ──────────────────────────────────────────────

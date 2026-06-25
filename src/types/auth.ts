@@ -23,6 +23,13 @@ export interface AuthResponse {
   };
 }
 
+export interface Auth2FARequest {
+  TwoFactorCode?: string;
+  FIDO2?: unknown;
+}
+
+export type AuthMode = 'browser-fork';
+
 export interface SessionCredentials {
   sessionId: string;
   uid: string;
@@ -30,6 +37,13 @@ export interface SessionCredentials {
   refreshToken: string;
   scopes: string[];
   passwordMode: number;
+  // Authentication path that created the session.
+  authMode?: AuthMode;
+  // Browser-fork auth returns a key password that must be protected by an OS
+  // secret store. It is never written to session.json.
+  keyPasswordPersisted?: boolean;
+  keyPasswordProvider?: 'git-credential' | 'pass-cli';
+  keyPasswordHost?: string;
   // Unix timestamp (ms) when the access token expires (for proactive refresh)
   tokenExpiresAt?: number;
   // mailboxPassword is intentionally NOT persisted — it flows via stdin
@@ -43,4 +57,23 @@ export interface SRPHandshake {
   clientEphemeral: string;
   clientProof: string;
   expectedServerProof: string;
+}
+
+export interface SessionForkInitResponse {
+  Code: number;
+  Selector: string;
+  UserCode: string;
+}
+
+export interface SessionForkStatusResponse {
+  Code: number;
+  Payload: string;
+  UID: string;
+  AccessToken: string;
+  RefreshToken?: string;
+  Scopes?: string[];
+  // Session-fork may omit PasswordMode; browser-fork then defaults to
+  // one-password readiness because the payload carries the user-key password.
+  PasswordMode?: number;
+  ExpiresIn?: number;
 }

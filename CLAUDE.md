@@ -1,6 +1,13 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working
+with code in this repository.
+
+## Primary Instructions
+
+- Follow `AGENTS.md` for project structure, build/test commands, coding
+  conventions, and pull request expectations.
+- Keep `AGENTS.md` and this file aligned when instruction updates are made.
 
 ## Changeset Tracking (MANDATORY)
 
