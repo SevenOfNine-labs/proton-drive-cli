@@ -6,10 +6,11 @@ import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../a
 import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
 import { AppError } from '../errors/types';
-import { handleError } from '../errors/handler';
+import { handleError, toAppError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { openBrowserUrl } from '../utils/open-browser';
 import { authTrace } from '../utils/auth-trace';
+import { redactSensitive } from '../utils/redaction';
 
 export interface BrowserForkKeyPasswordOptions {
   keyPasswordProvider?: string;
@@ -419,19 +420,36 @@ export function createSessionRefreshCommand(): Command {
   command
     .command('refresh')
     .description('Refresh the access token (used by tray heartbeat)')
-    .action(async () => {
+    .option('--json', 'Emit a structured machine-readable refresh result')
+    .action(async (options: { json?: boolean } = {}) => {
       try {
         const session = await SessionManager.loadSession();
         if (!session) {
-          // No session — nothing to refresh, silent success
+          if (options.json) {
+            console.log(JSON.stringify({
+              ok: true,
+              refreshed: false,
+              state: 'no_session',
+              action: 'none',
+            }));
+          }
           process.exit(0);
         }
 
-        const authService = new AuthService();
-        await authService.refreshSession();
-        // Silent success
+        const updated = await SessionManager.refreshSession(session);
+        if (options.json) {
+          console.log(JSON.stringify({
+            ok: true,
+            refreshed: true,
+            state: 'refreshed',
+            uidFingerprint: fingerprintForRefresh(updated.uid),
+            tokenExpiresAt: updated.tokenExpiresAt,
+          }));
+        }
       } catch (error) {
-        if (process.env.DEBUG === 'true') {
+        if (options.json) {
+          console.log(JSON.stringify(refreshErrorEnvelope(error)));
+        } else if (process.env.DEBUG === 'true') {
           handleError(error, true);
         }
         process.exit(1);
@@ -439,4 +457,39 @@ export function createSessionRefreshCommand(): Command {
     });
 
   return command;
+}
+
+function refreshErrorEnvelope(error: unknown): Record<string, unknown> {
+  const appError = toAppError(error);
+  const details = redactSensitive(appError.details || {}) as Record<string, unknown>;
+  const statusCode = typeof details.statusCode === 'number' ? details.statusCode : undefined;
+  const apiError = typeof details.apiError === 'object' && details.apiError !== null
+    ? details.apiError as Record<string, unknown>
+    : undefined;
+  const protonCode = apiError?.Code;
+  const protonError = apiError?.Error;
+
+  return {
+    ok: false,
+    state: 'refresh_failed',
+    error: appError.toUserMessage(),
+    errorCode: appError.code,
+    recoverable: appError.isRecoverable,
+    ...(statusCode !== undefined && { statusCode }),
+    ...(protonCode !== undefined && { protonCode }),
+    ...(typeof protonError === 'string' && protonError !== '' && { protonError }),
+    action: appError.isRecoverable
+      ? 'retry_after_backoff'
+      : 'stop: refresh token rejected or session invalid; run browser login after offline gates pass',
+    details,
+  };
+}
+
+function fingerprintForRefresh(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
 }
