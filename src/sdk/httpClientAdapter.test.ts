@@ -1,7 +1,9 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
 import { RateLimitError } from '../errors/types';
-import { DEFAULT_PROTON_APP_VERSION } from '../constants';
+import { DEFAULT_PROTON_APP_VERSION, VENDORED_DRIVE_SDK_VERSION } from '../constants';
+import { isServerTimeSynced, resetServerTime, serverTime } from '../utils/server-time';
+import { logger } from '../utils/logger';
 
 // Mock dependencies
 jest.mock('../auth/session');
@@ -250,7 +252,19 @@ describe('HTTPClientAdapter', () => {
       expect(headers.get('x-pm-appversion')).toBe('external-drive-custom@2.0.0');
     });
 
-    it('preserves existing x-pm-appversion', async () => {
+    it('reports the pinned SDK release instead of the package.json placeholder', async () => {
+      const headers = new Headers({ 'x-pm-drive-sdk-version': 'js@0.0.1' });
+      await adapter.fetchJson({
+        url: '/drive/v2/volumes',
+        method: 'GET',
+        headers,
+        timeoutMs: 30000,
+      });
+
+      expect(headers.get('x-pm-drive-sdk-version')).toBe(`js@${VENDORED_DRIVE_SDK_VERSION}`);
+    });
+
+    it('overrides a pre-set x-pm-appversion with the validated identity', async () => {
       const headers = new Headers({ 'x-pm-appversion': 'custom@1.0.0' });
       await adapter.fetchJson({
         url: '/api/endpoint',
@@ -259,7 +273,7 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       });
 
-      expect(headers.get('x-pm-appversion')).toBe('custom@1.0.0');
+      expect(headers.get('x-pm-appversion')).toBe(DEFAULT_PROTON_APP_VERSION);
     });
   });
 
@@ -349,26 +363,18 @@ describe('HTTPClientAdapter', () => {
     });
   });
 
-  describe('403/9101 token refresh (insufficient scope)', () => {
+  describe('403/9101 insufficient scope is not refreshable', () => {
+    // Official Proton clients only refresh on HTTP 401. A refreshed token
+    // keeps the session's scopes, so refreshing on 9101 cannot succeed and
+    // would just rotate refresh tokens across concurrent bridge subprocesses.
     const make9101Response = () =>
       new Response(JSON.stringify({ Code: 9101, Error: 'Access token does not have sufficient scope' }), {
         status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
 
-    it('refreshes token and retries on 403 with Proton error code 9101', async () => {
-      const refreshedSession = { ...fakeSession, accessToken: 'new-access-token' };
-
-      mockFetch
-        .mockResolvedValueOnce(make9101Response())
-        .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
-
-      (SessionManager.loadSession as jest.Mock)
-        .mockResolvedValueOnce(fakeSession)        // initial auth injection
-        .mockResolvedValueOnce(fakeSession)        // refresh load
-        .mockResolvedValueOnce(refreshedSession);  // retry auth injection
-
-      (SessionManager.refreshSession as jest.Mock).mockResolvedValue(refreshedSession);
+    it('returns the 403 without refreshing or retrying (fetchJson)', async () => {
+      mockFetch.mockResolvedValueOnce(make9101Response());
 
       const response = await adapter.fetchJson({
         url: '/drive/v2/volumes',
@@ -377,24 +383,15 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       });
 
-      expect(response.status).toBe(200);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.refreshSession).toHaveBeenCalledWith(
-        fakeSession,
-        DEFAULT_PROTON_APP_VERSION
-      );
+      expect(response.status).toBe(403);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+      // The body is left intact for the bridge's INSUFFICIENT_SCOPE classification.
+      await expect(response.json()).resolves.toMatchObject({ Code: 9101 });
     });
 
-    it('refreshes on 403/9101 for fetchBlob too', async () => {
-      mockFetch
-        .mockResolvedValueOnce(make9101Response())
-        .mockResolvedValueOnce(new Response('blob-data', { status: 200 }));
-
-      (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
-        ...fakeSession,
-        accessToken: 'refreshed-token',
-        refreshToken: 'refreshed-refresh',
-      });
+    it('returns the 403 without refreshing or retrying (fetchBlob)', async () => {
+      mockFetch.mockResolvedValueOnce(make9101Response());
 
       const response = await adapter.fetchBlob({
         url: '/drive/v2/blocks/abc',
@@ -403,23 +400,9 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 60000,
       });
 
-      expect(response.status).toBe(200);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-    });
-
-    it('returns original 403 if refresh fails', async () => {
-      mockFetch.mockResolvedValue(make9101Response());
-
-      (SessionManager.refreshSession as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
-
-      const response = await adapter.fetchJson({
-        url: '/api/endpoint',
-        method: 'GET',
-        headers: new Headers(),
-        timeoutMs: 30000,
-      });
-
       expect(response.status).toBe(403);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
     });
 
     it('refreshes on error code 10013 (invalid access token)', async () => {
@@ -499,5 +482,97 @@ describe('HTTPClientAdapter', () => {
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+
+describe('HTTPClientAdapter server time', () => {
+  let adapter: HTTPClientAdapter;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetServerTime();
+    adapter = new HTTPClientAdapter();
+    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    resetServerTime();
+  });
+
+  it('learns the server clock from the date header of every response', async () => {
+    const serverDate = new Date(Date.now() - 3_600_000);
+    mockFetch.mockResolvedValue(
+      new Response('{"Code": 1000}', { status: 200, headers: { date: serverDate.toUTCString() } }),
+    );
+
+    await adapter.fetchJson({ url: '/drive/v2/volumes', method: 'GET', headers: new Headers(), timeoutMs: 1000 });
+
+    expect(isServerTimeSynced()).toBe(true);
+    expect(Math.abs(serverTime().getTime() - serverDate.getTime())).toBeLessThan(2000);
+  });
+
+  it('keeps device time when responses carry no date header', async () => {
+    mockFetch.mockResolvedValue(new Response('{"Code": 1000}', { status: 200 }));
+
+    await adapter.fetchJson({ url: '/drive/v2/volumes', method: 'GET', headers: new Headers(), timeoutMs: 1000 });
+
+    expect(isServerTimeSynced()).toBe(false);
+  });
+});
+
+
+describe('HTTPClientAdapter Drive requirement notices', () => {
+  let adapter: HTTPClientAdapter;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    adapter = new HTTPClientAdapter();
+    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  const request = () =>
+    adapter.fetchJson({ url: '/drive/v2/volumes', method: 'GET', headers: new Headers(), timeoutMs: 1000 });
+
+  it('warns once per process when Proton requires a newer SDK', async () => {
+    mockFetch.mockResolvedValue(
+      new Response('{"Code": 1000}', {
+        status: 200,
+        headers: { 'x-pm-drive-platform-requirements': 'required=99.0.0 suggested=99.1.0' },
+      }),
+    );
+
+    await request();
+    await request();
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`requires SDK 99.0.0 or newer; this build uses js@${VENDORED_DRIVE_SDK_VERSION}`),
+    );
+  });
+
+  it('warns about unsupported feature bits', async () => {
+    mockFetch.mockResolvedValue(
+      new Response('{"Code": 1000}', { status: 200, headers: { 'x-pm-drive-requirements': 'drive=128' } }),
+    );
+
+    await request();
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('drive feature this build does not support'));
+  });
+
+  it('stays silent when requirements are met', async () => {
+    mockFetch.mockResolvedValue(
+      new Response('{"Code": 1000}', {
+        status: 200,
+        headers: { 'x-pm-drive-requirements': 'drive=1', 'x-pm-drive-platform-requirements': 'required=0.1.0' },
+      }),
+    );
+
+    await request();
+
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

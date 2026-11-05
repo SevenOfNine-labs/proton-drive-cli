@@ -27,22 +27,11 @@ export class AccountAdapter implements ProtonDriveAccount {
 
   async getOwnAddresses(): Promise<ProtonDriveAccountAddress[]> {
     const addressesMap = this.driveCrypto.getAddressesMap();
-    const keysMap = this.driveCrypto.getAddressKeysMap();
     const result: ProtonDriveAccountAddress[] = [];
 
-    for (const [id, address] of addressesMap.entries()) {
-      const keys = keysMap.get(id);
-      if (!keys || keys.length === 0) continue;
-
-      result.push({
-        email: address.Email,
-        addressId: id,
-        primaryKeyIndex: 0,
-        keys: keys.map((key, idx) => ({
-          id: address.Keys[idx]?.ID || `key-${idx}`,
-          key: key as any,
-        })),
-      });
+    for (const id of addressesMap.keys()) {
+      if (this.driveCrypto.getAddressKeyEntries(id).length === 0) continue;
+      result.push(this.buildAddress(id));
     }
 
     if (result.length === 0) {
@@ -83,16 +72,16 @@ export class AccountAdapter implements ProtonDriveAccount {
   }
 
   private buildAddress(addressId: string): ProtonDriveAccountAddress {
-    const addressesMap = this.driveCrypto.getAddressesMap();
-    const keysMap = this.driveCrypto.getAddressKeysMap();
-
-    const address = addressesMap.get(addressId);
+    const address = this.driveCrypto.getAddressesMap().get(addressId);
     if (!address) {
       throw new Error(`Address not found: ${addressId}`);
     }
 
-    const keys = keysMap.get(addressId);
-    if (!keys || keys.length === 0) {
+    // Key IDs travel with the decrypted keys: Proton attributes signatures to
+    // the reported key ID, and a positional lookup in address.Keys would
+    // mislabel keys whenever an earlier key could not be unlocked.
+    const entries = this.driveCrypto.getAddressKeyEntries(addressId);
+    if (entries.length === 0) {
       throw new Error(`No decrypted keys for address: ${addressId}`);
     }
 
@@ -100,10 +89,7 @@ export class AccountAdapter implements ProtonDriveAccount {
       email: address.Email,
       addressId,
       primaryKeyIndex: 0,
-      keys: keys.map((key, idx) => ({
-        id: address.Keys[idx]?.ID || `key-${idx}`,
-        key: key as any,
-      })),
+      keys: entries.map(({ id, key }) => ({ id, key: key as any })),
     };
   }
 }

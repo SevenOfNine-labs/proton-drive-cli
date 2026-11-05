@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false
+  }
+}

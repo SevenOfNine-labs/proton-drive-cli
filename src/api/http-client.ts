@@ -15,6 +15,7 @@
  */
 
 import { SessionManager } from '../auth/session';
+import { updateServerTimeFromHeaders } from '../utils/server-time';
 
 export interface HttpClientConfig {
     baseURL: string;
@@ -175,6 +176,7 @@ export class HttpClient {
 
             const res = await fetch(url, fetchOptions);
             clearTimeout(timer);
+            updateServerTimeFromHeaders(res.headers);
 
             // Parse response headers
             const responseHeaders: Record<string, string> = {};

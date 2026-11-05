@@ -8,10 +8,15 @@
  * The SDK's crypto types (PrivateKey, PublicKey, SessionKey) are opaque marker
  * interfaces. At runtime they ARE openpgp.js objects. We cast through `any`
  * at the boundary.
+ *
+ * Every operation is dated with the Proton API server time (see
+ * utils/server-time.ts), mirroring @protontech/crypto, so clock skew on the
+ * device cannot produce keys or signatures the API rejects.
  */
 
 import * as openpgp from '@protontech/openpgp';
 import type { CryptoApiInterface } from '@protontech/crypto';
+import { serverTime } from '../utils/server-time';
 
 // The SDK's opaque types are not exported from the top-level package.
 // They're just marker interfaces — at runtime everything is openpgp.js objects.
@@ -31,6 +36,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
       type: options.type,
       curve: options.curve as any,
       format: 'object',
+      date: serverTime(),
     });
     return privateKey;
   }
@@ -70,6 +76,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
   }): Promise<SessionKey> {
     const sk = await openpgp.generateSessionKey({
       encryptionKeys: options.recipientKeys as openpgp.PublicKey[],
+      date: serverTime(),
     });
     return { data: sk.data };
   }
@@ -85,6 +92,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
       data: options.data,
       algorithm: 'aes256',
       format: 'binary',
+      date: serverTime(),
     };
     if (options.encryptionKeys) {
       const keys = Array.isArray(options.encryptionKeys)
@@ -119,6 +127,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
     const result = await openpgp.decryptSessionKeys({
       message,
       decryptionKeys: pgpKeys,
+      date: serverTime(),
     });
 
     if (result.length === 0) return undefined;
@@ -140,6 +149,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
     const encOpts: any = {
       message,
       format,
+      date: serverTime(),
     };
 
     if (options.sessionKey) {
@@ -167,6 +177,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
         signingKeys: encOpts.signingKeys ? [encOpts.signingKeys] : [],
         detached: true,
         format: format as any,
+        date: serverTime(),
       } as any);
 
       const encrypted = await openpgp.encrypt(encOpts);
@@ -204,6 +215,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
     const decOpts: any = {
       message,
       format: options.format,
+      date: serverTime(),
     };
 
     if (options.sessionKeys) {
@@ -276,6 +288,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
       signingKeys: pgpKeys,
       detached: options.detached,
       format: options.format,
+      date: serverTime(),
     };
 
     if (options.signatureContext) {
@@ -321,6 +334,7 @@ export class ProtonOpenPGPCryptoProxy implements CryptoApiInterface {
       message,
       signature,
       verificationKeys: pgpKeys,
+      date: serverTime(),
     } as any);
 
     const errors: Error[] = [];

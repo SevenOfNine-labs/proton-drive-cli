@@ -381,6 +381,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@boltffi/runtime@npm:0.31.0":
+  version: 0.31.0
+  resolution: "@boltffi/runtime@npm:0.31.0"
+  checksum: 10c0/38d4af6a6fa47d7c4b74f55e48a5779d0573c3e9b6bbf731811c408b1134897692aadb38a1bee3c11ae799bf30c4c437e0216f0dbbeef4bc8536f90c3cd79a95
+  languageName: node
+  linkType: hard
+
 "@borewit/text-codec@npm:^0.2.1":
   version: 0.2.1
   resolution: "@borewit/text-codec@npm:0.2.1"
@@ -1192,10 +1199,19 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@protontech/drive-sdk@portal:./submodules/sdk/client/js::locator=%40sevenofnine-ai%2Fproton-drive-cli%40workspace%3A."
   dependencies:
+    "@boltffi/runtime": "npm:0.31.0"
     "@noble/hashes": "npm:^1.8.0"
+    "@xmldom/xmldom": "npm:^0.9.12"
+    comlink: "npm:^4.4.2"
+    exifreader: "npm:^4.44.0"
     ttag: "npm:^1.8.7"
   peerDependencies:
     "@protontech/crypto": ^2.0.0
+  dependenciesMeta:
+    "@xmldom/xmldom":
+      optional: true
+    exifreader:
+      optional: true
   languageName: node
   linkType: soft
 
@@ -1832,6 +1848,13 @@ __metadata:
   dependencies:
     arch: "npm:^3.0.0"
   checksum: 10c0/e4f774ef8d36144b53749f02b602494653442379582756546415c05a5094f79931521cc0c430ab9f824a83a500ca64b8dd560e9f9b31e967bb608d2418050592
+  languageName: node
+  linkType: hard
+
+"@xmldom/xmldom@npm:^0.9.12":
+  version: 0.9.12
+  resolution: "@xmldom/xmldom@npm:0.9.12"
+  checksum: 10c0/0a9ef38e203213717dde8d16c62743c26c37eb4195aeb4f286550a0aec2145c063a6c3633f253c29f75202f922d7c961d1acaad4dd93e5db1ef05c813354d178
   languageName: node
   linkType: hard
 
@@ -2871,6 +2894,20 @@ __metadata:
     signal-exit: "npm:^3.0.3"
     strip-final-newline: "npm:^2.0.0"
   checksum: 10c0/c8e615235e8de4c5addf2fa4c3da3e3aa59ce975a3e83533b4f6a71750fb816a2e79610dc5f1799b6e28976c9ae86747a36a606655bf8cb414a74d8d507b304f
+  languageName: node
+  linkType: hard
+
+"exifreader@npm:^4.44.0":
+  version: 4.54.0
+  resolution: "exifreader@npm:4.54.0"
+  dependencies:
+    "@xmldom/xmldom": "npm:^0.9.12"
+  dependenciesMeta:
+    "@xmldom/xmldom":
+      optional: true
+  bin:
+    exifreader: bin/cli.js
+  checksum: 10c0/8913c431af4d83afbf4f10c9d2d9b97ff2cb0f578dc174005d7c80795f57e21a3c4bfb8f5f73841397e70b8a50242609fe623f62f08e2de8d9895f62e6eaa359
   languageName: node
   linkType: hard
 

@@ -72,7 +72,7 @@ jobs:
       - name: Build SDK (uses npm - external Proton project)
         run: |
           cd submodules/sdk/client/js
-          npm ci
+          npm install --no-package-lock --no-audit --no-fund
           npm run build
 
       - name: Generate TypeDoc API documentation

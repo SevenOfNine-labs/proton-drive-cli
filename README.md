@@ -5,9 +5,12 @@ by the official `@protontech/drive-sdk`.
 
 ## Installation
 
+Requires Node.js 22+. The vendored Proton SDK must be built once first:
+
 ```bash
 corepack enable
 yarn install
+(cd submodules/sdk/client/js && npm install --no-package-lock && npm run build)
 yarn build
 ```
 

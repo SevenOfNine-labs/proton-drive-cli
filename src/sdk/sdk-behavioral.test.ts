@@ -9,7 +9,7 @@
  * 1. MemoryCache behavior changes (set/get/iterate/tag semantics)
  * 2. OpenPGPCryptoWithCryptoProxy stops wrapping our proxy correctly
  * 3. ProtonDriveClient method parameter counts change
- * 4. AsyncGenerator methods stop returning async generators
+ * 4. AsyncGenerator methods stop returning async iterables
  * 5. Promise methods stop returning promises
  * 6. Error class hierarchy changes
  * 7. NodeType enum values change
@@ -251,42 +251,60 @@ describe('ProtonDriveClient method parameter counts', () => {
 // 3. Return Type Detection (Promise vs AsyncGenerator)
 // ---------------------------------------------------------------------------
 describe('ProtonDriveClient return types', () => {
-  // We can't call these methods (they require auth) but we can verify
-  // the function constructor name. AsyncGenerator functions have a
-  // different type than regular async functions.
+  // The SDK dist is transpiled by swc since js/v0.19 (async functions and
+  // generators are downleveled to helpers), so `fn.constructor.name` no longer
+  // identifies async functions. Check the observable runtime shape instead:
+  // generator methods must return an async iterable without executing, and
+  // promise methods must return a Promise. Calls run against the mocked
+  // client, so rejections are expected and swallowed.
 
-  const asyncGeneratorMethods = [
-    'iterateFolderChildren',
-    'iterateTrashedNodes',
-    'iterateNodes',
-    'trashNodes',
-    'deleteNodes',
-    'restoreNodes',
-    'moveNodes',
-    'copyNodes',
+  // Node UIDs must be well-formed (`<volumeId>~<nodeId>`): the SDK's failure
+  // telemetry parses them asynchronously and would otherwise throw outside
+  // the test.
+  const NODE_UID = 'volume-1~node-1';
+  const PARENT_UID = 'volume-1~parent-1';
+
+  const asyncGeneratorMethods: Array<[string, unknown[]]> = [
+    ['iterateFolderChildren', [PARENT_UID]],
+    ['iterateTrashedNodes', []],
+    ['iterateNodes', [[NODE_UID]]],
+    ['trashNodes', [[NODE_UID]]],
+    ['deleteNodes', [[NODE_UID]]],
+    ['restoreNodes', [[NODE_UID]]],
+    ['moveNodes', [[NODE_UID], PARENT_UID]],
+    ['copyNodes', [[NODE_UID], PARENT_UID]],
   ];
 
-  const promiseMethods = [
-    'getMyFilesRootFolder',
-    'getNode',
-    'createFolder',
-    'renameNode',
-    'getFileUploader',
-    'getFileDownloader',
+  const promiseMethods: Array<[string, unknown[]]> = [
+    ['getMyFilesRootFolder', []],
+    ['getNode', [NODE_UID]],
+    ['createFolder', [PARENT_UID, 'name']],
+    ['renameNode', [NODE_UID, 'name']],
+    ['getFileUploader', [PARENT_UID, 'name', { mediaType: 'application/octet-stream', expectedSize: 1 }]],
+    ['getFileDownloader', [NODE_UID]],
   ];
 
-  for (const method of asyncGeneratorMethods) {
-    test(`${method}() is an async generator function`, () => {
-      const fn = (ProtonDriveClient.prototype as any)[method];
-      // AsyncGeneratorFunction has constructor.name === 'AsyncGeneratorFunction'
-      expect(fn.constructor.name).toBe('AsyncGeneratorFunction');
+  for (const [method, args] of asyncGeneratorMethods) {
+    test(`${method}() returns an async generator`, () => {
+      const client = createTestClient();
+      const result = (client as any)[method](...args);
+      expect(typeof result[Symbol.asyncIterator]).toBe('function');
+      expect(typeof result.next).toBe('function');
+      expect(typeof result.return).toBe('function');
+      expect(typeof result.throw).toBe('function');
+      // Do not start the generator: close it so no SDK work is scheduled.
+      void result.return(undefined).catch(() => {});
     });
   }
 
-  for (const method of promiseMethods) {
-    test(`${method}() is an async function`, () => {
-      const fn = (ProtonDriveClient.prototype as any)[method];
-      expect(fn.constructor.name).toBe('AsyncFunction');
+  for (const [method, args] of promiseMethods) {
+    test(`${method}() returns a promise`, async () => {
+      const client = createTestClient();
+      const result = (client as any)[method](...args);
+      expect(result).toBeInstanceOf(Promise);
+      // The mocked HTTP/account adapters make the call fail; only the
+      // promise shape is under test here.
+      await result.catch(() => {});
     });
   }
 });

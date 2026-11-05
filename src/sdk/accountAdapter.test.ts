@@ -27,6 +27,8 @@ describe('AccountAdapter', () => {
       getPrimaryAddressEmail: jest.fn().mockReturnValue('test@proton.me'),
       getAddressesMap: jest.fn().mockReturnValue(new Map([['addr-1', fakeAddress]])),
       getAddressKeysMap: jest.fn().mockReturnValue(new Map([['addr-1', [fakeKey]]])),
+      getAddressKeyEntries: jest.fn().mockImplementation((id: string) =>
+        id === 'addr-1' ? [{ id: 'key-1', key: fakeKey }] : []),
     } as unknown as jest.Mocked<DriveCryptoService>;
 
     adapter = new AccountAdapter(mockDriveCrypto);
@@ -56,8 +58,24 @@ describe('AccountAdapter', () => {
     });
 
     it('throws when no addresses have keys', async () => {
-      mockDriveCrypto.getAddressKeysMap.mockReturnValue(new Map());
+      mockDriveCrypto.getAddressKeyEntries.mockReturnValue([]);
       await expect(adapter.getOwnAddresses()).rejects.toThrow('No addresses with decrypted keys');
+    });
+
+    it('reports the ID of the key that actually unlocked, not the positional one', async () => {
+      // address.Keys lists key-1 first, but key-1 could not be unlocked.
+      mockDriveCrypto.getAddressesMap.mockReturnValue(new Map([['addr-1', {
+        ...fakeAddress,
+        Keys: [
+          fakeAddress.Keys[0],
+          { ...fakeAddress.Keys[0], ID: 'key-2', Primary: 0 },
+        ],
+      }]]));
+      mockDriveCrypto.getAddressKeyEntries.mockReturnValue([{ id: 'key-2', key: fakeKey as any }]);
+
+      const [addr] = await adapter.getOwnAddresses();
+      expect(addr.keys.map((k) => k.id)).toEqual(['key-2']);
+      expect((await adapter.getOwnPrimaryAddress()).keys[0].id).toBe('key-2');
     });
   });
 
