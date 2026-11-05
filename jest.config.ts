@@ -1,16 +1,17 @@
 export default {
-  preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['**/src/**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', '<rootDir>/submodules/'],
+  // The vendored Proton SDK dist is ESM (swc output since the upstream Bun
+  // migration in js/v0.19+), so it must be transpiled to CommonJS for Jest.
+  // tsconfig.jest.json enables allowJs for that; a single ts-jest transform
+  // entry is required because ts-jest shares one config set per preset.
   transformIgnorePatterns: [
-    '<rootDir>/submodules/sdk/client/js/dist/',
     'node_modules/(?!(chalk|#ansi-styles|ansi-styles|@protontech/crypto)/)',
     '<rootDir>/submodules/(?!sdk/client/js/)',
   ],
   transform: {
-    '^.+\\.tsx?$': 'ts-jest',
-    '^.+\\.jsx?$': ['ts-jest', { useESM: false }],
+    '^.+\\.[tj]sx?$': ['ts-jest', { useESM: false, tsconfig: '<rootDir>/tsconfig.jest.json' }],
   },
   moduleNameMapper: {
     '#ansi-styles': 'ansi-styles',

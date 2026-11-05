@@ -7,6 +7,12 @@ import { Share, Link } from '../types/drive';
 import { deriveKeyPassphrase } from './key-password';
 import { logger } from '../utils/logger';
 
+/** A decrypted address key paired with its Proton key ID. */
+export interface AddressKeyEntry {
+  id: string;
+  key: openpgp.PrivateKey;
+}
+
 /**
  * Drive-specific crypto operations
  * Handles the key hierarchy: User Key -> Share Key -> Node Key -> Content
@@ -16,6 +22,7 @@ export class DriveCryptoService {
   private userApi: UserApiClient;
   private userKeys: Map<string, openpgp.PrivateKey> = new Map(); // User keys (primary account keys)
   private addressKeys: Map<string, openpgp.PrivateKey[]> = new Map(); // Address keys (all decrypted keys per address)
+  private addressKeyEntries: Map<string, AddressKeyEntry[]> = new Map(); // Same keys with their Proton key IDs
   private addresses: Map<string, Address> = new Map(); // Full address info by address ID
   private shareContexts: Map<string, DecryptedShareContext> = new Map();
   private nodeContexts: Map<string, DecryptedNodeContext> = new Map();
@@ -66,6 +73,7 @@ export class DriveCryptoService {
   }): Promise<void> {
     this.userKeys.clear();
     this.addressKeys.clear();
+    this.addressKeyEntries.clear();
     this.addresses.clear();
     this.shareContexts.clear();
     this.nodeContexts.clear();
@@ -104,26 +112,23 @@ export class DriveCryptoService {
     // Decrypt address keys (these are encrypted with tokens from user keys)
     for (const address of addresses) {
       const decryptedKeys: openpgp.PrivateKey[] = [];
+      const decryptedEntries: AddressKeyEntry[] = [];
 
       for (const key of address.Keys) {
         try {
           let passphrase: string | null = null;
 
           if (key.Token && this.userKeys.size > 0) {
-            // Address key is encrypted with a token that's encrypted with the user key.
-            // Try all user keys — the token may not be encrypted with the first one.
-            for (const userKey of this.userKeys.values()) {
-              try {
-                passphrase = await this.crypto.decryptMessage(key.Token!, userKey);
-                break;
-              } catch {
-                // Try next user key
-              }
-            }
-            if (!passphrase) {
-              // No user key could decrypt the token — try password fallback
-              passphrase = await this.getFallbackKeyPassphrase(saltMap.get(key.ID), material);
-            }
+            // The address key passphrase is a token encrypted to the user keys
+            // and signed by them. Like Proton's official clients, decrypt with
+            // every user key and require a valid signature; a key whose token
+            // fails verification is skipped (logged below), never unlocked
+            // through a password fallback.
+            passphrase = await this.crypto.decryptAddressKeyToken(
+              key.Token,
+              key.Signature,
+              Array.from(this.userKeys.values()),
+            );
           } else {
             // Fall back to password-based decryption
             passphrase = await this.getFallbackKeyPassphrase(saltMap.get(key.ID), material);
@@ -132,13 +137,15 @@ export class DriveCryptoService {
           // Try to decrypt the key
           const decryptedKey = await this.decryptPrivateKeyWithPassphrase(key.PrivateKey, passphrase);
           decryptedKeys.push(decryptedKey);
+          decryptedEntries.push({ id: key.ID, key: decryptedKey });
         } catch (error) {
-          logger.warn(`Failed to decrypt address key: ${error}`);
+          logger.warn(`Failed to decrypt address key ${key.ID}: ${error}`);
         }
       }
 
       if (decryptedKeys.length > 0) {
         this.addressKeys.set(address.ID, decryptedKeys);
+        this.addressKeyEntries.set(address.ID, decryptedEntries);
         this.addresses.set(address.ID, address);
       }
     }
@@ -518,10 +525,22 @@ export class DriveCryptoService {
 
   /**
    * Get the address keys map (address ID → decrypted private keys)
-   * Needed by SDK AccountAdapter
    */
   getAddressKeysMap(): Map<string, import('@protontech/openpgp').PrivateKey[]> {
     return this.addressKeys;
+  }
+
+  /**
+   * Decrypted keys of an address together with their Proton key IDs, in API
+   * order, skipping keys that could not be unlocked.
+   *
+   * Needed by the SDK account adapter: Proton attributes signatures to the
+   * reported key ID, so the ID must travel with the key object instead of
+   * being looked up by position in `Address.Keys` (which would mislabel keys
+   * whenever an earlier key was skipped).
+   */
+  getAddressKeyEntries(addressId: string): AddressKeyEntry[] {
+    return this.addressKeyEntries.get(addressId) || [];
   }
 
   /**
@@ -530,6 +549,7 @@ export class DriveCryptoService {
   clearCache(): void {
     this.userKeys.clear();
     this.addressKeys.clear();
+    this.addressKeyEntries.clear();
     this.addresses.clear();
     this.shareContexts.clear();
     this.nodeContexts.clear();

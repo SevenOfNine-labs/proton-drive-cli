@@ -2,9 +2,13 @@
  * HTTP client adapter for the Proton Drive SDK.
  *
  * Implements ProtonDriveHTTPClient by injecting auth tokens from SessionManager
- * and executing requests with fetch(). Handles token refresh on:
- * - HTTP 401 (Unauthorized)
- * - HTTP 403 with Proton error code 9101 (Insufficient scope)
+ * and executing requests with fetch(). Handles token refresh on HTTP 401
+ * (Unauthorized) only, like Proton's official clients (go-proton-api, the web
+ * client and the SDK account module). HTTP 403 with Proton error code 9101
+ * (insufficient scope) is NOT refreshable: a refreshed token keeps the same
+ * scopes, so refreshing only rotates the refresh token across concurrent
+ * bridge subprocesses and invites "invalid refresh token" (10013) races. The
+ * 403 is returned as-is so the bridge classifies it as INSUFFICIENT_SCOPE.
  */
 
 import type {
@@ -15,7 +19,12 @@ import type {
 import { SessionManager } from '../auth/session';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
-import { getProtonAppVersion } from '../constants';
+import { getProtonAppVersion, VENDORED_DRIVE_SDK_VERSION } from '../constants';
+import { updateServerTimeFromHeaders } from '../utils/server-time';
+import {
+  processDriveRequirementHeaders,
+  SUPPORTED_REQUIREMENT_MASK_BY_SCOPE,
+} from '../api/drive-requirements';
 
 // Inline request types to avoid deep import issues
 interface HTTPClientBaseRequest {
@@ -37,9 +46,9 @@ interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
 
 const API_BASE_URL = 'https://drive-api.proton.me';
 
-// Proton API error codes that indicate the access token needs refresh
+// Proton API error codes that indicate the access token needs refresh.
+// 9101 (insufficient scope, HTTP 403) is deliberately absent: see header.
 const AUTH_REFRESH_ERROR_CODES = new Set([
-  9101,   // Insufficient scope (HTTP 403)
   10013,  // Invalid access token
 ]);
 
@@ -52,6 +61,7 @@ const RATE_LIMIT_ERROR_CODES = new Set([
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   private refreshInProgress: Promise<void> | null = null;
   private readonly appVersion: string;
+  private readonly requirementNoticesEmitted = new Set<string>();
 
   constructor(appVersion?: string) {
     this.appVersion = getProtonAppVersion(appVersion);
@@ -66,9 +76,47 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
     }
-    if (!headers.has('x-pm-appversion')) {
-      headers.set('x-pm-appversion', this.appVersion);
+    // The adapter owns the client identity: always stamp the validated value.
+    headers.set('x-pm-appversion', this.appVersion);
+    // The vendored SDK reports its package.json placeholder (0.0.1) in
+    // x-pm-drive-sdk-version; Proton only stamps the real version at publish
+    // time. Report the pinned release instead, as the official CLI does.
+    headers.set('x-pm-drive-sdk-version', `js@${VENDORED_DRIVE_SDK_VERSION}`);
+  }
+
+  /**
+   * Learn from every API response, successful or not: the server clock for
+   * OpenPGP operations (see utils/server-time.ts) and Proton's SDK
+   * requirement notices, which announce when this build must be updated
+   * (for example for the Drive cryptographic model migration).
+   */
+  private observeResponse(response: Response): void {
+    updateServerTimeFromHeaders(response.headers);
+    processDriveRequirementHeaders(response.headers, {
+      clientSdkVersion: VENDORED_DRIVE_SDK_VERSION,
+      supportedRequirementMasksByScope: SUPPORTED_REQUIREMENT_MASK_BY_SCOPE,
+      onUnsupportedFeature: (scope, requiredMask) => this.warnOnce(
+        `Proton Drive requires a ${scope} feature this build does not support ` +
+          `(feature mask ${requiredMask}); update the vendored Proton SDK`,
+      ),
+      onRequiredUpdate: (requiredVersion) => this.warnOnce(
+        `Proton Drive requires SDK ${requiredVersion} or newer; this build uses ` +
+          `js@${VENDORED_DRIVE_SDK_VERSION} and may be rejected until the vendored Proton SDK is updated`,
+      ),
+      onSuggestedUpdate: (suggestedVersion) => this.warnOnce(
+        `Proton Drive suggests SDK ${suggestedVersion} or newer ` +
+          `(this build uses js@${VENDORED_DRIVE_SDK_VERSION})`,
+      ),
+    });
+  }
+
+  /** Emit each notice once per adapter instance (one adapter per bridge command). */
+  private warnOnce(message: string): void {
+    if (this.requirementNoticesEmitted.has(message)) {
+      return;
     }
+    this.requirementNoticesEmitted.add(message);
+    logger.warn(message);
   }
 
   private resolveUrl(url: string): string {
@@ -125,7 +173,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
 
   /**
    * Check if a response indicates the token needs to be refreshed.
-   * Returns true for HTTP 401 or Proton API auth error codes (e.g. 9101).
+   * Returns true for HTTP 401 or Proton API invalid-access-token codes.
    *
    * For non-401 errors, clones the response and peeks at the JSON body
    * to check the Proton error code without consuming the original response.
@@ -217,6 +265,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
 
     try {
       let response = await fetch(url, fetchOpts);
+      this.observeResponse(response);
 
       // Check for rate-limiting BEFORE attempting token refresh
       // (rate-limit errors should not trigger refresh attempts)
@@ -227,6 +276,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
           await this.refreshTokenIfNeeded();
           await this.injectAuthHeaders(headers);
           response = await fetch(url, fetchOpts);
+          this.observeResponse(response);
 
           // Check rate-limiting on retry response as well
           await this.checkRateLimit(response);

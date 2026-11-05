@@ -65,9 +65,11 @@ function defaultSleepMs(ms: number): Promise<void> {
 }
 
 function resolveAuthClientId(appVersion?: string): string {
-  return getProtonAppVersion(appVersion).startsWith('cli-drive')
-    ? 'cli-drive'
-    : DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID;
+  // Fail fast on an invalid app-version identity before any network call.
+  // Third-party builds always fork sessions as `external-drive`; the official
+  // `cli-drive` identity is reserved for Proton's own CLI.
+  getProtonAppVersion(appVersion);
+  return DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID;
 }
 
 function resolveTokenExpiresAt(accessToken: string, expiresIn?: number): number | undefined {

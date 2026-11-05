@@ -4,7 +4,7 @@ await esbuild.build({
   entryPoints: ['src/index.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',
   outfile: 'dist/index.js',
   format: 'cjs',
   sourcemap: true,

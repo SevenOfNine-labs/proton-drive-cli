@@ -1,4 +1,6 @@
+import * as openpgp from '@protontech/openpgp';
 import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
+import { resetServerTime, updateServerTime } from '../utils/server-time';
 
 describe('ProtonOpenPGPCryptoProxy', () => {
   let proxy: ProtonOpenPGPCryptoProxy;
@@ -196,5 +198,40 @@ describe('ProtonOpenPGPCryptoProxy', () => {
       });
       expect(result).toBeUndefined();
     });
+  });
+});
+
+
+describe('ProtonOpenPGPCryptoProxy server time', () => {
+  afterEach(() => {
+    resetServerTime();
+  });
+
+  it('dates keys and signatures with the Proton server clock, not the device clock', async () => {
+    const proxy = new ProtonOpenPGPCryptoProxy();
+
+    // Pretend the device clock runs one hour ahead of Proton. Keys generated
+    // after the sync are dated at server time as well; a key dated by the
+    // device clock would be "from the future" for every later signature.
+    const serverNow = new Date(Date.now() - 3_600_000);
+    updateServerTime(serverNow);
+
+    const key = await proxy.generateKey({
+      userIDs: [{ name: 'Test' }],
+      type: 'ecc',
+      curve: 'ed25519Legacy',
+    });
+    expect(Math.abs((key as any).getCreationTime().getTime() - serverNow.getTime())).toBeLessThan(2000);
+
+    const binarySignature = await proxy.signMessage({
+      format: 'binary',
+      binaryData: new TextEncoder().encode('hello'),
+      signingKeys: key,
+      detached: true,
+    });
+    const signature = await openpgp.readSignature({ binarySignature });
+    const created = (signature.packets[0] as any).created as Date;
+
+    expect(Math.abs(created.getTime() - serverNow.getTime())).toBeLessThan(2000);
   });
 });
