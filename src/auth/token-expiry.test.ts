@@ -1,9 +1,4 @@
-import {
-  isAccessTokenExpired,
-  isAccessTokenExpiringSoon,
-  resolveTokenExpiresAt,
-  TOKEN_REFRESH_THRESHOLD_MS,
-} from './token-expiry';
+import { isAccessTokenExpired, resolveTokenExpiresAt } from './token-expiry';
 
 describe('token expiry', () => {
   const now = Date.UTC(2026, 10, 6, 12, 0, 0);
@@ -28,18 +23,6 @@ describe('token expiry', () => {
     it('turns true at the expiry instant', () => {
       expect(isAccessTokenExpired({ tokenExpiresAt: now + 1 }, now)).toBe(false);
       expect(isAccessTokenExpired({ tokenExpiresAt: now }, now)).toBe(true);
-    });
-  });
-
-  describe('isAccessTokenExpiringSoon', () => {
-    it('is false without a known expiry or well before it', () => {
-      expect(isAccessTokenExpiringSoon({}, now)).toBe(false);
-      expect(isAccessTokenExpiringSoon({ tokenExpiresAt: now + TOKEN_REFRESH_THRESHOLD_MS }, now)).toBe(false);
-    });
-
-    it('is true inside the threshold and once expired', () => {
-      expect(isAccessTokenExpiringSoon({ tokenExpiresAt: now + TOKEN_REFRESH_THRESHOLD_MS - 1 }, now)).toBe(true);
-      expect(isAccessTokenExpiringSoon({ tokenExpiresAt: now - 1 }, now)).toBe(true);
     });
   });
 });

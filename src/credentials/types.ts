@@ -1,9 +1,7 @@
 /**
- * Credential provider types and interfaces.
- *
- * All credential providers implement the CredentialProvider interface,
- * enabling uniform credential resolution across git-credential, pass-cli,
- * stdin, and interactive sources.
+ * Credential providers holding the browser-fork key password. Entries are
+ * addressed by credential host and username (the session UID) and are
+ * created by this CLI.
  */
 
 export interface Credentials {
@@ -11,7 +9,7 @@ export interface Credentials {
   password: string;
 }
 
-export type ProviderName = 'git-credential' | 'pass-cli' | 'stdin' | 'interactive';
+export type ProviderName = 'git-credential' | 'pass-cli';
 
 /**
  * Provider used for the browser-fork key password when neither the command
@@ -20,30 +18,15 @@ export type ProviderName = 'git-credential' | 'pass-cli' | 'stdin' | 'interactiv
  */
 export const DEFAULT_KEY_PASSWORD_PROVIDER = 'pass-cli' satisfies ProviderName;
 
-/**
- * Lookup tuning for providers that search a store. `exhaustiveLookup: false`
- * limits the search to entries whose title identifies the credential host,
- * which is sufficient for entries this CLI created itself.
- */
-export interface LookupOptions {
-  exhaustiveLookup?: boolean;
-}
-
 export interface CredentialProvider {
   readonly name: ProviderName;
 
-  /** Check if this provider is available in the current environment. */
-  isAvailable(): Promise<boolean>;
+  /** Password stored for `username` at the provider's host; rejects when no entry exists. */
+  resolve(username: string): Promise<Credentials>;
 
-  /** Resolve credentials. Username may be pre-supplied via options. */
-  resolve(options?: { username?: string } & LookupOptions): Promise<Credentials>;
+  /** Create or replace the entry for `username`. */
+  store(username: string, password: string): Promise<void>;
 
-  /** Store credentials (optional — not all providers support this). */
-  store?(username: string, password: string, options?: LookupOptions): Promise<void>;
-
-  /** Remove credentials (optional). */
-  remove?(username: string, options?: LookupOptions): Promise<void>;
-
-  /** Verify that credentials can be resolved (optional). */
-  verify?(): Promise<boolean>;
+  /** Delete every entry for `username` at the provider's host. */
+  remove(username: string): Promise<void>;
 }

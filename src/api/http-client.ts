@@ -1,19 +1,3 @@
-/**
- * Minimal HTTP client built on native fetch.
- *
- * Replaces axios to eliminate the `url.parse()` deprecation warning
- * from `follow-redirects` (a transitive dep of axios).
- *
- * API surface mirrors the axios subset used by this project:
- *   - HttpClient.create({ baseURL, timeout, headers })
- *   - instance.get<T>(path) → { data: T }
- *   - instance.post<T>(path, body?, config?) → { data: T }
- *   - instance.delete(path, config?) → { data: any }
- *   - instance.interceptors.request.use(fn)
- *   - instance.interceptors.response.use(onFulfilled, onRejected)
- *   - isHttpClientError(err) type guard
- */
-
 import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { updateServerTimeFromHeaders } from '../utils/server-time';
 
@@ -38,6 +22,8 @@ export interface HttpResponse<T = any> {
     data: T;
     status: number;
     headers: Record<string, string>;
+    /** The request as sent, after the request interceptors. */
+    config: RequestConfig;
 }
 
 export class HttpClientError extends Error {
@@ -70,6 +56,11 @@ export type RequestInterceptor = (config: RequestConfig & { headers: Record<stri
 
 export type ResponseErrorInterceptor = (error: any) => Promise<any>;
 
+/**
+ * Minimal HTTP client on the WHATWG Fetch API (Node.js global `fetch`) with
+ * request and response interceptors; a non-2xx response or a network failure
+ * rejects with {@link HttpClientError} after the error interceptors ran.
+ */
 export class HttpClient {
     private baseURL: string;
     private timeout: number;
@@ -113,8 +104,8 @@ export class HttpClient {
     }
 
     /**
-     * Execute a request. Can be called with explicit args or with a
-     * single config object (for interceptor retries).
+     * Execute a request, given as method, path, body and config, or as the
+     * config object of an earlier request (interceptor retries).
      */
     async request<T = any>(
         methodOrConfig: string | RequestConfig,
@@ -122,7 +113,6 @@ export class HttpClient {
         body?: any,
         config?: RequestConfig,
     ): Promise<HttpResponse<T>> {
-        // Support retry via config object: this.client.request(originalConfig)
         let method: string;
         if (typeof methodOrConfig === 'object') {
             const retryConfig = methodOrConfig;
@@ -134,7 +124,6 @@ export class HttpClient {
             method = methodOrConfig;
         }
 
-        // Build merged config
         let mergedConfig: RequestConfig & { headers: Record<string, string> } = {
             ...config,
             _method: method,
@@ -146,7 +135,6 @@ export class HttpClient {
             },
         };
 
-        // Run request interceptors
         for (const handler of this.interceptors.request._handlers) {
             try {
                 mergedConfig = await handler.fulfilled(mergedConfig);
@@ -161,153 +149,110 @@ export class HttpClient {
         const url = `${this.baseURL}${path}`;
         await assertNotRateLimited();
 
+        let res: Response;
+        let data: any;
+        const responseHeaders: Record<string, string> = {};
         try {
-            const fetchOptions: RequestInit = {
+            res = await fetch(url, {
                 method,
                 headers: mergedConfig.headers,
                 // The budget covers the whole exchange, body included: the
                 // signal stays armed until the body has been read.
                 signal: AbortSignal.timeout(this.timeout),
-            };
-
-            if (body !== undefined) {
-                fetchOptions.body = JSON.stringify(body);
-            }
-
-            const res = await fetch(url, fetchOptions);
+                ...(body !== undefined && { body: JSON.stringify(body) }),
+            });
             updateServerTimeFromHeaders(res.headers);
-
-            // Parse response headers
-            const responseHeaders: Record<string, string> = {};
             res.headers.forEach((value, key) => {
                 responseHeaders[key] = value;
             });
-
-            const data = this.parseBody(await res.text(), res.headers.get('content-type') || '');
-
-            if (!res.ok) {
-                // Detect rate-limiting before creating generic error
-                const protonCode = data?.Code;
-                if (res.status === 429 || protonCode === 2028 || protonCode === 85131) {
-                    // Extract retry-after header if present
-                    const retryAfterHeader = res.headers.get('retry-after');
-                    const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
-                    const cooldown = await recordRateLimitCooldown({
-                        retryAfter,
-                        protonCode,
-                        message: data?.Error,
-                    });
-
-                    const error = new HttpClientError(
-                        data?.Error || `Rate limit exceeded (HTTP ${res.status}, Proton Code ${protonCode})`,
-                        {
-                            response: {
-                                data: { ...data, isRateLimit: true },
-                                status: res.status,
-                                headers: responseHeaders,
-                                config: mergedConfig,
-                            },
-                            code: 'RATE_LIMITED',
-                        }
-                    );
-                    // Store retry metadata for downstream error handling
-                    (error as any).retryAfter = cooldown.retryAfter;
-                    (error as any).protonCode = protonCode;
-
-                    // Run response error interceptors
-                    let handled: any = error;
-                    for (const handler of this.interceptors.response._handlers) {
-                        if (handler.rejected) {
-                            try {
-                                handled = await handler.rejected(handled);
-                                // If interceptor resolved, treat as success
-                                return handled;
-                            } catch (interceptorErr) {
-                                handled = interceptorErr;
-                            }
-                        }
-                    }
-                    throw handled;
-                }
-
-                const error = new HttpClientError(
-                    `Request failed with status ${res.status}`,
-                    {
-                        response: {
-                            data,
-                            status: res.status,
-                            headers: responseHeaders,
-                            config: mergedConfig,
-                        },
-                    }
-                );
-
-                // Run response error interceptors
-                let handled: any = error;
-                for (const handler of this.interceptors.response._handlers) {
-                    if (handler.rejected) {
-                        try {
-                            handled = await handler.rejected(handled);
-                            // If interceptor resolved (returned a value), treat as success
-                            return handled;
-                        } catch (interceptorErr) {
-                            handled = interceptorErr;
-                        }
-                    }
-                }
-                throw handled;
-            }
-
-            const response: HttpResponse<T> = { data, status: res.status, headers: responseHeaders };
-
-            // Run response success interceptors
-            let result: any = response;
-            for (const handler of this.interceptors.response._handlers) {
-                if (handler.fulfilled) {
-                    result = handler.fulfilled(result);
-                }
-            }
-
-            return result;
+            data = this.parseBody(await res.text(), res.headers.get('content-type') || '');
         } catch (err: any) {
-            // Already an HttpClientError (from !res.ok above) — rethrow
-            if (err instanceof HttpClientError) throw err;
-            // Already processed by interceptors — rethrow
-            if (err instanceof Error && !(err instanceof TypeError) && !isAbortError(err)) throw err;
-
-            // Map network/timeout errors
+            if (err instanceof HttpClientError) {
+                return this.rejectThroughInterceptors(err);
+            }
             let code: string | undefined;
             let message = err?.message || 'Network error';
             if (isAbortError(err)) {
                 code = 'ECONNABORTED';
                 message = 'Request timed out';
             } else if (err?.cause?.code) {
-                code = err.cause.code;  // Node.js fetch includes cause with system error code
+                // Node.js fetch: the system error code is on `cause` (undici).
+                code = err.cause.code;
             }
-
-            const clientError = new HttpClientError(message, { code });
-
-            // Run response error interceptors
-            let handled: any = clientError;
-            for (const handler of this.interceptors.response._handlers) {
-                if (handler.rejected) {
-                    try {
-                        handled = await handler.rejected(handled);
-                        return handled;
-                    } catch (interceptorErr) {
-                        handled = interceptorErr;
-                    }
-                }
-            }
-            throw handled;
+            return this.rejectThroughInterceptors(new HttpClientError(message, { code }));
         }
+
+        if (!res.ok) {
+            const protonCode = data?.Code;
+            if (res.status === 429 || protonCode === 2028 || protonCode === 85131) {
+                const retryAfterHeader = res.headers.get('retry-after');
+                const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+                const cooldown = await recordRateLimitCooldown({
+                    retryAfter,
+                    protonCode,
+                    message: data?.Error,
+                });
+                const error = new HttpClientError(
+                    data?.Error || `Rate limit exceeded (HTTP ${res.status}, Proton Code ${protonCode})`,
+                    {
+                        response: {
+                            data: { ...data, isRateLimit: true },
+                            status: res.status,
+                            headers: responseHeaders,
+                            config: mergedConfig,
+                        },
+                        code: 'RATE_LIMITED',
+                    }
+                );
+                (error as any).retryAfter = cooldown.retryAfter;
+                (error as any).protonCode = protonCode;
+                return this.rejectThroughInterceptors(error);
+            }
+
+            return this.rejectThroughInterceptors(new HttpClientError(
+                `Request failed with status ${res.status}`,
+                {
+                    response: {
+                        data,
+                        status: res.status,
+                        headers: responseHeaders,
+                        config: mergedConfig,
+                    },
+                }
+            ));
+        }
+
+        let result: any = { data, status: res.status, headers: responseHeaders, config: mergedConfig };
+        for (const handler of this.interceptors.response._handlers) {
+            if (handler.fulfilled) {
+                result = handler.fulfilled(result);
+            }
+        }
+        return result;
     }
 
     /**
-     * Decode a response body: JSON when declared or parseable, the raw text
-     * otherwise, `null` when empty. A body declared as JSON that does not
-     * parse is a protocol error of the server, reported as HttpClientError
-     * rather than as a bare SyntaxError.
+     * Pass `error` through the response error interceptors: the first one
+     * that resolves turns the failure into its result, otherwise the last
+     * rejection is thrown.
+     */
+    private async rejectThroughInterceptors(error: HttpClientError): Promise<any> {
+        let handled: any = error;
+        for (const handler of this.interceptors.response._handlers) {
+            if (handler.rejected) {
+                try {
+                    return await handler.rejected(handled);
+                } catch (interceptorErr) {
+                    handled = interceptorErr;
+                }
+            }
+        }
+        throw handled;
+    }
+
+    /**
+     * A response body as JSON when it parses, the raw text otherwise, `null`
+     * when empty; a body declared as JSON that does not parse is an HttpClientError.
      */
     private parseBody(text: string, contentType: string): any {
         if (!text) {

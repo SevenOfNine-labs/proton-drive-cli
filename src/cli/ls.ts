@@ -109,7 +109,6 @@ function getNodeIcon(type: string): string {
  * @see {@link createMkdirCommand} for creating folders
  * @see {@link resolvePathToNodeUid} for path resolution logic
  * @see {@link createSDKClient} for SDK client initialization
- * @since 0.1.0
  */
 export function createLsCommand(): Command {
   const cmd = new Command('ls');
@@ -120,17 +119,14 @@ export function createLsCommand(): Command {
     .option('-l, --long', 'Use long listing format with details')
     .action(async (path: string, options) => {
       try {
-        // Create and initialize SDK client
         let spinner;
         if (isVerbose()) {
           spinner = ora('Loading folder contents...').start();
         }
         const client = await createSDKClient({});
 
-        // Resolve path to UID
         const folderUid = await resolvePathToNodeUid(client, path);
 
-        // Collect children
         const nodes: Array<{
           name: string;
           type: string;

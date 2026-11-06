@@ -26,7 +26,7 @@ printf '{"oid":"<64 hex>","path":"/tmp/object.bin"}\n' | node dist/index.js brid
 | stderr | Logs, at ERROR level unless `DEBUG=true` is set in the environment |
 | Exit status | `0` when an envelope was written (inspect `ok`); `1` when the request could not be read (timeout, empty input, invalid JSON); an error envelope is still written |
 | Command name | Case-insensitive; an unknown name yields a 400 `VALIDATION_ERROR` envelope |
-| Account login | Never. Every command reuses `~/.proton-drive-cli/session.json`; `auth-state` is offline, the others initialize the SDK client from the saved session |
+| Account login | Never. Every command reuses `~/.proton-drive-cli/session.json`; `auth-state` sends no Proton API request, the others initialize the SDK client from the saved session and unlock the account keys with the key password stored by `proton-drive-cli login` |
 
 ## Request fields
 
@@ -35,13 +35,10 @@ each command requires and accepts. A request with any other field, a known
 field a command does not accept, a non-string value (`oids` must be an array
 of strings), or a missing required field is rejected with a 400
 `VALIDATION_ERROR` envelope before credentials, the network or the local
-filesystem are touched. Account-login fields such as `username`, `password`,
-`allowLogin` or `credentialProvider` are therefore rejected as unknown fields.
+filesystem are touched. No field carries a secret.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `dataCredentialProvider` | string | Provider of the mailbox/data password of a two-password account: `pass-cli` or `git-credential` (aliases `pass`, `git`) |
-| `dataCredentialHost` | string | Host/key of that entry; default `proton-data.proton-lfs-cli.local` |
 | `appVersion` | string | Override of the `x-pm-appversion` identity; must match `external-drive-{name}@{major.minor.patch}` with an optional `-stable`, `-beta` or `-alpha` channel and `+build` suffix, or the command fails before any network call |
 | `storageBase` | string | Base folder of the OID tree; default `LFS`; leading and trailing slashes are stripped |
 | `oid` | string | Git LFS object id, 64 hex characters (case-insensitive; lower-cased in paths) |
@@ -54,8 +51,7 @@ Local paths must not contain a null byte or a `..` segment.
 
 ### Fields per command
 
-Common fields `dataCredentialProvider`, `dataCredentialHost`, `appVersion`
-and `storageBase` are accepted by every command.
+Common fields `appVersion` and `storageBase` are accepted by every command.
 
 | Command | Required | Also accepted |
 | --- | --- | --- |
@@ -90,39 +86,44 @@ Object layout in Drive: `/<storageBase>/<oid[0:2]>/<oid[2:4]>/<oid>`
 
 ### auth-state
 
-Local-only readiness of the saved session: reads `session.json`, applies the
-local expiry checks, and verifies that the browser-fork key password can be
-read back from its provider. No network request, no account credential
-lookup. Payload (`auth-state-payload.schema.json`):
+Local readiness of the saved session: reads `session.json`, applies the local
+expiry check, and reads the key-password entry from the session's credential
+provider. proton-drive-cli sends no request to the Proton API for it and never
+refreshes tokens; `pass-cli` can contact Proton Pass to read the entry.
+Payload (`auth-state-payload.schema.json`):
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `state` | enum | `ready`, `needs_login`, `needs_data_password`, `needs_key_password`, `session_expired`, `session_invalid`, `configuration_error` |
-| `hasSession` | bool | A session file was loaded |
-| `sessionValid` | bool | The local expiry checks passed |
-| `sessionExpired` | bool | `hasSession` and not `sessionValid` |
-| `sessionUidPresent` | bool | The session carries a UID |
-| `passwordMode` | int | Proton password mode of the session (1 single, 2 two-password) |
-| `authMode` | enum | `browser-fork` |
-| `keyPasswordPersisted` | bool | The session records a stored key password |
-| `keyPasswordAvailable` | bool | The key password was read back from the provider during this call |
+| `state` | enum | `ready`, `needs_login`, `needs_key_password`, `session_expired`, `session_invalid` |
+| `hasSession` | bool | `session.json` exists |
+| `sessionValid` | bool | The file is a login session and its access token has not expired locally |
+| `sessionExpired` | bool | The file is a login session whose access token has expired locally |
+| `sessionUidPresent` | bool | The file is a login session, which always carries a UID |
+| `keyPasswordAvailable` | bool | The key password was read back from the session's provider during this call |
 | `keyPasswordProvider`, `keyPasswordHost` | string | Provider and host recorded in the session |
-| `dataCredentialProvider`, `dataCredentialHost` | string | Normalized values from the request (host defaults when a provider is given) |
-| `willAttemptNetwork` | const false | Always false; the adapter refuses a payload that says otherwise |
-| `errors` | string array | Why the state is not `ready` (for example an unknown provider name) |
+| `willAttemptNetwork` | const false | Always false: proton-drive-cli sends no request to the Proton API; the adapter refuses a payload that says otherwise |
+| `errors` | string array | The credential provider's reason when the key password could not be read |
 | `actions` | string array | Human-readable next steps |
 
+A login session is a `session.json` with every field `proton-drive-cli login`
+writes, each a non-blank string: `uid`, `accessToken`, `refreshToken`,
+`keyPasswordProvider` (`pass-cli` or `git-credential`) and `keyPasswordHost`
+(`isSessionCredentials` in `src/auth/session.ts`).
 How `state` is chosen, first match wins:
 
 | Condition | `state` |
 | --- | --- |
-| A provider name in the request is unknown | `configuration_error` |
 | No session file | `needs_login` |
-| Local expiry check failed | `session_expired` when a session exists and is expired, `session_invalid` otherwise |
-| `passwordMode` is neither 1 nor 2 | `session_invalid` |
-| Browser-fork session whose key password is not readable, and no `dataCredentialProvider` | `needs_key_password` |
-| Session not created by browser-fork, and no `dataCredentialProvider` | `needs_data_password` |
+| The file is not a login session (unreadable, a field is missing or blank, or another provider name) | `session_invalid` |
+| The access token has expired locally | `session_expired` |
+| The key password is not readable from the session's provider | `needs_key_password` |
 | otherwise | `ready` |
+
+Every state but `ready` is resolved by `proton-drive-cli login`;
+`session_expired` needs no action before a transfer, since `init` refreshes the
+access token first (`proton-drive-cli session refresh` does so at once), and
+`needs_key_password` is also resolved by fixing the provider named in `errors`
+(for example `pass-cli login`).
 
 ### init
 
@@ -176,8 +177,6 @@ included.
 | Field | Type | When |
 | --- | --- | --- |
 | `errorCode` | enum | always |
-| `twoFactorType` | `totp` or `fido2` | `TWO_FACTOR_REQUIRED` |
-| `totpAllowed`, `fido2Available` | bool | `TWO_FACTOR_REQUIRED` |
 | `captchaUrl`, `captchaToken`, `verificationMethods` | string, string, string array | `CAPTCHA_REQUIRED` |
 | `action` | string | Guidance, for example `run: proton-drive-cli login` or `stop: app/session scope is insufficient; do not retry login loops` |
 | `retryAfter` | number | `RATE_LIMITED`, seconds; the message becomes `Rate limited by Proton API — wait <n>s and retry` |
@@ -191,9 +190,7 @@ code the Go adapter writes to its status file.
 
 | `errorCode` | `code` | Adapter root code |
 | --- | --- | --- |
-| `AUTH_FAILED`, `SESSION_EXPIRED`, `INVALID_CREDENTIALS` | 401 | `auth_required` |
-| `TWO_FACTOR_REQUIRED` | 401 | `two_factor_required` |
-| `DATA_PASSWORD_REQUIRED` | 401 | `data_password_required` |
+| `AUTH_FAILED`, `SESSION_EXPIRED` | 401 | `auth_required` |
 | `KEY_PASSWORD_REQUIRED` | 401 | `key_password_required` |
 | `INSUFFICIENT_SCOPE` | 403 | `insufficient_scope` |
 | `PERMISSION_DENIED` | 403 | `permission_denied` |
@@ -209,10 +206,29 @@ code the Go adapter writes to its status file.
 | `QUOTA_EXCEEDED`, `DISK_FULL` | 507 | `server_error` |
 | `ENCRYPTION_FAILED`, `DECRYPTION_FAILED`, `UNKNOWN_ERROR` | 500 | `server_error` |
 
+## Session expiry during a command
+
+A command whose access token has expired locally refreshes the session once
+before it unlocks the keys; a request the API answers with HTTP 401 refreshes
+it once under the session lock (official account module, `apiClient.ts`), and
+requests of one process rejected with the same token share that refresh.
+When another process already replaced the rejected access token of the same
+session UID, its tokens are used without a second refresh. When the refresh
+endpoint rejects the refresh token with a Proton error and HTTP 4xx other than
+408 and 429, or answers with another UID, the session is signed out:
+`session.json`, the crypto cache and the key-password entry are removed and
+the command fails with `SESSION_EXPIRED`; the next `auth-state` reports
+`needs_login`. A command whose `session.json` was removed or replaced by
+another login meanwhile also fails with `SESSION_EXPIRED`. Any other refresh
+failure keeps its own code (`NETWORK_ERROR`, `RATE_LIMITED`, `API_ERROR`).
+
+`KEY_PASSWORD_REQUIRED` details carry `keyPasswordProvider`,
+`keyPasswordHost` and `providerError`, the credential provider's reason why
+the key password could not be read.
+
 ## Environment
 
-The bridge reads `PROTON_PASS_CLI_BIN`, `PROTON_KEY_PASSWORD_PROVIDER`,
-`PROTON_KEY_PASSWORD_HOST`, `PROTON_DRIVE_CLI_APP_VERSION`,
+The bridge reads `PROTON_PASS_CLI_BIN`, `PROTON_DRIVE_CLI_APP_VERSION`,
 `PROTON_AUTH_TRACE`, `PROTON_AUTH_TRACE_ID` and `DEBUG`; see
 [Configuration](../operations/configuration.md). The Go adapter forwards
 only an allowlist of variables to the subprocess and bounds every command

@@ -1,10 +1,4 @@
-/**
- * Path resolver utility for the Proton Drive SDK.
- *
- * The SDK uses node UIDs (not paths). This utility resolves human-readable
- * paths like "/LFS/ab/c1/abc123..." to SDK node UIDs by traversing the
- * folder tree via iterateFolderChildren.
- */
+/** Resolves Drive paths such as "/LFS/ab/c1/<oid>" to SDK node UIDs through iterateFolderChildren. */
 
 import type { NodeEntity, ProtonDriveClient } from '@protontech/drive-sdk';
 import { NodeType, NodeWithSameNameExistsValidationError } from '@protontech/drive-sdk';
@@ -69,13 +63,8 @@ export async function resolvePathToNodeUid(
 }
 
 /**
- * Create a folder, accepting a concurrent creation of the same name.
- *
- * Bridge processes run concurrently (one per Git LFS transfer), so two of
- * them can list a folder, both miss the child and both call createFolder.
- * The API rejects the second create with NodeWithSameNameExistsValidationError;
- * the SDK attaches the winner's `existingNodeUid` when the API reports it,
- * otherwise the folder is listed again.
+ * Create a folder, accepting a concurrent creation of the same name: the SDK's
+ * NodeWithSameNameExistsValidationError carries the winner's `existingNodeUid`, else the folder is listed again.
  */
 async function createFolderOrReuse(
   client: ProtonDriveClient,

@@ -1,12 +1,6 @@
 /**
- * Telemetry adapter for the Proton Drive SDK.
- *
- * Without a `telemetry` option the SDK falls back to its ConsoleLogHandler and
- * ConsoleMetricHandler, which print INFO logs and metrics through console.info
- * and console.log, i.e. to stdout. The bridge contract reserves stdout for the
- * single JSON envelope, so the SDK is given this adapter instead: log records
- * are forwarded to the CLI logger (stderr, filtered by the CLI log level) and
- * metrics are only recorded at debug level.
+ * SDK telemetry that keeps stdout for the bridge envelope: logs go to the CLI logger (stderr) and
+ * metrics to debug level, where the SDK's default ConsoleLogHandler would print to stdout.
  */
 
 import type { Logger as SdkLogger, MetricEvent, Telemetry as SdkTelemetry } from '@protontech/drive-sdk';

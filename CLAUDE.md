@@ -8,6 +8,9 @@ with code in this repository.
 - Follow `AGENTS.md` for project structure, build/test commands, coding
   conventions, and pull request expectations.
 - Keep `AGENTS.md` and this file aligned when instruction updates are made.
+- The "Code Comments and Legacy" section of `AGENTS.md` is mandatory: comments
+  cite standards, specifications, publications or external documentation
+  only, and legacy code is deleted, not kept.
 
 ## Changeset Tracking (MANDATORY)
 

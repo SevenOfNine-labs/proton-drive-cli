@@ -1,15 +1,12 @@
 /**
- * Address-key unlock behaviour of DriveCryptoService with real OpenPGP keys.
- *
- * Proton address keys are encrypted with a random token that is itself
- * encrypted to the user keys and signed by them. These tests build such a key
- * hierarchy locally and verify that the service accepts only tokens whose
- * signature verifies against the user keys, like Proton's official clients.
+ * DriveCryptoService key unlock with real OpenPGP keys, as the official account module's addresses.ts
+ * (getUserData, getAddressKey): key password for user and tokenless keys, signed token otherwise.
  */
 import { randomBytes } from 'crypto';
 import * as openpgp from 'openpgp';
 import { DriveCryptoService } from './drive-crypto';
 import { UserApiClient } from '../api/user';
+import { ErrorCode } from '../errors/types';
 import { logger } from '../utils/logger';
 import type { Address, User } from '../types/crypto';
 
@@ -124,34 +121,65 @@ async function buildFixture(options: {
 
 function mockUserApi(fixture: Fixture): void {
   (UserApiClient as jest.Mock).mockImplementation(() => ({
-    getKeySalts: jest.fn().mockResolvedValue([{ ID: 'ukey-1', KeySalt: null }]),
     getUser: jest.fn().mockResolvedValue(fixture.user),
     getAddresses: jest.fn().mockResolvedValue([fixture.address]),
     saveCryptoCache: jest.fn().mockResolvedValue(undefined),
   }));
 }
 
-describe('DriveCryptoService mailbox-password unlock', () => {
-  test('derives the key password from the key salt with @protontech/crypto when the raw password fails', async () => {
-    const { computeKeyPassword } = await import('@protontech/crypto/srp');
-    const mailboxPassword = 'correct horse battery staple';
-    const keySalt = 'AQEBAQEBAQEBAQEBAQEBAQ==';
-    const derived = await computeKeyPassword(mailboxPassword, keySalt);
-    const fixture = await buildFixture({ userKeyPassphrase: derived });
-    (UserApiClient as jest.Mock).mockImplementation(() => ({
-      getKeySalts: jest.fn().mockResolvedValue([{ ID: 'ukey-1', KeySalt: keySalt }]),
-      getUser: jest.fn().mockResolvedValue(fixture.user),
-      getAddresses: jest.fn().mockResolvedValue([fixture.address]),
-      saveCryptoCache: jest.fn().mockResolvedValue(undefined),
-    }));
-    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+describe('DriveCryptoService key-password unlock', () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  test('unlocks an address key without Token with the key password', async () => {
+    const fixture = await buildFixture();
+    fixture.address.Keys = [{
+      ...fixture.address.Keys[0],
+      ID: 'akey-plain',
+      PrivateKey: await generateArmoredKey('plain', USER_KEY_PASSWORD),
+      Token: null,
+      Signature: null,
+    }];
+    mockUserApi(fixture);
     const svc = new DriveCryptoService();
 
-    await svc.initialize(mailboxPassword);
+    await svc.initialize(USER_KEY_PASSWORD);
 
-    expect(svc.getAddressKeyEntries('addr-1').map((entry) => entry.id)).toEqual(['akey-1']);
+    expect(svc.getAddressKeyEntries('addr-1').map((entry) => entry.id)).toEqual(['akey-plain']);
     expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+  });
+
+  test('fails with KEY_PASSWORD_REQUIRED when the key password opens no user key', async () => {
+    mockUserApi(await buildFixture());
+    const svc = new DriveCryptoService();
+
+    await expect(svc.initialize('wrong-key-password')).rejects.toMatchObject({
+      code: ErrorCode.KEY_PASSWORD_REQUIRED,
+    });
+    expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
+  });
+
+  test('saves the fetched user and address records to the crypto-init cache', async () => {
+    const fixture = await buildFixture();
+    const saveCryptoCache = jest.fn().mockResolvedValue(undefined);
+    (UserApiClient as jest.Mock).mockImplementation(() => ({
+      getUser: jest.fn().mockResolvedValue(fixture.user),
+      getAddresses: jest.fn().mockResolvedValue([fixture.address]),
+      saveCryptoCache,
+    }));
+
+    await new DriveCryptoService().initialize(USER_KEY_PASSWORD);
+
+    expect(saveCryptoCache).toHaveBeenCalledWith(fixture.user, [fixture.address]);
   });
 });
 
@@ -171,7 +199,7 @@ describe('DriveCryptoService address-key token verification', () => {
     mockUserApi(await buildFixture());
     const svc = new DriveCryptoService();
 
-    await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
+    await svc.initialize(USER_KEY_PASSWORD);
 
     expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(1);
     expect(svc.getAddressKeyEntries('addr-1').map((entry) => entry.id)).toEqual(['akey-1']);
@@ -184,7 +212,7 @@ describe('DriveCryptoService address-key token verification', () => {
     mockUserApi(await buildFixture({ leadingRejectedKey: true }));
     const svc = new DriveCryptoService();
 
-    await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
+    await svc.initialize(USER_KEY_PASSWORD);
 
     // akey-0 (first in API order) fails verification; the surviving key must
     // still be reported as akey-1, never as akey-0 by position.
@@ -196,7 +224,7 @@ describe('DriveCryptoService address-key token verification', () => {
     mockUserApi(await buildFixture({ signer: 'other' }));
     const svc = new DriveCryptoService();
 
-    await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
+    await svc.initialize(USER_KEY_PASSWORD);
 
     expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
     expect(svc.getPrimaryAddressId()).toBeNull();
@@ -209,7 +237,7 @@ describe('DriveCryptoService address-key token verification', () => {
     mockUserApi(await buildFixture({ signer: 'none' }));
     const svc = new DriveCryptoService();
 
-    await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
+    await svc.initialize(USER_KEY_PASSWORD);
 
     expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
     expect(warnSpy).toHaveBeenCalledWith(

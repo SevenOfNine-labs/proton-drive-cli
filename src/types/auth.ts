@@ -1,32 +1,32 @@
-export type AuthMode = 'browser-fork';
+import type { ProviderName } from '../credentials/types';
 
+/**
+ * Session written by `proton-drive-cli login` (session.json). The key
+ * password itself lives in the credential provider named here, never in the
+ * file.
+ */
 export interface SessionCredentials {
-  sessionId: string;
   uid: string;
   accessToken: string;
   refreshToken: string;
-  scopes: string[];
-  passwordMode: number;
-  // Authentication path that created the session.
-  authMode?: AuthMode;
-  // Browser-fork auth returns a key password that must be protected by an OS
-  // secret store. It is never written to session.json.
-  keyPasswordPersisted?: boolean;
-  keyPasswordProvider?: 'git-credential' | 'pass-cli';
-  keyPasswordHost?: string;
-  // Unix timestamp (ms) at which the access token expires, from the API's
-  // ExpiresIn; absent when the API did not report one (see auth/token-expiry.ts).
+  scopes?: string[];
+  keyPasswordProvider: ProviderName;
+  keyPasswordHost: string;
+  /**
+   * Unix time (ms) at which the access token expires, from the API's
+   * ExpiresIn; absent when the API did not report one (auth/token-expiry.ts).
+   */
   tokenExpiresAt?: number;
-  // mailboxPassword is intentionally NOT persisted — it flows via stdin
-  // from pass-cli on every invocation and stays in memory only.
 }
 
+/** Response of GET /auth/v4/sessions/forks (official accountApi.ts sessionForksInit). */
 export interface SessionForkInitResponse {
   Code: number;
   Selector: string;
   UserCode: string;
 }
 
+/** Response of GET /auth/v4/sessions/forks/{selector} (official accountApi.ts sessionForksStatus). */
 export interface SessionForkStatusResponse {
   Code: number;
   Payload: string;
@@ -34,8 +34,13 @@ export interface SessionForkStatusResponse {
   AccessToken: string;
   RefreshToken?: string;
   Scopes?: string[];
-  // Session-fork may omit PasswordMode; browser-fork then defaults to
-  // one-password readiness because the payload carries the user-key password.
-  PasswordMode?: number;
+  ExpiresIn?: number;
+}
+
+/** Response of POST /auth/v4/refresh (official apiClient.ts performTokenRefresh). */
+export interface RefreshTokenResponse {
+  UID: string;
+  AccessToken: string;
+  RefreshToken: string;
   ExpiresIn?: number;
 }

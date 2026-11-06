@@ -1,22 +1,22 @@
 export default {
   testEnvironment: 'node',
+  // OpenPGP key generation in crypto and conformance tests takes seconds on
+  // shared CI runners.
+  testTimeout: 60_000,
   testMatch: ['**/src/**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', '<rootDir>/submodules/'],
-  // The vendored Proton SDK dist is ESM (swc output since the upstream Bun
-  // migration in js/v0.19+), so it must be transpiled to CommonJS for Jest;
-  // the same applies to the ESM-only packages p-retry and is-network-error.
-  // tsconfig.jest.json enables allowJs for that; a single ts-jest transform
-  // entry is required because ts-jest shares one config set per preset.
+  // ESM sources Jest must transpile to CommonJS (Jest docs, "ECMAScript
+  // Modules"): the vendored SDK dist and the ESM-only p-retry, is-network-error
+  // and ky; tsconfig.jest.json enables allowJs for them.
   transformIgnorePatterns: [
-    'node_modules/(?!(chalk|#ansi-styles|ansi-styles|@protontech/crypto|@openpgp/web-stream-tools|@noble/hashes|p-retry|is-network-error)/)',
-    '<rootDir>/submodules/(?!sdk/client/js/)',
+    'node_modules/(?!(chalk|#ansi-styles|ansi-styles|@protontech/crypto|@openpgp/web-stream-tools|@noble/hashes|p-retry|is-network-error|ky)/)',
+    '<rootDir>/submodules/(?!sdk/client/js/|sdk/incubating/account/js/src/)',
   ],
   transform: {
-    // @protontech/crypto ships TypeScript sources inside node_modules, which
-    // TypeScript treats as an external library and never emits; swc transpiles
-    // them and the ESM-only packages they import to CommonJS (tsc --noEmit
-    // type-checks the TypeScript sources separately).
-    '(/@protontech/crypto/src/|/@openpgp/web-stream-tools/|/@noble/hashes/).+\\.[tj]s$': ['@swc/jest', {
+    // TypeScript outside rootDir src (@protontech/crypto, Proton's account
+    // module) is never emitted by tsc; swc transpiles it and the ESM-only
+    // packages it imports to CommonJS.
+    '(/@protontech/crypto/src/|/@openpgp/web-stream-tools/|/@noble/hashes/|/submodules/sdk/incubating/account/js/src/).+\\.[tj]s$': ['@swc/jest', {
       module: { type: 'commonjs' },
       jsc: { parser: { syntax: 'typescript' }, target: 'es2022' },
     }],

@@ -1,5 +1,4 @@
 import { Command } from 'commander';
-import { createHash } from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
@@ -7,13 +6,13 @@ import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../a
 import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
 import { DEFAULT_KEY_PASSWORD_PROVIDER } from '../credentials';
-import { AppError } from '../errors/types';
+import { AppError, ErrorCode, RateLimitError } from '../errors/types';
 import { toAppError } from '../errors/classify';
 import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { openBrowserUrl } from '../utils/open-browser';
 import { authTrace } from '../utils/auth-trace';
-import { redactSensitive } from '../utils/redaction';
+import { redactSensitive, uidFingerprint } from '../utils/redaction';
 
 export interface BrowserForkKeyPasswordOptions {
   keyPasswordProvider?: string;
@@ -135,7 +134,6 @@ export async function loginWithBrowserFork(
  * @category CLI Commands
  * @see {@link createLogoutCommand} for logging out
  * @see {@link createStatusCommand} for checking authentication status
- * @since 0.1.0
  */
 export function createLoginCommand(): Command {
   const command = new Command('login');
@@ -147,7 +145,6 @@ export function createLoginCommand(): Command {
     .action(async (options) => {
       try {
         authTrace('cli.login.start', {
-          authMode: 'browser-fork',
           keyPasswordProvider: options.keyPasswordProvider,
           keyPasswordHost: options.keyPasswordHost,
         });
@@ -185,15 +182,19 @@ function traceErrorFields(error: unknown): Record<string, unknown> {
 /**
  * Create the logout command for the CLI.
  *
- * Logs out from Proton Drive by clearing the current session. This removes the
- * session file (~/.proton-drive-cli/session.json) containing access and refresh
- * tokens. The command is idempotent and safe to run when not authenticated.
+ * Logs out from Proton Drive: removes the stored key password, revokes the
+ * session on the server (DELETE /auth/v4) and deletes the session file
+ * (~/.proton-drive-cli/session.json) and the crypto cache. The command is
+ * idempotent and safe to run when not authenticated.
  *
  * # Behavior
  *
- * - If authenticated: Clears session file and displays success message
- * - If not authenticated: Displays "Not currently logged in" warning and exits 0
- * - Session is cleared locally only (no API call to revoke tokens)
+ * - Saved session, whether or not its access token has expired: the key
+ *   password, the server session and the local files are removed; a failed
+ *   server revocation is reported as a warning
+ * - session.json that `login` did not write: the file and the crypto cache
+ *   are deleted
+ * - No session.json: displays "Not currently logged in" and exits 0
  *
  * # Exit Codes
  *
@@ -227,7 +228,6 @@ function traceErrorFields(error: unknown): Record<string, unknown> {
  * @see {@link createLoginCommand} for logging in
  * @see {@link createStatusCommand} for checking authentication status
  * @see {@link AuthService.logout} for underlying logout logic
- * @since 0.1.0
  */
 export function createLogoutCommand(): Command {
   const command = new Command('logout');
@@ -236,15 +236,16 @@ export function createLogoutCommand(): Command {
     .description('Logout and clear current session')
     .action(async () => {
       try {
-        const authService = new AuthService();
-        const isAuthenticated = await authService.isAuthenticated();
-
-        if (!isAuthenticated) {
+        const stored = await SessionManager.readStoredSession();
+        if (stored.kind === 'none') {
           console.log(chalk.yellow('Not currently logged in'));
           return;
         }
 
-        await authService.logout();
+        const { revoked } = await new AuthService().logout();
+        if (stored.kind === 'valid' && !revoked) {
+          console.error(chalk.yellow('Warning: the session could not be revoked on the server; it ends when its tokens expire.'));
+        }
         console.log(chalk.green('✓ Logged out successfully'));
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
@@ -258,16 +259,15 @@ export function createLogoutCommand(): Command {
 /**
  * Create the status command for the CLI.
  *
- * Displays the current authentication status and session information. If authenticated,
- * shows detailed session metadata including user ID, session ID (truncated for security),
- * scopes, and password mode. If not authenticated, prompts user to login.
+ * Displays the current authentication status and session information. If
+ * authenticated, shows the session UID, its scopes and whether the stored key
+ * password is available. If not authenticated, prompts the user to login.
  *
  * # Session Information Displayed
  *
- * - **User ID**: Unique Proton user identifier (UID)
- * - **Session ID**: Session identifier (first 20 characters shown)
+ * - **Session UID**: Proton session identifier
  * - **Scopes**: API scopes granted to the session (e.g., drive, calendar)
- * - **Password Mode**: Single password (mode 1) or two-password mode (mode 2)
+ * - **Key Password**: whether the session's credential provider holds it
  *
  * # Exit Codes
  *
@@ -284,10 +284,9 @@ export function createLogoutCommand(): Command {
  * # ✓ Authenticated
  * #
  * # Session Information:
- * #   User ID: abc123xyz
- * #   Session ID: session123456789012...
+ * #   Session UID: abc123xyz
  * #   Scopes: drive, calendar
- * #   Password Mode: Single
+ * #   Key Password: Stored (pass-cli)
  *
  * # Check authentication status (not authenticated)
  * proton-drive-cli status
@@ -311,7 +310,6 @@ export function createLogoutCommand(): Command {
  * @see {@link createLoginCommand} for logging in
  * @see {@link createLogoutCommand} for logging out
  * @see {@link AuthService.isAuthenticated} for authentication check logic
- * @since 0.1.0
  */
 export function createStatusCommand(): Command {
   const command = new Command('status');
@@ -327,19 +325,14 @@ export function createStatusCommand(): Command {
           const session = await authService.getSession();
           console.log(chalk.green('✓ Authenticated\n'));
           console.log(chalk.cyan('Session Information:'));
-          console.log(`  ${chalk.dim('User ID:')} ${session.uid}`);
-          console.log(`  ${chalk.dim('Session ID:')} ${session.sessionId.substring(0, 20)}...`);
-          console.log(`  ${chalk.dim('Scopes:')} ${session.scopes.join(', ')}`);
-          console.log(`  ${chalk.dim('Password Mode:')} ${session.passwordMode === 1 ? 'Single' : 'Two-password'}`);
-          console.log(`  ${chalk.dim('Auth Mode:')} ${session.authMode ?? 'not recorded'}`);
-          if (session.authMode === 'browser-fork') {
-            const keyPasswordStore = createKeyPasswordStore({
-              provider: session.keyPasswordProvider,
-              host: session.keyPasswordHost,
-            });
-            const keyPasswordAvailable = await keyPasswordStore.verify(session.uid);
-            console.log(`  ${chalk.dim('Key Password:')} ${keyPasswordAvailable ? 'Stored' : 'Missing'}`);
-          }
+          console.log(`  ${chalk.dim('Session UID:')} ${session.uid}`);
+          console.log(`  ${chalk.dim('Scopes:')} ${(session.scopes ?? []).join(', ')}`);
+          const keyPasswordStore = createKeyPasswordStore({
+            provider: session.keyPasswordProvider,
+            host: session.keyPasswordHost,
+          });
+          const keyPasswordAvailable = await keyPasswordStore.verify(session.uid);
+          console.log(`  ${chalk.dim('Key Password:')} ${keyPasswordAvailable ? 'Stored' : 'Missing'} (${keyPasswordStore.provider})`);
         } else {
           console.log(chalk.yellow('✗ Not authenticated'));
           console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive-cli login'));
@@ -403,8 +396,6 @@ export function createStatusCommand(): Command {
  * @category CLI Commands
  * @see {@link createLoginCommand} for initial authentication
  * @see {@link AuthService.refreshSession} for underlying refresh logic
- * @see {@link SessionManager.getValidSession} for proactive token refresh
- * @since 0.1.0
  */
 export function createSessionRefreshCommand(): Command {
   const command = new Command('session');
@@ -434,7 +425,7 @@ export function createSessionRefreshCommand(): Command {
             ok: true,
             refreshed: true,
             state: 'refreshed',
-            uidFingerprint: fingerprintForRefresh(updated.uid),
+            uidFingerprint: uidFingerprint(updated.uid),
             tokenExpiresAt: updated.tokenExpiresAt,
           }));
         }
@@ -461,27 +452,23 @@ function refreshErrorEnvelope(error: unknown): Record<string, unknown> {
     : undefined;
   const protonCode = apiError?.Code;
   const protonError = apiError?.Error;
+  // Only a session that is gone or replaced (SESSION_EXPIRED) ends the refresh schedule.
+  const sessionEnded = appError.code === ErrorCode.SESSION_EXPIRED;
+  const retryAfter = appError instanceof RateLimitError ? appError.retryAfter : undefined;
 
   return {
     ok: false,
     state: 'refresh_failed',
     error: appError.toUserMessage(),
     errorCode: appError.code,
-    recoverable: appError.isRecoverable,
+    recoverable: !sessionEnded,
     ...(statusCode !== undefined && { statusCode }),
     ...(protonCode !== undefined && { protonCode }),
     ...(typeof protonError === 'string' && protonError !== '' && { protonError }),
-    action: appError.isRecoverable
-      ? 'retry_after_backoff'
-      : 'stop: refresh token rejected or session invalid; run browser login after offline gates pass',
+    ...(retryAfter !== undefined && { retryAfter }),
+    action: sessionEnded
+      ? 'stop: refresh token rejected or session invalid; run proton-drive-cli login'
+      : 'retry_after_backoff',
     details,
   };
-}
-
-/**
- * Short, non-reversible identifier for a session UID in machine-readable
- * output: the first 8 hex characters of its SHA-256 digest.
- */
-function fingerprintForRefresh(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 8);
 }

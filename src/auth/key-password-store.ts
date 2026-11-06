@@ -1,29 +1,38 @@
 import { PROTON_KEY_PASSWORD_CREDENTIAL_HOST } from '../constants';
 import { createProvider, DEFAULT_KEY_PASSWORD_PROVIDER, normalizeProviderName } from '../credentials';
 import type { ProviderName } from '../credentials';
-
-export type KeyPasswordProviderName = Extract<ProviderName, 'git-credential' | 'pass-cli'>;
+import { redactSensitive } from '../utils/redaction';
 
 export interface KeyPasswordStoreOptions {
   provider?: string;
   host?: string;
 }
 
+/**
+ * Browser-fork key password storage: one credential-provider entry per
+ * session UID (the entry's username) at the key-password credential host.
+ */
 export interface KeyPasswordStore {
-  readonly provider: KeyPasswordProviderName;
+  readonly provider: ProviderName;
   readonly host: string;
   store(uid: string, keyPassword: string): Promise<void>;
-  load(uid: string): Promise<string | undefined>;
+  /**
+   * The stored key password. Rejects when it is missing or unreadable, with
+   * the provider's reason as the (redacted) message.
+   */
+  load(uid: string): Promise<string>;
   remove(uid: string): Promise<void>;
+  /** True when {@link load} returns a key password. */
   verify(uid: string): Promise<boolean>;
 }
 
-export function normalizeKeyPasswordProvider(provider?: string): KeyPasswordProviderName {
-  const normalized = normalizeProviderName(provider || DEFAULT_KEY_PASSWORD_PROVIDER);
-  if (normalized !== 'git-credential' && normalized !== 'pass-cli') {
-    throw new Error(`Unsupported key password provider: ${provider}`);
+export function normalizeKeyPasswordProvider(provider?: string): ProviderName {
+  const name = provider || DEFAULT_KEY_PASSWORD_PROVIDER;
+  try {
+    return normalizeProviderName(name);
+  } catch {
+    throw new Error(`Unsupported key password provider: ${name}`);
   }
-  return normalized;
 }
 
 export function createKeyPasswordStore(options: KeyPasswordStoreOptions = {}): KeyPasswordStore {
@@ -35,7 +44,7 @@ export function createKeyPasswordStore(options: KeyPasswordStoreOptions = {}): K
 
 class ProviderBackedKeyPasswordStore implements KeyPasswordStore {
   constructor(
-    public readonly provider: KeyPasswordProviderName,
+    public readonly provider: ProviderName,
     public readonly host: string,
   ) {}
 
@@ -44,37 +53,31 @@ class ProviderBackedKeyPasswordStore implements KeyPasswordStore {
     if (!keyPassword) {
       throw new Error('Cannot store an empty key password');
     }
-    const provider = createProvider(this.provider, { host: this.host });
-    if (!provider.store) {
-      throw new Error(`Provider ${this.provider} cannot store key passwords`);
-    }
-    await provider.store(uid, keyPassword, { exhaustiveLookup: false });
+    await createProvider(this.provider, this.host).store(uid, keyPassword);
   }
 
-  async load(uid: string): Promise<string | undefined> {
+  async load(uid: string): Promise<string> {
     this.assertUid(uid);
+    let password: string;
     try {
-      const provider = createProvider(this.provider, { host: this.host });
-      // Entries are created by this CLI with a deterministic title, so the
-      // title-based lookup finds them; the exhaustive scan cannot add hits.
-      const credentials = await provider.resolve({ username: uid, exhaustiveLookup: false });
-      return credentials.password || undefined;
-    } catch {
-      return undefined;
+      ({ password } = await createProvider(this.provider, this.host).resolve(uid));
+    } catch (error) {
+      throw new Error(String(redactSensitive(error instanceof Error ? error.message : String(error))));
     }
+    if (!password) {
+      throw new Error(`The ${this.provider} entry at ${this.host} holds no key password`);
+    }
+    return password;
   }
 
   async remove(uid: string): Promise<void> {
     this.assertUid(uid);
-    const provider = createProvider(this.provider, { host: this.host });
-    if (!provider.remove) {
-      throw new Error(`Provider ${this.provider} cannot remove key passwords`);
-    }
-    await provider.remove(uid, { exhaustiveLookup: false });
+    await createProvider(this.provider, this.host).remove(uid);
   }
 
   async verify(uid: string): Promise<boolean> {
-    return Boolean(await this.load(uid));
+    this.assertUid(uid);
+    return this.load(uid).then(() => true, () => false);
   }
 
   private assertUid(uid: string): void {

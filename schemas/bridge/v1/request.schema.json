@@ -2,16 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request.schema.json",
   "title": "proton-drive-cli bridge request",
-  "description": "JSON object read from stdin by `proton-drive-cli bridge <command>`. request-field-rules.json lists which of these fields each command requires and accepts. Secrets never travel in a request: mailbox/data passwords are reached through the credential provider named by dataCredentialProvider/dataCredentialHost.",
+  "description": "JSON object read from stdin by `proton-drive-cli bridge <command>`. request-field-rules.json lists which of these fields each command requires and accepts. No secret travels in a request: transfers unlock the account keys with the key password stored by `proton-drive-cli login`.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "dataCredentialProvider": {
-      "type": "string"
-    },
-    "dataCredentialHost": {
-      "type": "string"
-    },
     "appVersion": {
       "type": "string"
     },

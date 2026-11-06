@@ -1,15 +1,15 @@
 import { HttpClient } from './http-client';
 import {
+  RefreshTokenResponse,
   SessionForkInitResponse,
   SessionForkStatusResponse,
 } from '../types/auth';
-import { getProtonAppVersion } from '../constants';
+import { DRIVE_SDK_VERSION_HEADER, getProtonAppVersion } from '../constants';
 
 /**
- * Authentication API client for the Proton API surfaces this CLI is allowed to
- * use in production: browser session-fork, token refresh, and logout.
- *
- * Direct account-password/SRP login is intentionally not implemented here.
+ * Proton authentication endpoints of the browser session-fork flow
+ * (official account module, accountApi.ts and apiClient.ts): fork init and
+ * status, token refresh and session revocation.
  */
 export class AuthApiClient {
   private client: HttpClient;
@@ -25,6 +25,7 @@ export class AuthApiClient {
       headers: {
         'Content-Type': 'application/json',
         'x-pm-appversion': resolvedAppVersion,
+        'x-pm-drive-sdk-version': DRIVE_SDK_VERSION_HEADER,
       },
     });
   }
@@ -68,27 +69,38 @@ export class AuthApiClient {
   }
 
   /**
-   * Refresh access token using refresh token.
+   * Exchange the refresh token for a new token pair (POST /auth/v4/refresh).
+   *
+   * Sent as an authenticated request carrying the rejected access token, with
+   * the body of the official ApiClient.performTokenRefresh (apiClient.ts). A
+   * response without RefreshToken or UID keeps the current value.
    */
   async refreshToken(
     uid: string,
-    refreshToken: string
-  ): Promise<{ AccessToken: string; RefreshToken: string; ExpiresIn?: number }> {
-    const response = await this.client.post('/auth/v4/refresh', {
-      UID: uid,
-      RefreshToken: refreshToken,
+    accessToken: string,
+    refreshToken: string,
+  ): Promise<RefreshTokenResponse> {
+    const response = await this.client.post<Partial<RefreshTokenResponse>>('/auth/v4/refresh', {
       ResponseType: 'token',
       GrantType: 'refresh_token',
-      RedirectURI: 'http://proton.me',
+      RefreshToken: refreshToken,
     }, {
-      headers: { 'x-pm-uid': uid },
+      headers: {
+        'x-pm-uid': uid,
+        'Authorization': `Bearer ${accessToken}`,
+      },
     });
 
-    const data = response.data;
-    if (!data.AccessToken || !data.RefreshToken) {
-      throw new Error('Incomplete refresh response: missing tokens');
+    const data = response.data ?? {};
+    if (!data.AccessToken) {
+      throw new Error('Incomplete refresh response: missing AccessToken');
     }
-    return data;
+    return {
+      UID: data.UID ?? uid,
+      AccessToken: data.AccessToken,
+      RefreshToken: data.RefreshToken ?? refreshToken,
+      ExpiresIn: data.ExpiresIn,
+    };
   }
 
   /**

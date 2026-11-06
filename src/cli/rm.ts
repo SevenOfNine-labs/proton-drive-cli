@@ -87,7 +87,6 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @see {@link createMvCommand} for moving files
  * @see {@link createLsCommand} for listing files
  * @see {@link resolvePathToNodeUid} for path resolution
- * @since 0.1.0
  */
 export function createRmCommand(): Command {
   const rm = new Command('rm');
@@ -106,14 +105,12 @@ export function createRmCommand(): Command {
 
         const nodeUid = await resolvePathToNodeUid(client, targetPath);
 
-        // Trash the node
         for await (const result of client.trashNodes([nodeUid])) {
           if (!result.ok) {
             throw new Error(`Failed to trash: ${JSON.stringify(result.error)}`);
           }
         }
 
-        // Permanently delete if requested
         if (options.permanent) {
           for await (const result of client.deleteNodes([nodeUid])) {
             if (!result.ok) {

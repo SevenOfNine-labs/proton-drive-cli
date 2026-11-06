@@ -8,7 +8,7 @@
 - `src/api/`: HTTP client for the Proton API.
 - `src/crypto/`: OpenPGP and encryption/decryption helpers.
 - `src/sdk/`: Wrapper layer around `@protontech/drive-sdk`.
-- `src/credentials/`: Credential providers (`pass-cli`, `git-credential`) that store the key password and the optional data password.
+- `src/credentials/`: Credential providers (`pass-cli`, `git-credential`) that store the browser-fork key password.
 - `schemas/`: JSON Schemas of the bridge and doctor contracts.
 - `docs/`: Architecture, security, operations, and reference docs for this CLI.
 - `dist/`: Built output from TypeScript compilation (generated).
@@ -36,6 +36,44 @@
 - Extend CLI/e2e coverage when command flows, flags, or output contracts change.
 - Keep tests deterministic and mocked; avoid real Proton credential dependencies.
 - Include negative-path checks (auth failures, missing paths, API envelope errors).
+
+## Code Comments and Legacy (MANDATORY)
+
+Comments carry only what the code cannot say: the normative source behind a
+decision. Every comment is one of:
+
+- a reference to a standard or specification, with the section where useful
+  (RFC 9580 OpenPGP, RFC 9110 HTTP, RFC 2119 keywords, POSIX `rename(2)`,
+  Git LFS custom transfer specification, Desktop Entry Specification 1.5,
+  XDG Base Directory, JSON Schema 2020-12, NIST SP 800-38D AES-GCM, ...);
+- a reference to a scientific publication or a named algorithm (SRP-6a,
+  Argon2, ...);
+- a reference to external documentation of an API or tool the code relies
+  on, naming the file, function or URL (Proton Drive SDK and account module
+  sources, Node.js, Go standard library, man pages);
+- a one- or two-line statement of an invariant or contract that a reader
+  cannot infer from the code (for example "rename(2) replaces the target
+  atomically"), or the API contract in a doc comment of an exported symbol.
+
+Forbidden in comments, documentation and commit-facing text alike:
+
+- history and legacy notes: what the code did before, earlier versions,
+  former names, "previously", "no longer", "used to", "kept for
+  compatibility", "since version X", migration stories;
+- excuses, hedges and placeholders: "for now", "workaround", "hack",
+  "temporary fix", "TODO", "FIXME", "XXX", "unfortunately", "hopefully";
+- narration of what the next lines do, change logs, author notes, and
+  references to issues or pull requests in place of the specification;
+- comments longer than three lines outside doc comments of exported APIs.
+
+No legacy code: code, options, configuration keys, file formats, schema
+fields and documentation that exist only to serve an earlier version are
+deleted, not kept behind a comment or a migration. History lives in Git and
+in the generated changelog.
+
+`scripts/check-comment-policy.sh` enforces the forbidden vocabulary on every
+commit (pre-commit) and in CI; reviews treat any other violation of this
+section as a defect.
 
 ## Changeset Tracking (MANDATORY)
 

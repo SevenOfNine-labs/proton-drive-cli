@@ -5,9 +5,6 @@ export enum ErrorCode {
   // Authentication errors
   AUTH_FAILED = 'AUTH_FAILED',
   SESSION_EXPIRED = 'SESSION_EXPIRED',
-  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
-  TWO_FACTOR_REQUIRED = 'TWO_FACTOR_REQUIRED',
-  DATA_PASSWORD_REQUIRED = 'DATA_PASSWORD_REQUIRED',
   KEY_PASSWORD_REQUIRED = 'KEY_PASSWORD_REQUIRED',
 
   // Network errors
@@ -70,33 +67,18 @@ export class AppError extends Error {
   toUserMessage(): string {
     switch (this.code) {
       case ErrorCode.AUTH_FAILED:
-        if (this.message?.startsWith('Login failed during ')) {
-          return this.message;
-        }
-        return 'Authentication failed. Please check your credentials and try again.';
+        return 'Authentication failed. Run: proton-drive-cli login';
 
       case ErrorCode.SESSION_EXPIRED:
         return 'Your session has expired. Please login again with: proton-drive-cli login';
 
-      case ErrorCode.INVALID_CREDENTIALS:
-        return 'Invalid email or password. Please check your credentials.';
-
-      case ErrorCode.TWO_FACTOR_REQUIRED:
-        return 'Two-factor authentication is required.';
-
-      case ErrorCode.DATA_PASSWORD_REQUIRED:
-        return 'Mailbox/data password required for this two-password Proton account.';
-
       case ErrorCode.KEY_PASSWORD_REQUIRED:
-        return 'Stored browser-fork key password is missing or unreadable.';
+        return 'Stored browser-fork key password is missing or does not unlock the account keys.';
 
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
 
       case ErrorCode.TIMEOUT:
-        if (this.message?.startsWith('Login failed during ')) {
-          return this.message;
-        }
         return 'Request timed out. The server took too long to respond.';
 
       case ErrorCode.CONNECTION_REFUSED:
@@ -170,14 +152,8 @@ export class AppError extends Error {
       case ErrorCode.SESSION_EXPIRED:
         return 'Run: proton-drive-cli login';
 
-      case ErrorCode.TWO_FACTOR_REQUIRED:
-        return 'Run: proton-drive-cli login interactively, or provide a TOTP code through the bridge request';
-
-      case ErrorCode.DATA_PASSWORD_REQUIRED:
-        return 'Provide the mailbox/data password for key decryption';
-
       case ErrorCode.KEY_PASSWORD_REQUIRED:
-        return 'Run browser login again, or provide an explicit mailbox/data password source';
+        return 'Run: proton-drive-cli login';
 
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.TIMEOUT:
@@ -206,7 +182,7 @@ export class AppError extends Error {
         return 'Free up disk space on your local machine';
 
       case ErrorCode.CAPTCHA_REQUIRED:
-        return 'Run: proton-drive-cli login (interactive CAPTCHA flow will guide you)';
+        return 'Run: proton-drive-cli login and complete the verification in the browser';
 
       default:
         return null;
@@ -289,11 +265,9 @@ export function isRateLimitError(error: any): error is RateLimitError {
   if (error instanceof RateLimitError) return true;
   if (error instanceof AppError && error.code === ErrorCode.RATE_LIMITED) return true;
 
-  // Check Proton-specific error codes
   const protonCode = error?.response?.data?.Code;
   if (protonCode === 2028 || protonCode === 85131) return true;
 
-  // Check HTTP 429 status
   if (error?.response?.status === 429) return true;
 
   return false;
@@ -308,11 +282,9 @@ export function isCaptchaError(error: any): error is CaptchaError {
   if (error instanceof CaptchaError) return true;
   if (error instanceof AppError && error.code === ErrorCode.CAPTCHA_REQUIRED) return true;
 
-  // Check Proton CAPTCHA codes
   const protonCode = error?.response?.data?.Code;
   if (protonCode === 9001 || protonCode === 12087) return true;
 
-  // Check for HumanVerificationToken in Details
   const details = error?.response?.data?.Details;
   if (details?.HumanVerificationToken) return true;
 
@@ -353,7 +325,6 @@ export interface CategorizedError {
  * @returns CategorizedError with category, retryability, and user-friendly message
  */
 export function categorizeError(error: any): CategorizedError {
-  // Extract HTTP status and Proton code before type narrowing
   const status = error?.response?.status;
   const protonCode = error?.response?.data?.Code;
 
@@ -379,7 +350,7 @@ export function categorizeError(error: any): CategorizedError {
       userMessage: 'CAPTCHA verification required. Run: proton-drive-cli login',
       protonCode,
       httpStatus: status,
-      recoverySuggestion: 'Run: proton-drive-cli login (interactive CAPTCHA flow will guide you)',
+      recoverySuggestion: 'Run: proton-drive-cli login and complete the verification in the browser',
     };
   }
 
@@ -456,7 +427,6 @@ export function categorizeError(error: any): CategorizedError {
     };
   }
 
-  // Default: unknown error
   return {
     category: ErrorCategory.UNKNOWN,
     message: error.message || 'An unexpected error occurred',

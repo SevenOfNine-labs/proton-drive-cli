@@ -1,14 +1,7 @@
 /**
- * Single error classifier for the CLI and the Git LFS bridge.
- *
- * Every failure (HTTP client error, Proton Drive SDK error, Node.js system
- * error, plain Error) is mapped to an AppError whose `code` drives the bridge
- * HTTP status (bridge/protocol ERROR_CODE_STATUS), the `details.errorCode`
- * the Go adapter reads (schemas/bridge/v1/error-code-map.json) and the retry
- * policy (utils/retry).
- *
- * Dependencies are limited to errors/types and the SDK error classes so that
- * bridge/validators stays importable without the CLI's heavier modules.
+ * Maps every failure to an AppError whose code sets the bridge status (bridge/protocol), the
+ * `details.errorCode` (schemas/bridge/v1/error-code-map.json) and the retry policy (utils/retry).
+ * Imports only errors/types and the SDK error classes, so bridge/validators stays light.
  */
 
 import {
@@ -62,11 +55,8 @@ function errorMessage(error: unknown): string | undefined {
 }
 
 /**
- * Map an HTTP status plus optional Proton API code to an AppError.
- *
- * Proton signals rate limiting with codes 2028/85131 (handled by
- * isRateLimitError before this is reached) and insufficient scope with 9101,
- * which can arrive on any status and therefore takes precedence over it.
+ * Map an HTTP status plus optional Proton API code to an AppError. Proton code
+ * 9101 (insufficient scope) can arrive on any status and takes precedence.
  */
 function mapStatus(
   status: number | undefined,
@@ -221,6 +211,10 @@ export function mapSystemError(error: NodeJS.ErrnoException): AppError {
         { path: error.path },
         false
       );
+
+    // proper-lockfile rejects with ELOCKED while another process holds the lock.
+    case 'ELOCKED':
+      return new AppError('The session lock is held by another process', ErrorCode.TIMEOUT, {}, true);
 
     case 'ETIMEDOUT':
     case 'ESOCKETTIMEDOUT':

@@ -1,8 +1,8 @@
 import { HttpClient } from './http-client';
 import { UserApiClient } from './user';
 import { SessionManager } from '../auth/session';
-import { DEFAULT_PROTON_APP_VERSION } from '../constants';
-import { AppError, ErrorCode } from '../errors/types';
+import { DEFAULT_PROTON_APP_VERSION, VENDORED_DRIVE_SDK_VERSION } from '../constants';
+import { AppError, ErrorCode, RateLimitError } from '../errors/types';
 
 jest.mock('./http-client');
 jest.mock('../auth/session');
@@ -59,6 +59,17 @@ describe('UserApiClient', () => {
       );
     });
 
+    test('sends the vendored SDK version, as the official ApiClient does on every request', () => {
+      new UserApiClient('https://test.example.com');
+      expect(MockedHttpClient.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-pm-drive-sdk-version': `js@${VENDORED_DRIVE_SDK_VERSION}`,
+          }),
+        })
+      );
+    });
+
     test('allows app version override', () => {
       new UserApiClient('https://test.example.com', 'external-drive-custom@1.0.0');
 
@@ -96,11 +107,11 @@ describe('UserApiClient', () => {
   });
 
   describe('response interceptor', () => {
-    test('refreshes session through SessionManager on 401 and retries request', async () => {
+    test('refreshes with the rejected access token on 401 and retries the request', async () => {
       new UserApiClient();
       captureInterceptors();
 
-      const originalConfig = { headers: {}, _retried: false };
+      const originalConfig = { headers: { Authorization: 'Bearer rejected-token', 'x-pm-uid': 'test-uid' }, _retried: false };
       const error = {
         response: {
           status: 401,
@@ -114,7 +125,7 @@ describe('UserApiClient', () => {
       await responseInterceptorReject(error);
 
       expect(mockedSessionManager.refreshSessionOrAdoptRotated).toHaveBeenCalledWith(
-        fakeSession,
+        { uid: 'test-uid', accessToken: 'rejected-token' },
         DEFAULT_PROTON_APP_VERSION
       );
       expect(mockHttpInstance.request).toHaveBeenCalledWith(
@@ -127,28 +138,27 @@ describe('UserApiClient', () => {
       );
     });
 
-    test('throws session expired on 401 when refresh fails', async () => {
+    test('propagates the sign-out of a rejected refresh token', async () => {
       new UserApiClient();
       captureInterceptors();
-      // Return null session so refresh cannot proceed
-      mockedSessionManager.loadSession.mockResolvedValue(null);
+      const signedOut = new AppError('signed out', ErrorCode.SESSION_EXPIRED, { signedOut: true }, false);
+      mockedSessionManager.refreshSessionOrAdoptRotated.mockRejectedValue(signedOut);
 
       const error = {
         response: {
           status: 401,
           data: {},
-          config: { headers: {}, _retried: false },
+          config: { headers: { Authorization: 'Bearer rejected-token' }, _retried: false },
         },
       };
-      await expect(responseInterceptorReject(error)).rejects.toThrow(
-        'Session expired'
-      );
+      await expect(responseInterceptorReject(error)).rejects.toBe(signedOut);
     });
 
-    test('throws session expired on 401 when refresh and the cross-process re-read both fail', async () => {
+    test('keeps the code of a refresh failure a later attempt can overcome', async () => {
       new UserApiClient();
       captureInterceptors();
-      mockedSessionManager.refreshSessionOrAdoptRotated.mockRejectedValue(new Error('Invalid refresh token'));
+      const rateLimited = new RateLimitError('Too many requests', { retryAfter: 30, protonCode: 2028 });
+      mockedSessionManager.refreshSessionOrAdoptRotated.mockRejectedValue(rateLimited);
 
       const error = {
         response: {
@@ -157,9 +167,7 @@ describe('UserApiClient', () => {
           config: { headers: {}, _retried: false },
         },
       };
-      await expect(responseInterceptorReject(error)).rejects.toThrow(
-        'Session expired and refresh failed'
-      );
+      await expect(responseInterceptorReject(error)).rejects.toBe(rateLimited);
     });
 
     test('throws API error with code and message, keeping the Proton code', async () => {
@@ -177,8 +185,24 @@ describe('UserApiClient', () => {
         'API Error (2000): Something went wrong'
       );
       await expect(responseInterceptorReject(error)).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
         details: { protonCode: 2000, status: 422 },
       });
+    });
+
+    test('keeps a rate limit on the user and address endpoints a rate limit', async () => {
+      new UserApiClient();
+      captureInterceptors();
+
+      const error = {
+        response: {
+          status: 429,
+          headers: { 'retry-after': '30' },
+          data: { Code: 2028, Error: 'Too many requests' },
+          config: { headers: {} },
+        },
+      };
+      await expect(responseInterceptorReject(error)).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfter: 30 });
     });
   });
 
@@ -187,6 +211,7 @@ describe('UserApiClient', () => {
       const client = new UserApiClient();
       mockHttpInstance.get.mockResolvedValue({
         data: { Code: 1000, User: { ID: 'user-1', Name: 'Test' } },
+        config: { headers: { 'x-pm-uid': 'test-uid' } },
       });
 
       const result = await client.getUser();
@@ -195,36 +220,65 @@ describe('UserApiClient', () => {
     });
   });
 
+  describe('crypto-init cache', () => {
+    const user = { ID: 'user-1', Name: 'Test', Keys: [] } as any;
+    const addresses = [{ ID: 'addr-1', Email: 'user@proton.me', Keys: [] }] as any;
+
+    test('does not write back records served from the cache, so their fetch time stays', async () => {
+      mockedSessionManager.loadCryptoCache.mockResolvedValue({
+        sessionUid: 'test-uid',
+        user,
+        addresses,
+        cachedAt: new Date(0).toISOString(),
+      });
+      const client = new UserApiClient();
+
+      await client.saveCryptoCache(await client.getUser(), await client.getAddresses());
+
+      expect(mockHttpInstance.get).not.toHaveBeenCalled();
+      expect(mockedSessionManager.saveCryptoCache).not.toHaveBeenCalled();
+    });
+
+    test('stores records fetched from the API', async () => {
+      mockedSessionManager.loadCryptoCache.mockResolvedValue(null);
+      mockHttpInstance.get
+        .mockResolvedValueOnce({ data: { Code: 1000, User: user }, config: { headers: { 'x-pm-uid': 'test-uid' } } })
+        .mockResolvedValueOnce({ data: { Code: 1000, Addresses: addresses }, config: { headers: { 'x-pm-uid': 'test-uid' } } });
+      const client = new UserApiClient();
+
+      await client.saveCryptoCache(await client.getUser(), await client.getAddresses());
+
+      expect(mockedSessionManager.saveCryptoCache).toHaveBeenCalledWith('test-uid', user, addresses);
+    });
+
+    test('does not store records fetched under different session UIDs', async () => {
+      mockedSessionManager.loadCryptoCache.mockResolvedValue(null);
+      mockHttpInstance.get
+        .mockResolvedValueOnce({ data: { Code: 1000, User: user }, config: { headers: { 'x-pm-uid': 'uid-before-login' } } })
+        .mockResolvedValueOnce({ data: { Code: 1000, Addresses: addresses }, config: { headers: { 'x-pm-uid': 'uid-after-login' } } });
+      const client = new UserApiClient();
+
+      await client.saveCryptoCache(await client.getUser(), await client.getAddresses());
+
+      expect(mockedSessionManager.saveCryptoCache).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getAddresses', () => {
-    test('calls /core/v4/addresses and returns array', async () => {
+    test('calls /core/v4/addresses with the official paging and returns the array', async () => {
       const client = new UserApiClient();
       mockHttpInstance.get.mockResolvedValue({
         data: {
           Code: 1000,
           Addresses: [{ ID: 'addr-1', Email: 'user@proton.me' }],
         },
+        config: { headers: { 'x-pm-uid': 'test-uid' } },
       });
 
       const result = await client.getAddresses();
-      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/addresses');
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/addresses?Page=0&PageSize=50');
       expect(result).toHaveLength(1);
       expect(result[0].Email).toBe('user@proton.me');
-    });
-  });
-
-  describe('getKeySalts', () => {
-    test('calls /core/v4/keys/salts and returns salts', async () => {
-      const client = new UserApiClient();
-      mockHttpInstance.get.mockResolvedValue({
-        data: {
-          Code: 1000,
-          KeySalts: [{ ID: 'key-1', KeySalt: 'abcdef' }],
-        },
-      });
-
-      const result = await client.getKeySalts();
-      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/keys/salts');
-      expect(result[0].KeySalt).toBe('abcdef');
     });
   });
 

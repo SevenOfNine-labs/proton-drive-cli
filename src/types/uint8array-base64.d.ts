@@ -1,9 +1,6 @@
 /**
- * Type declarations for the TC39 proposal "Uint8Array to/from base64 and
- * hex" (https://tc39.es/proposal-arraybuffer-base64/), which @protontech/crypto
- * and the Proton Drive SDK use. TypeScript 5.9 ships no lib entry for it yet;
- * the runtime implementation on Node 22 and 24 comes from
- * core-js/proposals/array-buffer-base64 (see src/crypto/polyfill.ts).
+ * Types of the TC39 proposal "Uint8Array to/from base64 and hex" (https://tc39.es/proposal-arraybuffer-base64/);
+ * runtime for Node 22 and 24 in src/crypto/polyfill.ts.
  */
 
 type Uint8ArrayBase64Alphabet = 'base64' | 'base64url';

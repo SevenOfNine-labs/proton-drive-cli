@@ -5,9 +5,10 @@ import { getProtonAppVersion } from '../constants';
 import { AppError, ErrorCode } from '../errors/types';
 import { SessionForkStatusResponse, SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
+import { uidFingerprint } from '../utils/redaction';
+import type { ProviderName } from '../credentials/types';
 import {
   createKeyPasswordStore,
-  KeyPasswordProviderName,
   KeyPasswordStore,
   normalizeKeyPasswordProvider,
 } from './key-password-store';
@@ -16,19 +17,19 @@ import { resolveTokenExpiresAt } from './token-expiry';
 
 export const PROTON_ACCOUNT_URL = 'https://account.proton.me';
 export const DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID = 'external-drive';
-export const BROWSER_FORK_INITIAL_DELAY_MS = 1_000;
 /**
- * Interval between session-fork status polls while the API answers 422 (not
- * ready yet). Matches the official Proton account module
- * (incubating/account/js/src/authWeb.ts FORK_POLL_INTERVAL_MS).
+ * Session-fork polling schedule of the official account module
+ * (incubating/account/js/src/authWeb.ts FORK_INITIAL_DELAY_MS,
+ * FORK_POLL_INTERVAL_MS, FORK_MAX_POLL_TIME_MS): a first status request
+ * after the initial delay, then one per interval while the API answers 422.
  */
+export const BROWSER_FORK_INITIAL_DELAY_MS = 5_000;
 export const BROWSER_FORK_POLL_INTERVAL_MS = 5_000;
 export const BROWSER_FORK_MAX_POLL_TIME_MS = 10 * 60 * 1_000;
-export const DEFAULT_BROWSER_FORK_PASSWORD_MODE = 1;
 
 const FORK_AAD = Buffer.from('fork', 'utf8');
 
-export type BrowserForkAuthApi = Pick<AuthApiClient, 'initSessionFork' | 'getSessionForkStatus'>;
+export type BrowserForkAuthApi = Pick<AuthApiClient, 'initSessionFork' | 'getSessionForkStatus' | 'logout' | 'refreshToken'>;
 export type SleepFn = (ms: number) => Promise<void>;
 
 export interface BrowserForkSignInUrl {
@@ -130,7 +131,7 @@ export function parseBrowserForkUserKeyPassword(
 export class BrowserForkAuthService {
   private readonly authApi: BrowserForkAuthApi;
   private readonly appVersion?: string;
-  private readonly keyPasswordProvider: KeyPasswordProviderName;
+  private readonly keyPasswordProvider: ProviderName;
   private readonly keyPasswordHost?: string;
   private readonly keyPasswordStore?: KeyPasswordStore;
   private readonly sleepMs: SleepFn;
@@ -170,7 +171,7 @@ export class BrowserForkAuthService {
         throw new AppError(
           'Browser authentication timed out',
           ErrorCode.TIMEOUT,
-          { authMode: 'browser-fork', maxPollTimeMs },
+          { maxPollTimeMs },
           true
         );
       }
@@ -197,7 +198,7 @@ export class BrowserForkAuthService {
       throw new AppError(
         'Browser fork did not return a refresh token; refusing to persist a partial session',
         ErrorCode.AUTH_FAILED,
-        { authMode: 'browser-fork' },
+        {},
         true
       );
     }
@@ -209,7 +210,7 @@ export class BrowserForkAuthService {
       throw new AppError(
         `Browser fork payload could not be decrypted: ${error instanceof Error ? error.message : 'unknown error'}`,
         ErrorCode.AUTH_FAILED,
-        { authMode: 'browser-fork' },
+        {},
         true
       );
     }
@@ -218,32 +219,65 @@ export class BrowserForkAuthService {
       provider: this.keyPasswordProvider,
       host: this.keyPasswordHost,
     });
-    await this.persistKeyPassword(keyPasswordStore, status.UID, userKeyPassword);
+    const forked = {
+      uid: status.UID,
+      accessToken: status.AccessToken,
+      refreshToken: status.RefreshToken,
+    };
+    try {
+      await this.persistKeyPassword(keyPasswordStore, status.UID, userKeyPassword);
+    } catch (error) {
+      await this.revokeBestEffort(forked);
+      throw error;
+    }
 
     const session: SessionCredentials = {
-      sessionId: status.UID,
       uid: status.UID,
       accessToken: status.AccessToken,
       refreshToken: status.RefreshToken,
       scopes: status.Scopes ?? [],
-      passwordMode: status.PasswordMode ?? DEFAULT_BROWSER_FORK_PASSWORD_MODE,
-      authMode: 'browser-fork',
-      keyPasswordPersisted: true,
       keyPasswordProvider: keyPasswordStore.provider,
       keyPasswordHost: keyPasswordStore.host,
       tokenExpiresAt: resolveTokenExpiresAt(status.ExpiresIn),
     };
 
+    let previous: SessionCredentials | null;
     try {
-      await SessionManager.saveSession(session);
+      previous = await SessionManager.replaceSession(session);
     } catch (error) {
       await keyPasswordStore.remove(status.UID).catch(() => {});
+      await this.revokeBestEffort(forked);
       throw error;
     }
     logger.info('Browser fork authentication successful');
     logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
 
+    if (previous && previous.uid !== session.uid) {
+      await SessionManager.removeKeyPassword(previous);
+      await this.revokeBestEffort(previous);
+    }
+
     return { session, keyPasswordAvailable: true };
+  }
+
+  /**
+   * End a session this login discards: DELETE /auth/v4, after one refresh
+   * when the access token is rejected (HTTP 401). Failures are logged.
+   */
+  private async revokeBestEffort(session: Pick<SessionCredentials, 'uid' | 'accessToken' | 'refreshToken'>): Promise<void> {
+    try {
+      await this.authApi.logout(session.uid, session.accessToken);
+    } catch (error) {
+      try {
+        if (!isHttpClientError(error) || error.response?.status !== 401) {
+          throw error;
+        }
+        const refreshed = await this.authApi.refreshToken(session.uid, session.accessToken, session.refreshToken);
+        await this.authApi.logout(refreshed.UID, refreshed.AccessToken);
+      } catch (revokeError) {
+        logger.warn(`Could not revoke the discarded session ${uidFingerprint(session.uid)}: ${revokeError instanceof Error ? revokeError.message : String(revokeError)}`);
+      }
+    }
   }
 
   private async persistKeyPassword(
@@ -253,7 +287,7 @@ export class BrowserForkAuthService {
   ): Promise<void> {
     try {
       await store.store(uid, keyPassword);
-      if (!await store.verify(uid)) {
+      if (await store.load(uid).catch(() => undefined) !== keyPassword) {
         await store.remove(uid).catch(() => {});
         throw new Error('key password readback verification failed');
       }
@@ -262,7 +296,6 @@ export class BrowserForkAuthService {
         `Could not persist browser fork key password: ${error instanceof Error ? error.message : 'unknown error'}`,
         ErrorCode.AUTH_FAILED,
         {
-          authMode: 'browser-fork',
           keyPasswordProvider: store.provider,
           keyPasswordHost: store.host,
         },

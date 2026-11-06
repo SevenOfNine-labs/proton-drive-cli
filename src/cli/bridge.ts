@@ -1,16 +1,6 @@
-/**
- * `proton-drive-cli bridge <command>`: the Git LFS bridge.
- *
- * Reads exactly one JSON request from stdin and writes exactly one JSON
- * envelope to stdout: `{ ok: true, payload }` or
- * `{ ok: false, error, code, details }`. Logs go to stderr. The contract is
- * described by the schemas under schemas/bridge/v1 (request, response
- * envelope, per-command payloads, error details, error-code map) and checked
- * against real command outputs in bridge.test.ts and bridge/schemas.test.ts.
- *
- * All Drive operations go through ProtonDriveClient (official SDK) and reuse
- * the saved browser-fork session; the bridge never performs account login.
- */
+// `proton-drive-cli bridge <command>`: one JSON request on stdin, one JSON
+// envelope on stdout, logs on stderr (contract: schemas/bridge/v1). Drive
+// operations use the saved browser-fork session; the bridge never logs in.
 
 import { Command } from 'commander';
 import * as fs from 'fs/promises';
@@ -48,12 +38,8 @@ import {
   type BridgeAuthState,
   type BridgeCommand,
 } from '../bridge/protocol';
-import { createProvider, normalizeProviderName } from '../credentials';
-import { PROTON_DATA_CREDENTIAL_HOST } from '../constants';
-import type { AuthMode } from '../types/auth';
 import { createRetryConfig, retryWithBackoff, type RetryConfig } from '../utils/retry';
 
-// Re-export validators for existing consumers (e.g., bridge.test.ts)
 export { BridgeRequest, BridgeResponse, validateOid, validateLocalPath, validateBridgeRequestForCommand, errorToStatusCode } from '../bridge/validators';
 export type { BridgeAuthState } from '../bridge/protocol';
 
@@ -197,19 +183,6 @@ function requireOids(request: BridgeRequest, command: BridgeCommand): string[] {
   return oids;
 }
 
-async function resolveDataPassword(request: BridgeRequest): Promise<string | undefined> {
-  if (!request.dataCredentialProvider) {
-    return undefined;
-  }
-
-  const name = normalizeProviderName(request.dataCredentialProvider);
-  const provider = createProvider(name, {
-    host: request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST,
-  });
-  const cred = await provider.resolve({});
-  return cred.password;
-}
-
 // ─── auth-state ────────────────────────────────────────────────────
 
 export interface BridgeAuthStatePayload {
@@ -218,112 +191,70 @@ export interface BridgeAuthStatePayload {
   sessionValid: boolean;
   sessionExpired: boolean;
   sessionUidPresent: boolean;
-  passwordMode?: number;
-  authMode?: AuthMode;
-  keyPasswordPersisted?: boolean;
-  keyPasswordAvailable?: boolean;
+  keyPasswordAvailable: boolean;
   keyPasswordProvider?: string;
   keyPasswordHost?: string;
-  dataCredentialProvider?: string;
-  dataCredentialHost?: string;
   willAttemptNetwork: false;
   errors: string[];
   actions: string[];
 }
 
-function normalizeProviderForAuthState(providerName: string | undefined, label: string, errors: string[]): string | undefined {
-  if (!providerName) return undefined;
-
-  try {
-    return normalizeProviderName(providerName);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : `Unknown ${label} provider`;
-    errors.push(message);
-    return undefined;
-  }
-}
+const LOGIN_ACTION = 'Run proton-drive-cli login to complete browser sign-in before transfers.';
 
 /**
- * Inspect bridge auth readiness without resolving credentials or contacting Proton.
- *
- * This is intentionally local-only: it reads the saved session, performs local
- * expiry checks, and reports which credential sources would be needed by a
- * later non-dry bridge command.
+ * Inspect bridge auth readiness without sending a request to the Proton API
+ * and without refreshing tokens: reads the saved session, applies the local
+ * expiry check and reads the key-password entry from the session's
+ * credential provider (pass-cli can contact Proton Pass to do so).
  */
-export async function getBridgeAuthState(request: BridgeRequest): Promise<BridgeAuthStatePayload> {
-  const errors: string[] = [];
-  const dataCredentialProvider = normalizeProviderForAuthState(
-    request.dataCredentialProvider,
-    'data credential',
-    errors,
-  );
-  const dataCredentialHost = dataCredentialProvider
-    ? request.dataCredentialHost || PROTON_DATA_CREDENTIAL_HOST
-    : undefined;
-  const session = await SessionManager.loadSession();
-  const hasSession = Boolean(session);
-  const sessionUidPresent = Boolean(session?.uid);
-  // validateSession without a remote check applies only the local expiry checks.
+export async function getBridgeAuthState(sessionFile?: string): Promise<BridgeAuthStatePayload> {
+  const stored = await SessionManager.readStoredSession(sessionFile);
+  const session = stored.kind === 'valid' ? stored.session : null;
   const sessionValid = session ? await SessionManager.validateSession(session) : false;
-  const sessionExpired = hasSession && !sessionValid;
+  const errors: string[] = [];
+  const actions: string[] = [];
+
   let keyPasswordAvailable = false;
-  if (session?.authMode === 'browser-fork' && session.keyPasswordPersisted) {
+  if (session) {
+    const store = createKeyPasswordStore({
+      provider: session.keyPasswordProvider,
+      host: session.keyPasswordHost,
+    });
     try {
-      keyPasswordAvailable = await createKeyPasswordStore({
-        provider: session.keyPasswordProvider,
-        host: session.keyPasswordHost,
-      }).verify(session.uid);
+      await store.load(session.uid);
+      keyPasswordAvailable = true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Invalid key password store configuration';
-      errors.push(message);
+      errors.push(`Key password unavailable from ${store.provider}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const browserForkNeedsKeyPassword =
-    session?.authMode === 'browser-fork' &&
-    !keyPasswordAvailable;
-  const nonBrowserForkSessionNeedsDataPassword =
-    session?.authMode !== 'browser-fork' &&
-    !dataCredentialProvider;
-  const actions: string[] = [];
-  let state: BridgeAuthState;
 
-  if (errors.length > 0) {
-    state = 'configuration_error';
-    actions.push('Fix the credential provider name before attempting transfer commands.');
-  } else if (!session) {
+  let state: BridgeAuthState;
+  if (stored.kind === 'none') {
     state = 'needs_login';
-    actions.push('Run proton-drive-cli login to complete browser sign-in before transfers.');
-  } else if (!sessionValid) {
-    state = sessionExpired ? 'session_expired' : 'session_invalid';
-    actions.push('Refresh or replace the saved session after offline gates pass; auth-state did not refresh tokens.');
-  } else if (session.passwordMode !== 1 && session.passwordMode !== 2) {
+    actions.push(LOGIN_ACTION);
+  } else if (stored.kind === 'invalid') {
     state = 'session_invalid';
-    actions.push(`Unexpected Proton password mode ${session.passwordMode}; replace the saved session before transfers.`);
-  } else if (browserForkNeedsKeyPassword && !dataCredentialProvider) {
+    actions.push('The saved session is not a proton-drive-cli login session. ' + LOGIN_ACTION);
+  } else if (!sessionValid) {
+    state = 'session_expired';
+    actions.push('Transfers refresh the access token before use (bridge init); auth-state did not refresh it.');
+  } else if (!keyPasswordAvailable) {
     state = 'needs_key_password';
-    actions.push('Browser-fork session is missing its stored key password; run browser login again or configure a mailbox/data password provider.');
-  } else if (nonBrowserForkSessionNeedsDataPassword) {
-    state = 'needs_data_password';
-    actions.push(`Configure a mailbox/data password provider for this non-browser-fork session, for example dataCredentialProvider with host ${PROTON_DATA_CREDENTIAL_HOST}.`);
+    actions.push('Fix the credential provider of the saved session (see errors), or ' + LOGIN_ACTION);
   } else {
     state = 'ready';
-    actions.push('Local auth inputs are sufficient for SDK initialization; auth-state did not contact Proton.');
+    actions.push('Local auth inputs are sufficient for SDK initialization; auth-state sent no request to the Proton API.');
   }
 
   return {
     state,
-    hasSession,
+    hasSession: stored.kind !== 'none',
     sessionValid,
-    sessionExpired,
-    sessionUidPresent,
-    passwordMode: session?.passwordMode,
-    authMode: session?.authMode,
-    keyPasswordPersisted: session?.keyPasswordPersisted,
+    sessionExpired: session !== null && !sessionValid,
+    sessionUidPresent: session !== null,
     keyPasswordAvailable,
     keyPasswordProvider: session?.keyPasswordProvider,
     keyPasswordHost: session?.keyPasswordHost,
-    dataCredentialProvider,
-    dataCredentialHost,
     willAttemptNetwork: false,
     errors,
     actions,
@@ -333,17 +264,11 @@ export async function getBridgeAuthState(request: BridgeRequest): Promise<Bridge
 // ─── Drive client and transfers ────────────────────────────────────
 
 /**
- * Initialize ProtonDriveClient (SDK) from the saved browser-fork session.
- * The session is unlocked with the stored browser-fork key password or a
- * provider-backed mailbox/data password; the bridge never logs in.
+ * Initialize ProtonDriveClient (SDK) from the saved browser-fork session,
+ * unlocked with the stored key password; the bridge never logs in.
  */
 export async function getInitializedClient(request: BridgeRequest): Promise<ProtonDriveClient> {
-  const dataPassword = await resolveDataPassword(request);
-
-  return createSDKClient({
-    dataPassword,
-    appVersion: request.appVersion,
-  });
+  return createSDKClient({ appVersion: request.appVersion });
 }
 
 function normalizeStorageBase(storageBase: string): string {
@@ -616,7 +541,7 @@ async function handleBatchDelete(request: BridgeRequest): Promise<BridgeBatchRes
 type BridgeHandler = (request: BridgeRequest) => Promise<object>;
 
 const BRIDGE_HANDLERS: Record<BridgeCommand, BridgeHandler> = {
-  'auth-state': getBridgeAuthState,
+  'auth-state': () => getBridgeAuthState(),
   upload: handleUpload,
   download: handleDownload,
   list: handleList,
@@ -654,7 +579,7 @@ export async function runBridgeCommand(commandName: string, request: unknown): P
  *
  * # Commands
  *
- * - **auth-state**: inspect local auth readiness (no network, no credential lookup)
+ * - **auth-state**: inspect local auth readiness (no Proton API call)
  * - **init**: create the storage base folder
  * - **upload**: store a local file under its OID path (deduplicates existing objects)
  * - **download**: fetch an object by OID into `outputPath`
@@ -686,7 +611,6 @@ export async function runBridgeCommand(commandName: string, request: unknown): P
  *
  * @category CLI Commands
  * @see {@link runBridgeCommand} for the command dispatcher
- * @since 0.1.0
  */
 export function createBridgeCommand(): Command {
   const cmd = new Command('bridge');

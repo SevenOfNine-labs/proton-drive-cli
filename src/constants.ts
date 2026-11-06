@@ -1,13 +1,24 @@
 import { version as pkgVersion } from '../package.json';
 
-/** Credential host for git credential fill/approve/reject and Proton Pass URL matching. */
-export const PROTON_CREDENTIAL_HOST = 'proton.me';
-
-/** Separate credential host/key for two-password mailbox/data password entries. */
-export const PROTON_DATA_CREDENTIAL_HOST = 'proton-data.proton-lfs-cli.local';
-
-/** Separate credential host/key for browser-fork derived user key passwords. */
+/** Credential host of the browser-fork key-password entries (git-credential host, Proton Pass item URL). */
 export const PROTON_KEY_PASSWORD_CREDENTIAL_HOST = 'proton-drive-key.proton-lfs-cli.local';
+
+/**
+ * Release of the vendored Proton Drive SDK (`submodules/sdk`, tag `js/v<version>`).
+ *
+ * The SDK's own package.json carries a `0.0.1` placeholder that Proton only
+ * replaces when publishing to npm, so the SDK would otherwise announce
+ * `js@0.0.1` in `x-pm-drive-sdk-version`. Bump together with the submodule;
+ * constants.test.ts checks it against the checked-out tag.
+ */
+export const VENDORED_DRIVE_SDK_VERSION = '0.23.0';
+
+/**
+ * `x-pm-drive-sdk-version` value sent on every Proton request, by the SDK
+ * HTTP adapter and by this CLI's own API clients (official CLI
+ * cli/src/api/index.ts sends it on all requests).
+ */
+export const DRIVE_SDK_VERSION_HEADER = `js@${VENDORED_DRIVE_SDK_VERSION}`;
 
 /**
  * Third-party Proton Drive API client identifier (`x-pm-appversion`).
@@ -27,16 +38,6 @@ export const PROTON_KEY_PASSWORD_CREDENTIAL_HOST = 'proton-drive-key.proton-lfs-
  * The version part follows package.json so the identity cannot drift from
  * the published CLI version.
  */
-/**
- * Release of the vendored Proton Drive SDK (`submodules/sdk`, tag `js/v<version>`).
- *
- * The SDK's own package.json carries a `0.0.1` placeholder that Proton only
- * replaces when publishing to npm, so the SDK would otherwise announce
- * `js@0.0.1` in `x-pm-drive-sdk-version`. Bump together with the submodule;
- * constants.test.ts checks it against the checked-out tag.
- */
-export const VENDORED_DRIVE_SDK_VERSION = '0.23.0';
-
 export const PROTON_APP_NAME = 'protonlfscli';
 export const DEFAULT_PROTON_APP_VERSION = `external-drive-${PROTON_APP_NAME}@${pkgVersion}`;
 

@@ -1,8 +1,6 @@
 import { normalizeProviderName, createProvider } from './factory';
 import { GitCredentialProvider } from './git-credential';
 import { PassCliProvider } from './pass-cli';
-import { StdinProvider } from './stdin';
-import { InteractiveProvider } from './interactive';
 
 describe('normalizeProviderName', () => {
   it('normalizes "git" to "git-credential"', () => {
@@ -26,43 +24,25 @@ describe('normalizeProviderName', () => {
     expect(normalizeProviderName('PASS-CLI')).toBe('pass-cli');
   });
 
-  it('throws on unknown provider', () => {
-    expect(() => normalizeProviderName('unknown')).toThrow('Unknown credential provider: unknown');
+  it.each(['unknown', 'stdin', 'interactive'])('throws on unknown provider %s', (name) => {
+    expect(() => normalizeProviderName(name)).toThrow(`Unknown credential provider: ${name}`);
   });
 });
 
 describe('createProvider', () => {
   it('creates GitCredentialProvider', () => {
-    const provider = createProvider('git-credential');
+    const provider = createProvider('git-credential', 'custom.host');
     expect(provider).toBeInstanceOf(GitCredentialProvider);
     expect(provider.name).toBe('git-credential');
   });
 
   it('creates PassCliProvider', () => {
-    const provider = createProvider('pass-cli');
+    const provider = createProvider('pass-cli', 'custom.host');
     expect(provider).toBeInstanceOf(PassCliProvider);
     expect(provider.name).toBe('pass-cli');
   });
 
-  it('creates StdinProvider', () => {
-    const provider = createProvider('stdin');
-    expect(provider).toBeInstanceOf(StdinProvider);
-    expect(provider.name).toBe('stdin');
-  });
-
-  it('creates InteractiveProvider', () => {
-    const provider = createProvider('interactive');
-    expect(provider).toBeInstanceOf(InteractiveProvider);
-    expect(provider.name).toBe('interactive');
-  });
-
-  it('passes host option to GitCredentialProvider', () => {
-    const provider = createProvider('git-credential', { host: 'custom.host' });
-    expect(provider).toBeInstanceOf(GitCredentialProvider);
-  });
-
-  it('passes host option to PassCliProvider', () => {
-    const provider = createProvider('pass-cli', { host: 'custom.host' });
-    expect(provider).toBeInstanceOf(PassCliProvider);
+  it.each(['git-credential', 'pass-cli'] as const)('requires a credential host for %s', (name) => {
+    expect(() => createProvider(name, ' ')).toThrow('requires a credential host');
   });
 });

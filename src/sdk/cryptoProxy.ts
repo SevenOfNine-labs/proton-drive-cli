@@ -1,6 +1,22 @@
+/** OpenPGP crypto endpoint for the Proton Drive SDK (`@protontech/crypto` Api). */
+
+import '../crypto/polyfill';
+import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
+
+// Proton's OpenPGP configuration (accepted algorithms, S2K parameters, no
+// SEIPDv2 messages); idempotent.
+CryptoApi.init({});
+
+let sharedKeyStore: unknown;
+
+function adoptSharedKeyStore<T>(candidate: T): T {
+  if (sharedKeyStore === undefined) {
+    sharedKeyStore = candidate;
+  }
+  return sharedKeyStore as T;
+}
+
 /**
- * OpenPGP crypto endpoint for the Proton Drive SDK.
- *
  * The SDK's OpenPGPCryptoWithCryptoProxy consumes `@protontech/crypto`'s
  * CryptoApiInterface, whose reference implementation is that package's `Api`
  * endpoint (the SDK pairs the two in its own integration tests,
@@ -19,23 +35,6 @@
  * does: a key reference minted by the account adapter must be valid in the
  * endpoint instance the SDK calls, whichever instance that is.
  */
-
-import '../crypto/polyfill';
-import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
-
-// Proton's OpenPGP configuration (accepted algorithms, S2K parameters, no
-// SEIPDv2 messages); idempotent.
-CryptoApi.init({});
-
-let sharedKeyStore: unknown;
-
-function adoptSharedKeyStore<T>(candidate: T): T {
-  if (sharedKeyStore === undefined) {
-    sharedKeyStore = candidate;
-  }
-  return sharedKeyStore as T;
-}
-
 export class ProtonOpenPGPCryptoProxy extends CryptoApi {
   constructor() {
     super();

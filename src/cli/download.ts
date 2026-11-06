@@ -89,7 +89,6 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @see {@link createUploadCommand} for uploading files
  * @see {@link resolvePathToNodeUid} for path resolution logic
  * @see {@link createSDKClient} for SDK client initialization
- * @since 0.1.0
  */
 export function createDownloadCommand(): Command {
   return new Command('download')
@@ -117,10 +116,8 @@ async function downloadCommand(sourcePath: string, outputPath: string, options: 
       console.log(chalk.yellow('⚠ Skipping signature verification as requested'));
     }
 
-    // Resolve source path to node UID
     const nodeUid = await resolvePathToNodeUid(client, sourcePath);
 
-    // Download via SDK
     const startTime = Date.now();
     let lastUpdate = Date.now();
     let progressSpinner: any = null;
@@ -158,7 +155,6 @@ async function downloadCommand(sourcePath: string, outputPath: string, options: 
       }
     };
 
-    // Use unsafe download if skip-verification is requested
     const ctrl = options.skipVerification
       ? downloader.unsafeDownloadToStream(webStream, onProgress)
       : downloader.downloadToStream(webStream, onProgress);

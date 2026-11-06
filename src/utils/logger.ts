@@ -1,10 +1,4 @@
-/**
- * CLI logger.
- *
- * All levels write to stderr: stdout is reserved for command results (the
- * bridge's single JSON envelope, `--json` reports, file listings), so that
- * diagnostics never corrupt machine-readable output.
- */
+/** CLI logger: every level writes to stderr; stdout carries only command results (bridge envelope, --json). */
 
 import chalk from 'chalk';
 
@@ -60,7 +54,6 @@ class Logger {
 
 export const logger = new Logger();
 
-// Enable debug logging if DEBUG env var is set
 if (process.env.DEBUG) {
   logger.setLevel(LogLevel.DEBUG);
 }

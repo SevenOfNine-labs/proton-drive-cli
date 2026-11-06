@@ -1,11 +1,5 @@
-/**
- * Bridge protocol constants shared by the CLI, the Go adapter contract tests
- * and the JSON schemas under schemas/bridge/v1.
- *
- * Secrets never travel through a bridge request: the account password and the
- * mailbox/data password are reached only through the configured credential
- * providers (`dataCredentialProvider`/`dataCredentialHost`).
- */
+// Bridge protocol constants, mirrored by the JSON schemas under schemas/bridge/v1
+// and the Go adapter contract tests.
 import { ErrorCode } from '../errors/types';
 
 export const BRIDGE_COMMANDS = [
@@ -29,18 +23,14 @@ export function isBridgeCommand(command: string): command is BridgeCommand {
 export const BRIDGE_AUTH_STATES = [
   'ready',
   'needs_login',
-  'needs_data_password',
   'needs_key_password',
   'session_expired',
   'session_invalid',
-  'configuration_error',
 ] as const;
 
 export type BridgeAuthState = typeof BRIDGE_AUTH_STATES[number];
 
 export const BRIDGE_REQUEST_FIELDS = [
-  'dataCredentialProvider',
-  'dataCredentialHost',
   'appVersion',
   'oid',
   'path',
@@ -58,8 +48,6 @@ export interface BridgeCommandRequestFields {
 }
 
 export const BRIDGE_COMMON_REQUEST_FIELDS = [
-  'dataCredentialProvider',
-  'dataCredentialHost',
   'appVersion',
   'storageBase',
 ] as const satisfies readonly BridgeRequestField[];
@@ -113,23 +101,20 @@ export const BRIDGE_RESPONSE_FIELDS = [
 
 export const BRIDGE_ERROR_DETAIL_FIELDS = [
   'errorCode',
-  'twoFactorType',
-  'totpAllowed',
-  'fido2Available',
   'captchaUrl',
   'captchaToken',
   'verificationMethods',
   'action',
   'retryAfter',
   'protonCode',
+  'keyPasswordProvider',
+  'keyPasswordHost',
+  'providerError',
 ] as const;
 
 export const ERROR_CODE_STATUS = {
   [ErrorCode.AUTH_FAILED]: 401,
   [ErrorCode.SESSION_EXPIRED]: 401,
-  [ErrorCode.INVALID_CREDENTIALS]: 401,
-  [ErrorCode.TWO_FACTOR_REQUIRED]: 401,
-  [ErrorCode.DATA_PASSWORD_REQUIRED]: 401,
   [ErrorCode.KEY_PASSWORD_REQUIRED]: 401,
   [ErrorCode.NETWORK_ERROR]: 502,
   [ErrorCode.TIMEOUT]: 504,

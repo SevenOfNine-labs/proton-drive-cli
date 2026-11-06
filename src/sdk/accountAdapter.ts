@@ -1,10 +1,6 @@
 /**
- * Account adapter for the Proton Drive SDK.
- *
- * Implements ProtonDriveAccount on top of DriveCryptoService, which unlocks
- * the user and address keys during initialize(), and of the crypto endpoint,
- * into which the decrypted keys are imported so the SDK receives key
- * references it can use (official account module: addresses.ts).
+ * ProtonDriveAccount on DriveCryptoService; the decrypted keys are imported into the crypto
+ * endpoint so the SDK receives usable key references (official account module, addresses.ts).
  */
 
 import type { CryptoApiInterface, PrivateKeyReference, PublicKeyReference } from '@protontech/crypto';

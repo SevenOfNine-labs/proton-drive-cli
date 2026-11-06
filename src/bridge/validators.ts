@@ -1,10 +1,5 @@
-/**
- * Shared validators and types for the Git LFS bridge protocol.
- *
- * This module has no transitive dependencies on chalk, the Drive client,
- * AuthService or other heavy modules: only errors/types, errors/classify
- * (which adds the SDK error classes) and bridge/protocol.
- */
+// Validators of the Git LFS bridge protocol; imports only errors/types,
+// errors/classify and bridge/protocol, never the Drive client or AuthService.
 
 import { AppError, ErrorCode } from '../errors/types';
 import { toAppError } from '../errors/classify';
@@ -22,8 +17,6 @@ import {
  * Bridge request payload from stdin
  */
 export interface BridgeRequest {
-  dataCredentialProvider?: string;
-  dataCredentialHost?: string;
   appVersion?: string;
   oid?: string;
   path?: string;
@@ -97,9 +90,9 @@ function isStringArray(value: unknown): value is string[] {
  * Validate the JSON request envelope for a specific bridge command.
  *
  * This enforces the canonical command/field matrix before any command can
- * resolve credentials, touch the network, or perform local file operations.
- * Format-specific checks such as OID syntax and path traversal remain in the
- * command handlers so their existing error messages stay stable.
+ * read credentials, touch the network, or perform local file operations.
+ * Format-specific checks such as OID syntax and path traversal live in the
+ * command handlers.
  */
 export function validateBridgeRequestForCommand(
   command: BridgeCommand,

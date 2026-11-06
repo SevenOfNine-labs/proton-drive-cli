@@ -94,7 +94,6 @@ import { handleError } from '../errors/handler';
  * @see {@link createDownloadCommand} for saving files to disk
  * @see {@link createUploadCommand} for uploading files
  * @see {@link resolvePathToNodeUid} for path resolution
- * @since 0.1.0
  */
 export function createCatCommand(): Command {
   const cat = new Command('cat');

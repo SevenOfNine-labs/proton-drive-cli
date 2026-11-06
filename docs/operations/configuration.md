@@ -1,43 +1,45 @@
 # Configuration
 
 Source of truth: `src/constants.ts`, `src/auth/state-dir.ts`,
-`src/config/timeouts.ts`, `src/credentials/`, `src/cli/*.ts`, `src/index.ts`.
+`src/credentials/`, `src/cli/*.ts`, `src/index.ts`.
 
 ## State Files
 
 | Path | Permissions | Contents |
 | --- | --- | --- |
 | `~/.proton-drive-cli/` | `0700` | State directory |
-| `~/.proton-drive-cli/session.json` | `0600` | Session tokens and browser-fork metadata (`authMode`, `keyPasswordPersisted`, `keyPasswordProvider`, `keyPasswordHost`, `passwordMode`, `scopes`, `tokenExpiresAt`) |
+| `~/.proton-drive-cli/session.json` | `0600` | Session written by `login`: `uid`, `accessToken`, `refreshToken`, `keyPasswordProvider`, `keyPasswordHost`, and `scopes` and `tokenExpiresAt` when the API reports them |
 | `~/.proton-drive-cli/session.lock` | directory | `proper-lockfile` lock guarding refresh-token rotation across processes |
-| `~/.proton-drive-cli/crypto-cache.json` | `0600` | Cached key salts, user and address records for the current session UID; expires after one hour |
+| `~/.proton-drive-cli/crypto-cache.json` | `0600` | Cached user and address records (armored, passphrase-protected keys) for the current session UID; expires after one hour |
 | `~/.proton-drive-cli/rate-limit-cooldown.json` | `0600` | Local wait-until timestamp after a Proton rate limit |
 
 No account password is written to disk. The browser-derived key password is
 stored in the credential provider, keyed by the session UID, under
-`proton-drive-key.proton-lfs-cli.local`.
+`proton-drive-key.proton-lfs-cli.local`. A refresh token the API rejects
+signs the session out: `session.json`, the crypto cache and the key-password
+entry are removed. A login that yields a new session UID removes the
+key-password entry of the previous UID and revokes that session.
+
+With `pass-cli`, `login` stores the entry in a vault the account owns; when it
+owns none, as with a personal access token or an agent session, in a vault it
+may edit (role Manager or Editor). An existing entry in another vault is
+moved. Login fails when no vault qualifies.
 
 ## Environment Variables
 
 | Variable | Default | Read by | Description |
 | --- | --- | --- | --- |
-| `PROTON_KEY_PASSWORD_PROVIDER` | `pass-cli` | `login`, `doctor` | Browser-fork key-password provider: `pass-cli` or `git-credential` (aliases `pass`, `git`); the `--key-password-provider` option wins |
-| `PROTON_KEY_PASSWORD_HOST` | `proton-drive-key.proton-lfs-cli.local` | `login`, `doctor` | Key-password credential host/key; `--key-password-host` wins |
-| `PROTON_DATA_CREDENTIAL_PROVIDER` | unset | `doctor` | Mailbox/data password provider for two-password accounts (`--data-credential-provider` wins). Bridge commands take it from the request field instead |
-| `PROTON_DATA_CREDENTIAL_HOST` | `proton-data.proton-lfs-cli.local` | `doctor` | Data-password credential host/key (`--data-credential-host` wins) |
+| `PROTON_KEY_PASSWORD_PROVIDER` | `pass-cli` | `login` | Browser-fork key-password provider: `pass-cli` or `git-credential` (aliases `pass`, `git`); the `--key-password-provider` option wins. Later commands use the provider recorded in the session |
+| `PROTON_KEY_PASSWORD_HOST` | `proton-drive-key.proton-lfs-cli.local` | `login` | Key-password credential host/key; `--key-password-host` wins. Later commands use the host recorded in the session |
 | `PROTON_PASS_CLI_BIN` | `pass-cli` (on `PATH`) | `pass-cli` provider | Proton Pass CLI binary |
-| `PROTON_DRIVE_CLI_APP_VERSION` | `external-drive-protonlfscli@<version>` (the package version) | every API call | Proton `x-pm-appversion` identity; must match `external-drive-{name}@{major.minor.patch}` with an optional `-stable`, `-beta` or `-alpha` channel and `+build` suffix, `{name}` in lowercase letters and underscores; `cli-drive` is rejected. A bridge request's `appVersion` field takes precedence |
+| `PROTON_DRIVE_CLI_APP_VERSION` | `external-drive-protonlfscli@<version>` (the package version) | every API call | Proton `x-pm-appversion` identity (every request also carries `x-pm-drive-sdk-version: js@<vendored SDK release>`); must match `external-drive-{name}@{major.minor.patch}` with an optional `-stable`, `-beta` or `-alpha` channel and `+build` suffix, `{name}` in lowercase letters and underscores; `cli-drive` is rejected. A bridge request's `appVersion` field takes precedence |
 | `PROTON_DRIVE_CLI_BIN` | the running entry point | `doctor` | Entry point whose existence the doctor checks |
 | `PROTON_AUTH_TRACE` | unset | auth flow | `1`, `true`, `yes` or `on` writes redacted `[AUTH_TRACE]` JSON lines to stderr |
 | `PROTON_AUTH_TRACE_ID` | unset | auth flow | Correlation id included in those lines (the `proton-lfs-cli` tray sets `tray-<pid>-<nanoseconds>`) |
 | `DEBUG` | unset | all commands | `true` enables stack traces, auth trace and bridge logs below ERROR level; `--debug` sets it |
 
-Timeout values must be positive integers; invalid values fall back to the
-default and values above `600000` are capped, with a warning on stderr.
-
-Secrets must not be passed through the environment: `doctor` fails when
-`PROTON_DATA_PASSWORD` or `PROTON_SECOND_FACTOR_CODE` is set, and no command
-reads them. `PROTON_CREDENTIAL_PROVIDER` is not read by the CLI.
+No variable carries a secret; the CLI reads no password from the
+environment.
 
 ## Global Options
 
@@ -53,9 +55,9 @@ reads them. `PROTON_CREDENTIAL_PROVIDER` is not read by the CLI.
 | Command | Options |
 | --- | --- |
 | `login` | `--key-password-provider <pass-cli or git-credential>`, `--key-password-host <host>` |
-| `logout` | none; deletes the local session file (no API call) |
-| `status` | none; prints UID, truncated session id, scopes, password mode, auth mode and whether the key password is stored |
-| `session refresh` | `--json` for a machine-readable result (`ok`, `refreshed`, `state`, and on failure `errorCode`, `recoverable`, `statusCode`, `protonCode`, `protonError`, `action`) |
+| `logout` | none; revokes the session (`DELETE /auth/v4`, refreshing an expired access token once; a failure is reported as a warning, a session ended elsewhere is not), removes the key-password entry and deletes the session file and crypto cache unless a new login replaced them; an invalid session file is deleted without a request |
+| `status` | none; prints the session UID, its scopes and whether the key password is stored |
+| `session refresh` | `--json` for a machine-readable result (`ok`, `refreshed`, `state`, and on failure `errorCode`, `recoverable`, `statusCode`, `protonCode`, `protonError`, `retryAfter` for a rate limit, `action`); `recoverable` is false only when the session ended (`SESSION_EXPIRED`) |
 | `doctor` | See [Doctor Reference](../reference/doctor.md) |
 | `bridge <command>` | See [Bridge Protocol Reference](../reference/bridge-protocol.md) |
 | `ls`, `upload`, `download`, `mkdir`, `rm`, `mv`, `cat`, `info` | `proton-drive-cli <command> --help` |
@@ -91,4 +93,6 @@ proton-drive-cli doctor --json
 printf '{}\n' | proton-drive-cli bridge auth-state
 ```
 
-These commands do not contact Proton.
+These commands send no request to the Proton API and refresh no token; the
+key-password check runs the session's credential provider, and `pass-cli` can
+contact Proton Pass to read the entry.

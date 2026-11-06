@@ -1,13 +1,7 @@
 /**
- * Parses and evaluates the `x-pm-drive-requirements` and
- * `x-pm-drive-platform-requirements` response headers that Proton Drive uses
- * to tell clients that a newer SDK is required or recommended (important for
- * the announced cryptographic model migration). Intended to run after each
- * Drive API response.
- *
- * Ported from the official Proton Drive CLI
- * (ProtonDriveApps/sdk `cli/src/api/apiRequirements.ts` at js/v0.23.0,
- * MIT License, Copyright (c) 2025-2026 Proton AG). Keep in sync with upstream.
+ * `x-pm-drive-requirements` and `x-pm-drive-platform-requirements` response headers, ported
+ * from ProtonDriveApps/sdk `cli/src/api/apiRequirements.ts` at js/v0.23.0 (MIT License,
+ * Copyright (c) 2025-2026 Proton AG).
  */
 
 export enum RequirementScope {

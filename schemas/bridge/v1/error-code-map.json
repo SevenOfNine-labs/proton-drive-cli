@@ -12,18 +12,6 @@
       "httpStatus": 401,
       "rootCode": "auth_required"
     },
-    "INVALID_CREDENTIALS": {
-      "httpStatus": 401,
-      "rootCode": "auth_required"
-    },
-    "TWO_FACTOR_REQUIRED": {
-      "httpStatus": 401,
-      "rootCode": "two_factor_required"
-    },
-    "DATA_PASSWORD_REQUIRED": {
-      "httpStatus": 401,
-      "rootCode": "data_password_required"
-    },
     "KEY_PASSWORD_REQUIRED": {
       "httpStatus": 401,
       "rootCode": "key_password_required"

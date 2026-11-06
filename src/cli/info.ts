@@ -85,7 +85,6 @@ import { getNodeDisplayName } from '../sdk/nodeEntity';
  * @see {@link createLsCommand} for listing directory contents
  * @see {@link resolvePathToNodeUid} for path resolution
  * @see {@link createSDKClient} for SDK client initialization
- * @since 0.1.0
  */
 export function createInfoCommand(): Command {
   const info = new Command('info');
