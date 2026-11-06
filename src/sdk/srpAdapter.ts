@@ -1,11 +1,6 @@
 /**
- * SRP module adapter for the Proton Drive SDK.
- *
- * Implements the SDK's SRPModule shape (src/crypto/interface.ts upstream, not
- * re-exported from the package root) with the SRP primitives of
- * `@protontech/crypto/srp`, as the official account module does (srp.ts).
- * The SDK needs it for password-derived keys; account login itself is
- * browser-fork only and never passes through here.
+ * SRPModule of the Proton Drive SDK on `@protontech/crypto/srp`, as the official account module
+ * does (srp.ts); the SDK uses it for password-derived keys, never for account login.
  */
 
 import '../crypto/polyfill';

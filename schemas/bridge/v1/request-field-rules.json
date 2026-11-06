@@ -6,8 +6,6 @@
     "auth-state": {
       "required": [],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase"
       ]
@@ -18,8 +16,6 @@
         "path"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oid",
@@ -32,8 +28,6 @@
         "outputPath"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oid",
@@ -43,8 +37,6 @@
     "list": {
       "required": [],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "folder"
@@ -55,8 +47,6 @@
         "oid"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oid"
@@ -67,8 +57,6 @@
         "oid"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oid"
@@ -77,8 +65,6 @@
     "init": {
       "required": [],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase"
       ]
@@ -88,8 +74,6 @@
         "oids"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oids"
@@ -100,8 +84,6 @@
         "oids"
       ],
       "allowed": [
-        "dataCredentialProvider",
-        "dataCredentialHost",
         "appVersion",
         "storageBase",
         "oids"

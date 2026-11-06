@@ -76,7 +76,6 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @see {@link createLsCommand} for listing folders
  * @see {@link createRmCommand} for deleting folders
  * @see {@link ensureFolderPath} for parent path resolution
- * @since 0.1.0
  */
 export function createMkdirCommand(): Command {
   const mkdir = new Command('mkdir');
@@ -87,14 +86,12 @@ export function createMkdirCommand(): Command {
     .argument('<folder-name>', 'Name of the folder to create')
     .action(async (path: string, folderName: string, options) => {
       try {
-        // Initialize SDK client
         const client = await createSDKClient({});
 
         if (isVerbose()) {
           console.log(chalk.cyan(`Creating folder "${folderName}" at ${path}...`));
         }
 
-        // Create the folder using SDK
         const parentUid = await ensureFolderPath(client, path);
         const result = await client.createFolder(parentUid, folderName);
 

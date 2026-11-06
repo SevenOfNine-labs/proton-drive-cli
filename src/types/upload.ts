@@ -28,6 +28,5 @@ export interface UploadResult {
   uploadedBlocks: number;
 }
 
-// Constants
 export const BLOCK_SIZE = 4 * 1024 * 1024; // 4MB
 export const MAX_PARALLEL_BLOCKS = 4; // Based on CPU count in C# SDK

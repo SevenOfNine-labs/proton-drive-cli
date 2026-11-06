@@ -1,19 +1,5 @@
-/**
- * Git Credential Manager provider.
- *
- * Wraps `git credential fill/approve/reject` to resolve, store, and remove
- * credentials via the system's configured credential helper (macOS Keychain,
- * Windows Credential Manager, Linux Secret Service, etc.).
- *
- * Security:
- * - Uses execFile (not exec) to prevent shell injection
- * - 10-second timeout to prevent hanging on interactive helpers
- * - Credentials are passed via stdin, not command-line arguments
- */
-
 import { execFile } from 'child_process';
 
-import { PROTON_CREDENTIAL_HOST } from '../constants';
 import { AppError, ErrorCode } from '../errors/types';
 import type { CredentialProvider, Credentials } from './types';
 import { authTrace, maskIdentifier } from '../utils/auth-trace';
@@ -63,11 +49,8 @@ export function assertCredentialValue(name: string, value: string): void {
 }
 
 /**
- * Parse `key=value` lines from git credential output.
- *
- * Only a trailing CR/LF is stripped: values keep leading and trailing
- * whitespace, and the first `=` separates key from value. A blank line ends
- * the attribute list.
+ * Attributes of git credential output (git-credential(1), INPUT/OUTPUT
+ * FORMAT): `key=value` lines split at the first `=`, ended by a blank line.
  */
 function parseCredentialOutput(output: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -92,7 +75,7 @@ function formatCredentialInput(fields: Partial<GitCredential>): string {
     assertCredentialValue(name, value);
     lines.push(`${name}=${value}`);
   }
-  lines.push(''); // trailing blank line signals end of input
+  lines.push('');
   return lines.join('\n');
 }
 
@@ -126,40 +109,40 @@ function runGitCredential(
   });
 }
 
-// ─── git-credential(1) operations used by the provider ─────────────
+// ─── git-credential(1) operations ──────────────────────────────────
 
 /**
- * Resolve credentials using `git credential fill`.
+ * Look up the password of `username` at `host` with `git credential fill`.
  */
-export async function gitCredentialFill(host?: string, username?: string): Promise<GitCredential> {
+export async function gitCredentialFill(host: string, username: string): Promise<GitCredential> {
   authTrace('credential.git.fill.start', {
-    host: host || PROTON_CREDENTIAL_HOST,
+    host,
     username: maskIdentifier(username),
   });
   const input = formatCredentialInput({
     protocol: DEFAULT_PROTOCOL,
-    host: host || PROTON_CREDENTIAL_HOST,
+    host,
     username,
   });
 
   const output = await runGitCredential('fill', input);
   const parsed = parseCredentialOutput(output);
 
-  if (!(parsed.username || username) || !parsed.password) {
+  if (!parsed.password) {
     authTrace('credential.git.fill.failure', {
-      host: host || PROTON_CREDENTIAL_HOST,
-      reason: 'missing-username-or-password',
+      host,
+      reason: 'missing-password',
     });
     throw new Error(
-      'git credential fill did not return username and password. ' +
+      'git credential fill did not return a password. ' +
       'Ensure a credential helper is configured (e.g., git-credential-manager).',
     );
   }
 
   const credential = {
     protocol: parsed.protocol || DEFAULT_PROTOCOL,
-    host: parsed.host || host || PROTON_CREDENTIAL_HOST,
-    username: parsed.username || username!,
+    host: parsed.host || host,
+    username,
     password: parsed.password,
   };
   authTrace('credential.git.fill.success', {
@@ -185,39 +168,28 @@ export async function gitCredentialReject(cred: GitCredential): Promise<void> {
   await runGitCredential('reject', input);
 }
 
-// ─── Class-based provider ──────────────────────────────────────────
+// ─── Provider ──────────────────────────────────────────────────────
 
+/**
+ * git-credential(1) provider: `git credential fill/approve/reject` against
+ * the configured credential helper (macOS Keychain, Windows Credential
+ * Manager, Linux Secret Service, ...). Every call runs through execFile
+ * without a shell, with a 10-second timeout; attributes travel on stdin,
+ * never as command-line arguments (CWE-214).
+ */
 export class GitCredentialProvider implements CredentialProvider {
   readonly name = 'git-credential' as const;
-  private readonly host: string;
 
-  constructor(host?: string) {
-    this.host = host || PROTON_CREDENTIAL_HOST;
-    assertCredentialValue('host', this.host);
-  }
-
-  async isAvailable(): Promise<boolean> {
-    try {
-      await gitCredentialFill(this.host);
-      return true;
-    } catch {
-      return false;
+  constructor(private readonly host: string) {
+    if (!host.trim()) {
+      throw new Error('git-credential provider requires a credential host');
     }
+    assertCredentialValue('host', host);
   }
 
-  async resolve(options?: { username?: string }): Promise<Credentials> {
-    authTrace('credential.resolve.start', {
-      provider: this.name,
-      host: this.host,
-      username: maskIdentifier(options?.username),
-    });
-    const cred = await gitCredentialFill(this.host, options?.username);
-    authTrace('credential.resolve.success', {
-      provider: this.name,
-      host: this.host,
-      username: maskIdentifier(options?.username || cred.username),
-    });
-    return { username: options?.username || cred.username, password: cred.password };
+  async resolve(username: string): Promise<Credentials> {
+    const cred = await gitCredentialFill(this.host, username);
+    return { username, password: cred.password };
   }
 
   async store(username: string, password: string): Promise<void> {
@@ -236,28 +208,5 @@ export class GitCredentialProvider implements CredentialProvider {
       username,
       password: '',
     });
-  }
-
-  async verify(): Promise<boolean> {
-    authTrace('credential.verify.start', {
-      provider: this.name,
-      host: this.host,
-    });
-    try {
-      const ok = await this.isAvailable();
-      authTrace('credential.verify.success', {
-        provider: this.name,
-        host: this.host,
-        ok,
-      });
-      return ok;
-    } catch (error) {
-      authTrace('credential.verify.failure', {
-        provider: this.name,
-        host: this.host,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
   }
 }

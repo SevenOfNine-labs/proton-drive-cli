@@ -1,22 +1,6 @@
 /**
- * SDK Behavioral Tests
- *
- * These tests verify the RUNTIME BEHAVIOR of the @protontech/drive-sdk,
- * not just the existence of methods (that's sdk-contract.test.ts).
- *
- * After `git pull` on the SDK submodule, these tests will FAIL if:
- *
- * 1. MemoryCache behavior changes (set/get/iterate/tag semantics)
- * 2. OpenPGPCryptoWithCryptoProxy stops wrapping our proxy correctly
- * 3. ProtonDriveClient method parameter counts change
- * 4. AsyncGenerator methods stop returning async iterables
- * 5. Promise methods stop returning promises
- * 6. Error class hierarchy changes
- * 7. NodeType enum values change
- * 8. CryptoProxy encrypt/decrypt/sign/verify roundtrips break
- * 9. Client construction with our adapters fails
- *
- * These tests DO NOT require authentication or network access.
+ * Runtime behaviour of @protontech/drive-sdk this CLI relies on (caches, crypto proxy round trips,
+ * client construction, method shapes, error classes, NodeType), offline.
  */
 
 import {
@@ -167,7 +151,6 @@ describe('MemoryCache behavior', () => {
     await cache.setEntity('node-1', 'v1', ['tag-A']);
     await cache.setEntity('node-1', 'v2', ['tag-B']);
 
-    // Should no longer be under tag-A
     const tagA: any[] = [];
     for await (const item of cache.iterateEntitiesByTag('tag-A')) {
       tagA.push(item);
@@ -251,12 +234,9 @@ describe('ProtonDriveClient method parameter counts', () => {
 // 3. Return Type Detection (Promise vs AsyncGenerator)
 // ---------------------------------------------------------------------------
 describe('ProtonDriveClient return types', () => {
-  // The SDK dist is transpiled by swc since js/v0.19 (async functions and
-  // generators are downleveled to helpers), so `fn.constructor.name` no longer
-  // identifies async functions. Check the observable runtime shape instead:
-  // generator methods must return an async iterable without executing, and
-  // promise methods must return a Promise. Calls run against the mocked
-  // client, so rejections are expected and swallowed.
+  // swc downlevels the SDK's async functions, so `fn.constructor.name` cannot
+  // tell them apart: generators must return an async iterable without running,
+  // promise methods a Promise (rejections from the mocked client are swallowed).
 
   // Node UIDs must be well-formed (`<volumeId>~<nodeId>`): the SDK's failure
   // telemetry parses them asynchronously and would otherwise throw outside
@@ -385,7 +365,6 @@ describe('NodeType enum exact values', () => {
     const values = Object.values(NodeType);
     expect(values).toContain('file');
     expect(values).toContain('folder');
-    // SDK 0.9.8+ added album and photo types
     expect(values.length).toBeGreaterThanOrEqual(2);
   });
 });

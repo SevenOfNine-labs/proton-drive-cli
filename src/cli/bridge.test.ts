@@ -1,23 +1,17 @@
 const mockCreateSDKClient = jest.fn();
-const mockCredentialResolve = jest.fn();
 const mockLoadSession = jest.fn();
+const mockReadStoredSession = jest.fn(async (_sessionFile?: string) => {
+  const session = await mockLoadSession();
+  return session ? { kind: 'valid', session } : { kind: 'none' };
+});
 const mockValidateSession = jest.fn();
 const mockRefreshSession = jest.fn();
-const mockKeyPasswordVerify = jest.fn();
+const mockKeyPasswordLoad = jest.fn();
 const mockFindFileByOid = jest.fn();
 const mockDeleteByOid = jest.fn();
 const mockListFolder = jest.fn();
 const mockEnsureFolderPath = jest.fn();
 const mockFindFileNodeInFolder = jest.fn();
-const mockNormalizeProviderName = jest.fn((name: string) => {
-  const normalized = name.trim().toLowerCase();
-  if (normalized === 'git') return 'git-credential';
-  if (normalized === 'pass') return 'pass-cli';
-  if (['git-credential', 'pass-cli', 'stdin', 'interactive'].includes(normalized)) {
-    return normalized;
-  }
-  throw new Error(`Unknown credential provider: ${name}`);
-});
 
 jest.mock('../sdk/client', () => ({
   createSDKClient: mockCreateSDKClient,
@@ -35,16 +29,10 @@ jest.mock('./bridge-helpers', () => ({
   listFolder: mockListFolder,
 }));
 
-jest.mock('../credentials', () => ({
-  createProvider: jest.fn(() => ({
-    resolve: mockCredentialResolve,
-  })),
-  normalizeProviderName: mockNormalizeProviderName,
-}));
-
 jest.mock('../auth/session', () => ({
   SessionManager: {
     loadSession: mockLoadSession,
+    readStoredSession: mockReadStoredSession,
     validateSession: mockValidateSession,
     refreshSession: mockRefreshSession,
   },
@@ -54,9 +42,10 @@ jest.mock('../auth/key-password-store', () => ({
   createKeyPasswordStore: jest.fn(() => ({
     provider: 'git-credential',
     host: 'proton-drive-key.proton-lfs-cli.local',
-    verify: mockKeyPasswordVerify,
+    load: mockKeyPasswordLoad,
   })),
 }));
+import { createKeyPasswordStore } from '../auth/key-password-store';
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -78,38 +67,31 @@ import {
 } from './bridge';
 import { BridgeRequest, BridgeResponse } from '../bridge/validators';
 import { BRIDGE_AUTH_STATES, BRIDGE_COMMANDS, ERROR_CODE_STATUS } from '../bridge/protocol';
-import { createProvider } from '../credentials';
 import { AppError, CaptchaError, ErrorCode } from '../errors/types';
 import { logger, LogLevel } from '../utils/logger';
 import { assertValidAgainstSchema } from '../test/schema-validator';
 import type { SessionCredentials } from '../types/auth';
 
-const mockCreateProvider = createProvider as jest.MockedFunction<typeof createProvider>;
+const mockCreateKeyPasswordStore = createKeyPasswordStore as jest.MockedFunction<typeof createKeyPasswordStore>;
 const VALID_OID = '4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393';
 // A second OID whose text contains "9101" (the Proton insufficient-scope code).
 const OTHER_OID = `9101aa${VALID_OID.slice(6)}`;
 
 function makeSession(overrides: Partial<SessionCredentials> = {}): SessionCredentials {
   return {
-    sessionId: 'session-id',
     uid: 'session-uid',
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     scopes: ['drive'],
-    passwordMode: 1,
     tokenExpiresAt: Date.now() + 60_000,
-    authMode: 'browser-fork',
-    keyPasswordPersisted: true,
     keyPasswordProvider: 'git-credential',
     keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
     ...overrides,
   };
 }
 
-function expectNoAuthStateNetworkOrCredentialSideEffects(): void {
+function expectNoAuthStateNetworkSideEffects(): void {
   expect(mockRefreshSession).not.toHaveBeenCalled();
-  expect(mockCredentialResolve).not.toHaveBeenCalled();
-  expect(mockCreateProvider).not.toHaveBeenCalled();
   expect(mockCreateSDKClient).not.toHaveBeenCalled();
 }
 
@@ -144,28 +126,26 @@ describe('bridge validators', () => {
     expect(() => validateLocalPath('../etc/passwd')).toThrow('Path traversal not allowed');
   });
 
-  it('does not expose bridge auth, login-shaped or secret request fields', () => {
-    expect(BRIDGE_COMMANDS).not.toContain('auth');
+  it('rejects request fields outside the protocol', () => {
     expect(BRIDGE_COMMANDS).not.toContain('refresh');
-    expect(BRIDGE_AUTH_STATES).not.toContain('login_available');
+    expect([...BRIDGE_AUTH_STATES].sort()).toEqual([
+      'needs_key_password',
+      'needs_login',
+      'ready',
+      'session_expired',
+      'session_invalid',
+    ]);
 
     for (const request of [
-      { credentialProvider: 'git-credential' },
-      { allowLogin: false },
-      { username: 'user@proton.me' },
-      { dataPassword: 'mailbox-password' },
+      { dataCredentialProvider: 'pass-cli' },
+      { dataCredentialHost: 'proton-data.proton-lfs-cli.local' },
+      { password: 'secret' },
     ]) {
       expect(() => validateBridgeRequestForCommand('auth-state', request as unknown as BridgeRequest))
         .toThrow(`Unknown bridge request field "${Object.keys(request)[0]}"`);
     }
-  });
-
-  it('accepts data-password provider fields for transfer commands', () => {
-    expect(() => validateBridgeRequestForCommand('init', {
-      dataCredentialProvider: 'pass-cli',
-      dataCredentialHost: 'proton-data.proton-lfs-cli.local',
-      storageBase: 'LFS',
-    })).not.toThrow();
+    expect(() => validateBridgeRequestForCommand('init', { appVersion: 'external-drive-x@1.0.0', storageBase: 'LFS' }))
+      .not.toThrow();
   });
 
   it('maps structured auth errors to HTTP status codes', () => {
@@ -181,13 +161,12 @@ describe('getBridgeAuthState', () => {
     jest.clearAllMocks();
     mockLoadSession.mockResolvedValue(null);
     mockValidateSession.mockResolvedValue(false);
-    mockKeyPasswordVerify.mockResolvedValue(true);
-    mockCredentialResolve.mockResolvedValue({ username: 'data', password: 'data-password' });
+    mockKeyPasswordLoad.mockResolvedValue('stored-key-password');
     mockCreateSDKClient.mockResolvedValue({ ready: true });
   });
 
-  it('reports needs_login without resolving credentials or contacting Proton', async () => {
-    const payload = await getBridgeAuthState({});
+  it('reports needs_login without contacting Proton', async () => {
+    const payload = await getBridgeAuthState();
     expect(payload).toMatchObject({
       state: 'needs_login',
       hasSession: false,
@@ -196,15 +175,28 @@ describe('getBridgeAuthState', () => {
     });
     assertValidAgainstSchema('bridge/v1/auth-state-payload.schema.json', payload);
 
-    expectNoAuthStateNetworkOrCredentialSideEffects();
+    expectNoAuthStateNetworkSideEffects();
   });
 
   it('reports ready for a valid browser-fork session with key password present', async () => {
     mockLoadSession.mockResolvedValue(makeSession());
     mockValidateSession.mockResolvedValue(true);
-    mockKeyPasswordVerify.mockResolvedValue(true);
+    mockKeyPasswordLoad.mockResolvedValue('stored-key-password');
 
-    const payload = await getBridgeAuthState({});
+    const payload = await getBridgeAuthState();
+    expect(payload).toEqual({
+      state: 'ready',
+      hasSession: true,
+      sessionValid: true,
+      sessionExpired: false,
+      sessionUidPresent: true,
+      keyPasswordAvailable: true,
+      keyPasswordProvider: 'git-credential',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+      willAttemptNetwork: false,
+      errors: [],
+      actions: [expect.any(String)],
+    });
     expect(payload).toMatchObject({
       state: 'ready',
       hasSession: true,
@@ -217,101 +209,72 @@ describe('getBridgeAuthState', () => {
     expect(mockValidateSession.mock.calls[0][0]).toMatchObject({ uid: 'session-uid' });
     expect(mockValidateSession.mock.calls[0].slice(1).some((arg: unknown) => arg === true)).toBe(false);
 
-    expectNoAuthStateNetworkOrCredentialSideEffects();
+    expectNoAuthStateNetworkSideEffects();
   });
 
   it('reports session_expired from the local validation result', async () => {
     mockLoadSession.mockResolvedValue(makeSession({ tokenExpiresAt: Date.now() - 1 }));
     mockValidateSession.mockResolvedValue(false);
 
-    const payload = await getBridgeAuthState({});
+    const payload = await getBridgeAuthState();
     expect(payload).toMatchObject({ state: 'session_expired', sessionValid: false, sessionExpired: true });
     assertValidAgainstSchema('bridge/v1/auth-state-payload.schema.json', payload);
-  });
-
-  it('reports ready for browser-fork two-password sessions with key password present', async () => {
-    mockLoadSession.mockResolvedValue(makeSession({ passwordMode: 2 }));
-    mockValidateSession.mockResolvedValue(true);
-    mockKeyPasswordVerify.mockResolvedValue(true);
-
-    await expect(getBridgeAuthState({})).resolves.toMatchObject({
-      state: 'ready',
-      passwordMode: 2,
-      authMode: 'browser-fork',
-      keyPasswordAvailable: true,
-      willAttemptNetwork: false,
-    });
-
-    expectNoAuthStateNetworkOrCredentialSideEffects();
   });
 
   it('reports needs_key_password when a browser-fork session cannot be unlocked', async () => {
     mockLoadSession.mockResolvedValue(makeSession());
     mockValidateSession.mockResolvedValue(true);
-    mockKeyPasswordVerify.mockResolvedValue(false);
+    mockKeyPasswordLoad.mockRejectedValue(new Error('pass-cli is not logged in. Run: pass-cli login'));
 
-    await expect(getBridgeAuthState({})).resolves.toMatchObject({
+    const payload = await getBridgeAuthState();
+    expect(payload).toMatchObject({
       state: 'needs_key_password',
       keyPasswordAvailable: false,
+      errors: ['Key password unavailable from git-credential: pass-cli is not logged in. Run: pass-cli login'],
     });
-  });
-
-  it.each([1, 2])('reports needs_data_password for non-browser-fork password mode %i sessions without a data provider', async (passwordMode) => {
-    mockLoadSession.mockResolvedValue(makeSession({
-      authMode: undefined,
-      keyPasswordPersisted: undefined,
-      keyPasswordProvider: undefined,
-      keyPasswordHost: undefined,
-      passwordMode,
-    }));
-    mockValidateSession.mockResolvedValue(true);
-
-    const payload = await getBridgeAuthState({});
-    expect(payload).toMatchObject({ state: 'needs_data_password', passwordMode });
     assertValidAgainstSchema('bridge/v1/auth-state-payload.schema.json', payload);
   });
 
-  it('reports configuration_error for invalid data provider names', async () => {
-    mockLoadSession.mockResolvedValue(makeSession());
-    mockValidateSession.mockResolvedValue(true);
+  it('reads the given session file', async () => {
+    await getBridgeAuthState('/tmp/other-session.json');
 
-    await expect(getBridgeAuthState({ dataCredentialProvider: 'mystery' })).resolves.toMatchObject({
-      state: 'configuration_error',
-      errors: ['Unknown credential provider: mystery'],
+    expect(mockReadStoredSession).toHaveBeenCalledWith('/tmp/other-session.json');
+  });
+
+  it('reads the default session file for the auth-state bridge command', async () => {
+    await runBridgeCommand('auth-state', {});
+
+    expect(mockReadStoredSession).toHaveBeenCalledWith(undefined);
+  });
+
+  it('reports session_invalid for a session file that login did not write', async () => {
+    mockReadStoredSession.mockResolvedValueOnce({ kind: 'invalid' });
+
+    const payload = await getBridgeAuthState();
+    expect(payload).toMatchObject({
+      state: 'session_invalid',
+      hasSession: true,
+      sessionValid: false,
+      sessionExpired: false,
+      sessionUidPresent: false,
+      keyPasswordAvailable: false,
     });
+    expect(payload.actions.join(' ')).toContain('proton-drive-cli login');
+    assertValidAgainstSchema('bridge/v1/auth-state-payload.schema.json', payload);
+    expect(mockKeyPasswordLoad).not.toHaveBeenCalled();
   });
 });
 
 describe('getInitializedClient', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockCredentialResolve.mockResolvedValue({ username: 'data', password: 'data-password' });
     mockCreateSDKClient.mockResolvedValue({ ready: true });
   });
 
-  it('passes the app version to the SDK client without a data password', async () => {
+  it('passes the app version to the SDK client', async () => {
     await getInitializedClient({ appVersion: 'external-drive-root@9.9.9' });
 
-    expect(mockCreateSDKClient).toHaveBeenCalledWith({
-      dataPassword: undefined,
-      appVersion: 'external-drive-root@9.9.9',
-    });
-    expect(mockCreateProvider).not.toHaveBeenCalled();
-  });
-
-  it('resolves only the data-password provider before SDK initialization', async () => {
-    await getInitializedClient({
-      dataCredentialProvider: 'pass-cli',
-      dataCredentialHost: 'proton-data.example.test',
-    });
-
-    expect(mockCreateProvider).toHaveBeenCalledWith('pass-cli', {
-      host: 'proton-data.example.test',
-    });
-    expect(mockCreateSDKClient).toHaveBeenCalledWith({
-      dataPassword: 'data-password',
-      appVersion: undefined,
-    });
+    expect(mockCreateSDKClient).toHaveBeenCalledWith({ appVersion: 'external-drive-root@9.9.9' });
   });
 });
 
@@ -327,7 +290,7 @@ describe('runBridgeCommand', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-test-'));
     mockLoadSession.mockResolvedValue(makeSession());
     mockValidateSession.mockResolvedValue(true);
-    mockKeyPasswordVerify.mockResolvedValue(true);
+    mockKeyPasswordLoad.mockResolvedValue('stored-key-password');
     mockCreateSDKClient.mockReset();
     mockCreateSDKClient.mockResolvedValue(fakeClient);
     mockEnsureFolderPath.mockResolvedValue('folder-uid');
@@ -367,6 +330,26 @@ describe('runBridgeCommand', () => {
     expectErrorEnvelope(bad, 400, ErrorCode.VALIDATION_ERROR);
     expect(bad.error).toContain('Invalid OID');
     expect(mockCreateSDKClient).not.toHaveBeenCalled();
+  });
+
+  it('reports an unreadable key password with the provider, host and reason', async () => {
+    mockCreateSDKClient.mockRejectedValueOnce(new AppError(
+      'The key password of the session could not be read from pass-cli (pass-cli is not logged in).',
+      ErrorCode.KEY_PASSWORD_REQUIRED,
+      {
+        keyPasswordProvider: 'pass-cli',
+        keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+        providerError: 'pass-cli is not logged in. Run: pass-cli login',
+      },
+      true,
+    ));
+
+    const details = expectErrorEnvelope(await runBridgeCommand('init', {}), 401, ErrorCode.KEY_PASSWORD_REQUIRED);
+    expect(details).toMatchObject({
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+      providerError: 'pass-cli is not logged in. Run: pass-cli login',
+    });
   });
 
   it('init creates the normalized storage base in one traversal', async () => {

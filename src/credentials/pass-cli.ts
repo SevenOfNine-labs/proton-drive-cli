@@ -1,37 +1,6 @@
-/**
- * Proton Pass CLI credential provider.
- *
- * Resolves and stores secrets as login items in Proton Pass vaults through
- * the `pass-cli` binary, matching items by the credential host URL. The JSON
- * shapes handled here are the serializers of the pinned pass-cli release
- * (submodules/pass-cli, 2.7.0):
- *
- * - `vault list --output json` -> `{ vaults: [{ name, vault_id, share_id }] }`
- *   (pass-cli/src/commands/vault/list.rs)
- * - `item list --share-id <id> --filter-type login --output json`
- *   -> `{ items: [{ id, share_id, vault_id, title, item_type, ... }] }`;
- *   summaries carry neither secrets nor URLs (pass-cli/src/commands/item/list.rs)
- * - `item view --share-id <id> --item-id <id> --output json`
- *   -> `{ item: { id, share_id, content: { title, content: { Login: { email,
- *   username, password, urls } } } }, attachments }` (pass/src/item/get_one.rs)
- * - `item create login --share-id <id> --from-template -` reads the login
- *   template JSON from stdin (pass-cli/src/commands/item/create/login.rs)
- * - `info` exits non-zero without an authenticated session
- *   (docs/public/docs/commands/info.md)
- *
- * Security:
- * - execFile without a shell and a 15-second timeout on every call
- * - passwords reach pass-cli only through stdin (create template); an existing
- *   entry is replaced by create-then-delete because `item update` takes field
- *   values as command-line arguments, which are visible to other local
- *   processes (CWE-214)
- * - secrets never appear in trace output
- */
-
 import { execFile } from 'child_process';
 
-import { PROTON_CREDENTIAL_HOST } from '../constants';
-import type { CredentialProvider, Credentials, LookupOptions } from './types';
+import type { CredentialProvider, Credentials } from './types';
 import { authTrace, maskIdentifier } from '../utils/auth-trace';
 import { logger } from '../utils/logger';
 
@@ -59,7 +28,6 @@ export interface PassCliLoginItem {
   vaultName: string;
   title: string;
   username?: string;
-  email?: string;
   password?: string;
   urls: string[];
 }
@@ -73,14 +41,6 @@ interface PassCliLoginTemplate {
   totp_uri: string | null;
   urls: string[];
   extra_fields: never[];
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function credentialHostPattern(host: string = PROTON_CREDENTIAL_HOST): RegExp {
-  return new RegExp(escapeRegExp(host), 'i');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,21 +94,21 @@ function toLoginItem(raw: unknown, vaultName: string): PassCliLoginItem | null {
     vaultName,
     title: optionalString(data.title) ?? '',
     username: optionalString(login.username),
-    email: optionalString(login.email),
     password: optionalString(login.password),
     urls: stringArray(login.urls),
   };
 }
 
-function titleMatchesCredentialHost(title: string, host: string): boolean {
-  const normalizedTitle = title.trim().toLowerCase();
-  const normalizedHost = host.trim().toLowerCase();
-  if (!normalizedTitle || !normalizedHost) return false;
-  if (normalizedTitle.includes(normalizedHost)) return true;
+function titleMatchesHost(title: string, host: string): boolean {
+  return title.toLowerCase().includes(host.toLowerCase());
+}
 
-  // Proton's own login item is commonly titled "Proton" or "Proton Account";
-  // its URL is only visible through `item view`.
-  return normalizedHost === PROTON_CREDENTIAL_HOST && /\bproton\b/.test(normalizedTitle);
+function urlMatchesHost(url: string, host: string): boolean {
+  try {
+    return new URL(url).host === new URL(`https://${host}`).host;
+  } catch {
+    return false;
+  }
 }
 
 function urlHosts(urls: string[]): string[] {
@@ -183,10 +143,8 @@ function runPassCli(args: string[], stdin?: string): Promise<string> {
         resolve(stdout);
       },
     );
-    // A child that exits before reading stdin makes the write fail with
-    // EPIPE; the exit status reported to the callback above is the error the
-    // caller needs, so the stream error itself is not rethrown. Ending stdin
-    // on every call keeps a prompting subcommand from waiting for input.
+    // EPIPE from a child that exits before reading stdin is reported by its
+    // exit status above; ending stdin keeps a prompting subcommand from waiting.
     child.stdin?.on('error', () => {});
     child.stdin?.end(stdin);
   });
@@ -222,6 +180,23 @@ async function listVaults(): Promise<PassCliVault[]> {
   return normalizedVaults;
 }
 
+/** Vault roles that may create items (pass/src/domain/models/share/role.rs). */
+const WRITABLE_VAULT_ROLES = new Set(['Owner', 'Manager', 'Editor']);
+
+/** Role of each vault share the authenticated account can write to, by share ID. */
+async function writableVaultRoles(): Promise<Map<string, string>> {
+  const output = await runPassCli(['share', 'list', '--only-vaults', 'true', '--output', 'json']);
+  const parsed = parseJsonObject(output, 'share list');
+  const shares = Array.isArray(parsed.shares) ? parsed.shares : [];
+  const roles = new Map<string, string>();
+  for (const share of shares) {
+    if (!isRecord(share) || share.share_type !== 'Vault' || typeof share.share_role !== 'string') continue;
+    const id = optionalString(share.id);
+    if (id && WRITABLE_VAULT_ROLES.has(share.share_role)) roles.set(id, share.share_role);
+  }
+  return roles;
+}
+
 async function listLoginItems(vault: PassCliVault): Promise<PassCliItemSummary[]> {
   const output = await runPassCli([
     'item', 'list',
@@ -247,35 +222,23 @@ async function viewLoginItem(vault: PassCliVault, summary: PassCliItemSummary): 
 }
 
 /**
- * Search one vault for login items whose URLs match the credential host.
- *
- * Listing never exposes URLs, so candidates are selected by title and then
- * hydrated through `item view`; with `exhaustive` every login item is
- * hydrated.
+ * Login items of one vault that belong to `host`. Listing never exposes
+ * URLs, so candidates are selected by title and hydrated through
+ * `item view`.
  */
-async function searchVault(
-  vault: PassCliVault,
-  urlPattern: RegExp = credentialHostPattern(),
-  host: string = PROTON_CREDENTIAL_HOST,
-  options: { exhaustive?: boolean } = {},
-): Promise<PassCliLoginItem[]> {
-  const exhaustive = Boolean(options.exhaustive);
-  authTrace('credential.pass-cli.vault-scan.start', {
-    vault: vault.name,
-    exhaustive,
-  });
+async function searchVault(vault: PassCliVault, host: string): Promise<PassCliLoginItem[]> {
+  authTrace('credential.pass-cli.vault-scan.start', { vault: vault.name });
   const summaries = await listLoginItems(vault);
   const matches: PassCliLoginItem[] = [];
   for (const summary of summaries) {
-    if (!exhaustive && !titleMatchesCredentialHost(summary.title, host)) continue;
+    if (!titleMatchesHost(summary.title, host)) continue;
     const item = await viewLoginItem(vault, summary);
-    if (item && item.urls.some((url) => urlPattern.test(url))) {
+    if (item && item.urls.some((url) => urlMatchesHost(url, host))) {
       matches.push(item);
     }
   }
   authTrace('credential.pass-cli.vault-scan.success', {
     vault: vault.name,
-    exhaustive,
     itemCount: summaries.length,
     matchCount: matches.length,
   });
@@ -283,85 +246,89 @@ async function searchVault(
 }
 
 /**
- * Search all vaults for a login entry of the credential host, optionally
- * restricted to an exact username or email.
+ * First entry of `host` whose username field equals `username`, searching
+ * the vaults in `pass-cli vault list` order.
  */
-async function searchProtonEntry(
-  urlPattern?: RegExp,
-  username?: string,
-  host: string = PROTON_CREDENTIAL_HOST,
-  options: { exhaustiveLookup?: boolean; vaults?: PassCliVault[] } = {},
+async function findEntry(
+  host: string,
+  username: string,
+  vaults?: PassCliVault[],
 ): Promise<PassCliLoginItem | null> {
-  const normalizedUsername = username?.trim().toLowerCase();
-  const exhaustiveLookup = options.exhaustiveLookup ?? true;
-  const vaults = options.vaults ?? await listVaults();
+  const searched = vaults ?? await listVaults();
   authTrace('credential.pass-cli.search.start', {
     host,
     username: maskIdentifier(username),
-    vaultCount: vaults.length,
-    exhaustiveLookup,
+    vaultCount: searched.length,
   });
-  const findInVaults = async (exhaustive: boolean): Promise<PassCliLoginItem | null> => {
-    for (const vault of vaults) {
-      const matches = await searchVault(vault, urlPattern, host, { exhaustive });
-      const selected = normalizedUsername
-        ? matches.find((entry) =>
-          entry.email?.trim().toLowerCase() === normalizedUsername ||
-          entry.username?.trim().toLowerCase() === normalizedUsername)
-        : matches[0];
-      if (selected) {
-        authTrace('credential.pass-cli.selected', {
-          host,
-          mode: exhaustive ? 'exhaustive' : 'title',
-          vault: selected.vaultName,
-          username: maskIdentifier(selected.email || selected.username),
-          urlHosts: urlHosts(selected.urls),
-        });
-        return selected;
-      }
+  for (const vault of searched) {
+    const selected = (await searchVault(vault, host)).find((entry) => entry.username === username);
+    if (selected) {
+      authTrace('credential.pass-cli.selected', {
+        host,
+        vault: selected.vaultName,
+        username: maskIdentifier(selected.username),
+        urlHosts: urlHosts(selected.urls),
+      });
+      return selected;
     }
-    return null;
-  };
-
-  const titleMatch = await findInVaults(false);
-  if (titleMatch) {
-    return titleMatch;
   }
-
-  const exhaustiveMatch = exhaustiveLookup ? await findInVaults(true) : null;
-  if (!exhaustiveMatch) {
-    authTrace('credential.pass-cli.search.miss', {
-      host,
-      username: maskIdentifier(username),
-      vaultCount: vaults.length,
-      exhaustiveLookup,
-    });
-  }
-  return exhaustiveMatch;
+  authTrace('credential.pass-cli.search.miss', {
+    host,
+    username: maskIdentifier(username),
+    vaultCount: searched.length,
+  });
+  return null;
 }
 
+/**
+ * Proton Pass CLI credential provider.
+ *
+ * Stores, resolves and removes secrets as login items in Proton Pass vaults
+ * through the `pass-cli` binary. An entry is addressed by credential host and
+ * username: its title contains the host, one of its URLs has exactly that
+ * host (WHATWG URL `host`) and its username field equals the username. The JSON
+ * shapes handled here are the serializers of the pinned pass-cli release
+ * (submodules/pass-cli, 2.7.0):
+ *
+ * - `vault list --output json` -> `{ vaults: [{ name, vault_id, share_id }] }`
+ *   (pass-cli/src/commands/vault/list.rs)
+ * - `share list --only-vaults true --output json` -> `{ shares: [{ id, name,
+ *   share_type, share_role }] }`, `share_role` "Owner", "Manager", "Editor" or
+ *   "Viewer"; a personal access token or agent session owns no share
+ *   (pass-cli/src/commands/share/list.rs, pass/src/share/list.rs)
+ * - `item list --share-id <id> --filter-type login --output json`
+ *   -> `{ items: [{ id, share_id, vault_id, title, item_type, ... }] }`;
+ *   summaries carry neither secrets nor URLs (pass-cli/src/commands/item/list.rs)
+ * - `item view --share-id <id> --item-id <id> --output json`
+ *   -> `{ item: { id, share_id, content: { title, content: { Login: { email,
+ *   username, password, urls } } } }, attachments }` (pass/src/item/get_one.rs)
+ * - `item create login --share-id <id> --from-template -` reads the login
+ *   template JSON from stdin (pass-cli/src/commands/item/create/login.rs)
+ * - `info` exits non-zero without an authenticated session
+ *   (docs/public/docs/commands/info.md)
+ *
+ * New entries go to a vault the account owns, else to one it can write to
+ * (role Manager or Editor). Every call runs through execFile without a shell, with a 15-second
+ * timeout; passwords reach pass-cli only through stdin, and an existing entry
+ * is replaced by create-then-delete because `item update` takes field values
+ * as command-line arguments, visible to other local processes (CWE-214).
+ */
 export class PassCliProvider implements CredentialProvider {
   readonly name = 'pass-cli' as const;
-  private readonly host: string;
-  private readonly urlPattern: RegExp;
 
-  constructor(host: string = PROTON_CREDENTIAL_HOST) {
-    this.host = host;
-    this.urlPattern = credentialHostPattern(host);
+  constructor(private readonly host: string) {
+    if (!host.trim()) {
+      throw new Error('pass-cli provider requires a credential host');
+    }
   }
 
-  async isAvailable(): Promise<boolean> {
-    return passCliSessionActive();
-  }
-
-  async resolve(options?: { username?: string } & LookupOptions): Promise<Credentials> {
+  async resolve(username: string): Promise<Credentials> {
     authTrace('credential.resolve.start', {
       provider: this.name,
       host: this.host,
-      username: maskIdentifier(options?.username),
+      username: maskIdentifier(username),
     });
-    const loggedIn = await passCliSessionActive();
-    if (!loggedIn) {
+    if (!await passCliSessionActive()) {
       authTrace('credential.resolve.failure', {
         provider: this.name,
         host: this.host,
@@ -370,29 +337,14 @@ export class PassCliProvider implements CredentialProvider {
       throw new Error('pass-cli is not logged in. Run: pass-cli login');
     }
 
-    const entry = await searchProtonEntry(this.urlPattern, options?.username, this.host, {
-      exhaustiveLookup: options?.exhaustiveLookup,
-    });
-    if (!entry || !entry.password) {
+    const entry = await findEntry(this.host, username);
+    if (!entry?.password) {
       authTrace('credential.resolve.failure', {
         provider: this.name,
         host: this.host,
         reason: 'entry-not-found',
       });
-      throw new Error(
-        'No Proton login entry found in pass-cli vaults. ' +
-        'Create one with a matching credential URL or configure a different key/data password provider.',
-      );
-    }
-
-    const username = options?.username || entry.email || entry.username;
-    if (!username) {
-      authTrace('credential.resolve.failure', {
-        provider: this.name,
-        host: this.host,
-        reason: 'missing-username',
-      });
-      throw new Error('Proton login entry found but has no username or email.');
+      throw new Error(`No pass-cli key-password entry found for this session at ${this.host}.`);
     }
 
     authTrace('credential.resolve.success', {
@@ -406,25 +358,31 @@ export class PassCliProvider implements CredentialProvider {
   }
 
   /**
-   * Create the login entry for `username` from a stdin template; an existing
-   * entry for the same host and username is deleted after the replacement
-   * has been created. A failed deletion leaves a duplicate with an outdated
-   * password, which is reported but does not fail the store: the new entry
-   * exists and later lookups select it before older duplicates are removed by
-   * remove().
+   * Create the entry for `username` from a stdin template. Candidate vaults
+   * are those the account owns or, when it owns none (a personal access token
+   * or agent session), those it may edit as Manager or Editor; the vault of an
+   * existing entry wins among them, else the first. The existing entry is
+   * deleted after the replacement exists; a failed deletion is reported and
+   * left to remove(), which deletes every duplicate.
    */
-  async store(username: string, password: string, options: LookupOptions = {}): Promise<void> {
+  async store(username: string, password: string): Promise<void> {
     const vaults = await listVaults();
     if (vaults.length === 0) {
-      throw new Error('pass-cli has no vault to store the Proton entry in. Run: pass-cli vault create --name <name>');
+      throw new Error('pass-cli has no vault to store the key-password entry in. Run: pass-cli vault create --name <name>');
     }
-    const existing = await searchProtonEntry(this.urlPattern, username, this.host, {
-      exhaustiveLookup: options.exhaustiveLookup ?? true,
-      vaults,
-    });
-    const target = (existing && vaults.find((vault) => vault.shareId === existing.shareId)) || vaults[0];
+    const roles = await writableVaultRoles();
+    const owned = vaults.filter((vault) => roles.get(vault.shareId) === 'Owner');
+    const candidates = owned.length > 0 ? owned : vaults.filter((vault) => roles.has(vault.shareId));
+    if (candidates.length === 0) {
+      throw new Error(
+        'pass-cli lists no vault this account owns or may edit (role Owner, Manager or Editor) for the key-password entry. ' +
+          'Run: pass-cli vault create --name <name>, or share a vault with Manager or Editor role to the personal access token',
+      );
+    }
+    const existing = await findEntry(this.host, username, vaults);
+    const target = (existing && candidates.find((vault) => vault.shareId === existing.shareId)) || candidates[0];
     const template: PassCliLoginTemplate = {
-      title: this.host === PROTON_CREDENTIAL_HOST ? 'Proton' : `Proton ${this.host}`,
+      title: `Proton ${this.host}`,
       username,
       email: null,
       password,
@@ -445,7 +403,7 @@ export class PassCliProvider implements CredentialProvider {
           username: maskIdentifier(username),
           errorMessage: error instanceof Error ? error.message : String(error),
         });
-        logger.warn(`pass-cli: the previous Proton entry for this host could not be deleted (${error instanceof Error ? error.message : String(error)}); remove the duplicate in Proton Pass.`);
+        logger.warn(`pass-cli: the previous key-password entry at ${this.host} could not be deleted (${error instanceof Error ? error.message : String(error)}); remove the duplicate in Proton Pass.`);
       }
     }
   }
@@ -453,12 +411,10 @@ export class PassCliProvider implements CredentialProvider {
   /**
    * Delete every entry for `username` on this host. Throws when none exists.
    */
-  async remove(username: string, options: LookupOptions = {}): Promise<void> {
+  async remove(username: string): Promise<void> {
     const deleted = new Set<string>();
     for (;;) {
-      const entry = await searchProtonEntry(this.urlPattern, username, this.host, {
-        exhaustiveLookup: options.exhaustiveLookup,
-      });
+      const entry = await findEntry(this.host, username);
       if (!entry) break;
       const key = `${entry.shareId}/${entry.id}`;
       if (deleted.has(key)) {
@@ -468,42 +424,7 @@ export class PassCliProvider implements CredentialProvider {
       deleted.add(key);
     }
     if (deleted.size === 0) {
-      throw new Error(`No Proton entry found for ${username}`);
-    }
-  }
-
-  async verify(): Promise<boolean> {
-    authTrace('credential.verify.start', {
-      provider: this.name,
-      host: this.host,
-    });
-    try {
-      const loggedIn = await passCliSessionActive();
-      if (!loggedIn) {
-        authTrace('credential.verify.success', {
-          provider: this.name,
-          host: this.host,
-          ok: false,
-          reason: 'pass-cli-not-logged-in',
-        });
-        return false;
-      }
-      const entry = await searchProtonEntry(this.urlPattern, undefined, this.host);
-      const ok = entry !== null && !!entry.password;
-      authTrace('credential.verify.success', {
-        provider: this.name,
-        host: this.host,
-        ok,
-        username: maskIdentifier(entry?.email || entry?.username),
-      });
-      return ok;
-    } catch (error) {
-      authTrace('credential.verify.failure', {
-        provider: this.name,
-        host: this.host,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
-      return false;
+      throw new Error(`No pass-cli key-password entry found for this session at ${this.host}.`);
     }
   }
 }
@@ -512,4 +433,4 @@ async function deleteItem(entry: Pick<PassCliLoginItem, 'id' | 'shareId'>): Prom
   await runPassCli(['item', 'delete', '--share-id', entry.shareId, '--item-id', entry.id]);
 }
 
-export { passCliSessionActive, listVaults, searchVault, searchProtonEntry };
+export { passCliSessionActive, listVaults, writableVaultRoles, searchVault, findEntry };

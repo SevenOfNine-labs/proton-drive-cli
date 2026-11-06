@@ -1,6 +1,6 @@
 import { HttpClient } from './http-client';
 import { AuthApiClient } from './auth';
-import { DEFAULT_PROTON_APP_VERSION } from '../constants';
+import { DEFAULT_PROTON_APP_VERSION, VENDORED_DRIVE_SDK_VERSION } from '../constants';
 
 jest.mock('./http-client');
 const MockedHttpClient = HttpClient as jest.Mocked<typeof HttpClient>;
@@ -34,6 +34,16 @@ describe('AuthApiClient', () => {
       expect.objectContaining({
         headers: expect.objectContaining({
           'x-pm-appversion': DEFAULT_PROTON_APP_VERSION,
+        }),
+      })
+    );
+  });
+
+  it('sends the vendored SDK version on every request, as the official ApiClient does', () => {
+    expect(MockedHttpClient.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-pm-drive-sdk-version': `js@${VENDORED_DRIVE_SDK_VERSION}`,
         }),
       })
     );
@@ -82,27 +92,40 @@ describe('AuthApiClient', () => {
     expect(mockGet).toHaveBeenCalledWith('/auth/v4/sessions/forks/selector%2Fwith%20spaces');
   });
 
-  it('refreshes an existing session without account credentials', async () => {
+  it('refreshes as an authenticated request with the official refresh body', async () => {
     mockPost.mockResolvedValue({
-      data: { AccessToken: 'new-access', RefreshToken: 'new-refresh', ExpiresIn: 3600 },
+      data: { UID: 'uid-123', AccessToken: 'new-access', RefreshToken: 'new-refresh', ExpiresIn: 3600 },
     });
 
-    await expect(client.refreshToken('uid-123', 'refresh-token')).resolves.toEqual({
+    await expect(client.refreshToken('uid-123', 'rejected-access', 'refresh-token')).resolves.toEqual({
+      UID: 'uid-123',
       AccessToken: 'new-access',
       RefreshToken: 'new-refresh',
       ExpiresIn: 3600,
     });
     expect(mockPost).toHaveBeenCalledWith(
       '/auth/v4/refresh',
-      {
-        UID: 'uid-123',
-        RefreshToken: 'refresh-token',
-        ResponseType: 'token',
-        GrantType: 'refresh_token',
-        RedirectURI: 'http://proton.me',
-      },
-      { headers: { 'x-pm-uid': 'uid-123' } },
+      { ResponseType: 'token', GrantType: 'refresh_token', RefreshToken: 'refresh-token' },
+      { headers: { 'x-pm-uid': 'uid-123', Authorization: 'Bearer rejected-access' } },
     );
+  });
+
+  it('keeps the current refresh token and UID when the response omits them', async () => {
+    mockPost.mockResolvedValue({ data: { AccessToken: 'new-access' } });
+
+    await expect(client.refreshToken('uid-123', 'rejected-access', 'refresh-token')).resolves.toEqual({
+      UID: 'uid-123',
+      AccessToken: 'new-access',
+      RefreshToken: 'refresh-token',
+      ExpiresIn: undefined,
+    });
+  });
+
+  it('rejects a refresh response without an access token', async () => {
+    mockPost.mockResolvedValue({ data: { RefreshToken: 'new-refresh' } });
+
+    await expect(client.refreshToken('uid-123', 'rejected-access', 'refresh-token'))
+      .rejects.toThrow('missing AccessToken');
   });
 
   it('revokes the active session on logout with both session headers', async () => {
@@ -115,9 +138,4 @@ describe('AuthApiClient', () => {
     });
   });
 
-  it('does not expose direct account-password login methods', () => {
-    expect('getAuthInfo' in client).toBe(false);
-    expect('authenticate' in client).toBe(false);
-    expect('complete2FA' in client).toBe(false);
-  });
 });

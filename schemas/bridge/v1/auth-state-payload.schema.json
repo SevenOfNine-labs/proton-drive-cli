@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/auth-state-payload.schema.json",
   "title": "proton-drive-cli bridge auth-state payload",
-  "description": "Success payload of `bridge auth-state`: local-only readiness of the saved browser-fork session. willAttemptNetwork is always false.",
+  "description": "Success payload of `bridge auth-state`: readiness of the saved browser-fork session. session_invalid means session.json is not a session written by `proton-drive-cli login` (non-blank uid, accessToken, refreshToken and keyPasswordHost, keyPasswordProvider git-credential or pass-cli). session_expired means the access token expired locally; bridge init refreshes it before use. willAttemptNetwork is always false: proton-drive-cli sends no request to the Proton API and refreshes no token for auth-state. keyPasswordAvailable comes from reading the entry through the session's credential provider; pass-cli can contact Proton Pass to do so. errors carries the provider's reason when the key password could not be read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,6 +11,7 @@
     "sessionValid",
     "sessionExpired",
     "sessionUidPresent",
+    "keyPasswordAvailable",
     "willAttemptNetwork",
     "errors",
     "actions"
@@ -21,11 +22,9 @@
       "enum": [
         "ready",
         "needs_login",
-        "needs_data_password",
         "needs_key_password",
         "session_expired",
-        "session_invalid",
-        "configuration_error"
+        "session_invalid"
       ]
     },
     "hasSession": {
@@ -40,18 +39,6 @@
     "sessionUidPresent": {
       "type": "boolean"
     },
-    "passwordMode": {
-      "type": "integer"
-    },
-    "authMode": {
-      "type": "string",
-      "enum": [
-        "browser-fork"
-      ]
-    },
-    "keyPasswordPersisted": {
-      "type": "boolean"
-    },
     "keyPasswordAvailable": {
       "type": "boolean"
     },
@@ -63,12 +50,6 @@
       ]
     },
     "keyPasswordHost": {
-      "type": "string"
-    },
-    "dataCredentialProvider": {
-      "type": "string"
-    },
-    "dataCredentialHost": {
       "type": "string"
     },
     "willAttemptNetwork": {

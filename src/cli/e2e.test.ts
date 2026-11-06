@@ -1,9 +1,7 @@
 /**
- * Offline compiled-CLI smoke tests.
- *
- * These run the built CLI as a subprocess. They intentionally do not perform
- * real Proton login; the goal is to prove the public CLI and bridge surfaces
- * fail closed and no longer accept account-password/SRP inputs.
+ * Offline compiled-CLI smoke tests: the built CLI runs as a subprocess
+ * without contacting Proton, and its public CLI and bridge surfaces must
+ * fail closed on input outside their contracts.
  */
 
 import { execFile, ExecFileException } from 'child_process';
@@ -61,8 +59,13 @@ function makeTempHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'proton-drive-cli-e2e-'));
 }
 
+/** Long option names listed by `<command> --help`. */
+function helpOptions(stdout: string): string[] {
+  return [...new Set(stdout.match(/--[a-z][a-z-]*/g) ?? [])].sort();
+}
+
 describe('CLI surface', () => {
-  it('--help shows browser-fork auth and no credential command', async () => {
+  it('--help lists the command groups and the key-password providers', async () => {
     const r = await runCli(['--help']);
 
     expect(r.code).toBe(0);
@@ -70,39 +73,36 @@ describe('CLI surface', () => {
     expect(r.stdout).toContain('doctor');
     expect(r.stdout).toContain('bridge');
     expect(r.stdout).toContain('--key-password-provider');
-    expect(r.stdout).not.toContain('credential store');
-    expect(r.stdout).not.toContain('--password-stdin');
   });
 
-  it('login --help exposes only browser-fork key-password options', async () => {
+  it('login --help offers exactly the key-password options', async () => {
     const r = await runCli(['login', '--help']);
 
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('--key-password-provider');
-    expect(r.stdout).toContain('--key-password-host');
-    expect(r.stdout).not.toContain('--username');
-    expect(r.stdout).not.toContain('--password-stdin');
-    expect(r.stdout).not.toContain('--credential-provider');
-    expect(r.stdout).not.toContain('--auth-mode');
+    expect(helpOptions(r.stdout)).toEqual(['--help', '--key-password-host', '--key-password-provider']);
   });
 
-  it('credential command is not registered', async () => {
-    const r = await runCli(['credential', '--help']);
+  it('doctor --help offers exactly the offline preflight options', async () => {
+    const r = await runCli(['doctor', '--help']);
 
     expect(r.code).toBe(0);
-    expect(r.stdout).not.toContain('Store credentials');
-    expect(r.stdout).not.toContain('--username');
-    expect(r.stdout).not.toContain('--password-stdin');
+    expect(helpOptions(r.stdout)).toEqual([
+      '--drive-cli-bin',
+      '--help',
+      '--json',
+      '--key-password-host',
+      '--key-password-provider',
+      '--session-file',
+      '--strict',
+    ]);
   });
 });
 
 describe('bridge protocol', () => {
-  it('rejects the removed bridge auth command', async () => {
-    const r = await runBridge('auth', {});
+  it.each(['auth', 'refresh'])('rejects the command %s, which the protocol does not define', async (command) => {
+    const r = await runBridge(command, {});
 
-    expect(r.json.ok).toBe(false);
-    expect(r.json.code).toBe(400);
-    expect(r.json.error).toContain('Unknown bridge command: auth');
+    expect(r.json).toMatchObject({ ok: false, code: 400, error: `Unknown bridge command: ${command}` });
   });
 
   it('auth-state is local-only and reports needs_login for an empty temp home', async () => {
@@ -118,7 +118,7 @@ describe('bridge protocol', () => {
     });
   });
 
-  it('rejects forbidden account-login fields before auth-state handling', async () => {
+  it('rejects request fields outside the protocol before auth-state handling', async () => {
     const r = await runBridge('auth-state', {
       username: 'user@proton.me',
       password: 'secret',
@@ -130,7 +130,7 @@ describe('bridge protocol', () => {
     expect(r.json.error).toContain('Unknown bridge request field');
   });
 
-  it('validates upload request fields without accepting account password', async () => {
+  it('validates upload request fields', async () => {
     await expect(runBridge('upload', { path: '/tmp/testfile' }))
       .resolves.toMatchObject({ json: { ok: false, code: 400, error: expect.stringContaining('oid') } });
     await expect(runBridge('upload', { oid: 'bad', path: '/tmp/testfile' }))
@@ -139,7 +139,7 @@ describe('bridge protocol', () => {
       .resolves.toMatchObject({ json: { ok: false, error: expect.stringContaining('traversal') } });
   });
 
-  it('validates download and batch requests without account password', async () => {
+  it('validates download and batch requests', async () => {
     await expect(runBridge('download', { outputPath: '/tmp/out' }))
       .resolves.toMatchObject({ json: { ok: false, code: 400, error: expect.stringContaining('oid') } });
     await expect(runBridge('batch-exists', { oids: 'not-array' }))
@@ -195,13 +195,10 @@ describe('bridge stdout contract', () => {
     expect(JSON.parse(envelope.details)).toMatchObject({ errorCode: 'VALIDATION_ERROR' });
   });
 
-  it('no longer exposes bridge refresh or the dataPassword request field', async () => {
-    const refresh = await runBridge('refresh', {});
-    expect(refresh.json).toMatchObject({ ok: false, code: 400, error: 'Unknown bridge command: refresh' });
-
-    const secret = await runBridge('auth-state', { dataPassword: 'mailbox-password' });
-    expect(secret.json).toMatchObject({ ok: false, code: 400 });
-    expect(secret.json.error).toContain('Unknown bridge request field "dataPassword"');
+  it('rejects data-credential fields, which the protocol does not define', async () => {
+    const r = await runBridge('auth-state', { dataCredentialProvider: 'pass-cli' });
+    expect(r.json).toMatchObject({ ok: false, code: 400 });
+    expect(r.json.error).toContain('Unknown bridge request field "dataCredentialProvider"');
   });
 
   it('reports the program name as proton-drive-cli', async () => {

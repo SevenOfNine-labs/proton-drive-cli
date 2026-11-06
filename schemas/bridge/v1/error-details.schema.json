@@ -14,9 +14,6 @@
       "enum": [
         "AUTH_FAILED",
         "SESSION_EXPIRED",
-        "INVALID_CREDENTIALS",
-        "TWO_FACTOR_REQUIRED",
-        "DATA_PASSWORD_REQUIRED",
         "KEY_PASSWORD_REQUIRED",
         "NETWORK_ERROR",
         "TIMEOUT",
@@ -44,19 +41,6 @@
         "OPERATION_CANCELLED"
       ]
     },
-    "twoFactorType": {
-      "type": "string",
-      "enum": [
-        "totp",
-        "fido2"
-      ]
-    },
-    "totpAllowed": {
-      "type": "boolean"
-    },
-    "fido2Available": {
-      "type": "boolean"
-    },
     "captchaUrl": {
       "type": "string"
     },
@@ -77,6 +61,20 @@
     },
     "protonCode": {
       "type": "number"
+    },
+    "keyPasswordProvider": {
+      "type": "string",
+      "enum": [
+        "git-credential",
+        "pass-cli"
+      ]
+    },
+    "keyPasswordHost": {
+      "type": "string"
+    },
+    "providerError": {
+      "type": "string",
+      "description": "KEY_PASSWORD_REQUIRED: the credential provider's reason why the key password could not be read, with secrets redacted."
     }
   }
 }

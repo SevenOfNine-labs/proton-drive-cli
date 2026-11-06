@@ -18,29 +18,13 @@ import { setupShutdownHandlers } from './utils/shutdown';
 import { handleError } from './errors/handler';
 import { logger, LogLevel } from './utils/logger';
 
-// Setup graceful shutdown handlers
 setupShutdownHandlers();
 
-// Suppress OpenPGP.js expected debug output (key derivation attempts).
-// OpenPGP.js has no config option to control this; monkey-patch is necessary.
-const originalConsoleError = console.error;
-console.error = (...args: any[]) => {
-  if (process.env.DEBUG === 'true') {
-    originalConsoleError.apply(console, args);
-    return;
-  }
-  const msg = typeof args[0] === 'string' ? args[0] : '';
-  if (msg.includes('[OpenPGP.js debug]')) return;
-  originalConsoleError.apply(console, args);
-};
-
-// Handle unhandled rejections
 process.on('unhandledRejection', (error: unknown) => {
   handleError(error, process.env.DEBUG === 'true');
   process.exit(1);
 });
 
-// Handle uncaught exceptions (not covered by setupShutdownHandlers)
 process.on('uncaughtException', (error: unknown) => {
   handleError(error, process.env.DEBUG === 'true');
   process.exit(1);
@@ -59,48 +43,40 @@ program
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
 
-    // Set debug mode
     if (opts.debug) {
       process.env.DEBUG = 'true';
       logger.setLevel(LogLevel.DEBUG);
     }
 
-    // Set verbose mode
     if (opts.verbose) {
       process.env.VERBOSE = 'true';
     }
 
-    // Set quiet mode (takes precedence)
+    // Quiet output wins over --verbose (utils/output.ts).
     if (opts.quiet) {
       process.env.QUIET = 'true';
     }
   });
 
-// Add authentication commands
 program.addCommand(createLoginCommand());
 program.addCommand(createLogoutCommand());
 program.addCommand(createStatusCommand());
 program.addCommand(createSessionRefreshCommand());
 
-// Add drive commands
 program.addCommand(createLsCommand());
 program.addCommand(createUploadCommand());
 program.addCommand(createDownloadCommand());
 program.addCommand(createMkdirCommand());
 
-// Add file management commands
 program.addCommand(createRmCommand());
 program.addCommand(createMvCommand());
 program.addCommand(createCatCommand());
 program.addCommand(createInfoCommand());
 
-// Add bridge command (for Git LFS integration)
 program.addCommand(createBridgeCommand());
 
-// Add offline preflight command
 program.addCommand(createDoctorCommand());
 
-// Custom help
 program.on('--help', () => {
   console.log('');
   console.log(chalk.bold('Command Groups:'));

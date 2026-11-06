@@ -1,8 +1,5 @@
 import type { SessionCredentials } from '../types/auth';
 
-/** Refresh this long before expiry so a token cannot lapse during a transfer. */
-export const TOKEN_REFRESH_THRESHOLD_MS = 5 * 60 * 1000;
-
 export type TokenExpiry = Pick<SessionCredentials, 'tokenExpiresAt'>;
 
 /**
@@ -21,13 +18,4 @@ export function resolveTokenExpiresAt(expiresIn: number | undefined, now: number
 
 export function isAccessTokenExpired(session: TokenExpiry, now: number = Date.now()): boolean {
   return session.tokenExpiresAt !== undefined && now >= session.tokenExpiresAt;
-}
-
-/** True when the token expires within the threshold, including when it already has. */
-export function isAccessTokenExpiringSoon(
-  session: TokenExpiry,
-  now: number = Date.now(),
-  thresholdMs: number = TOKEN_REFRESH_THRESHOLD_MS,
-): boolean {
-  return session.tokenExpiresAt !== undefined && session.tokenExpiresAt - now < thresholdMs;
 }

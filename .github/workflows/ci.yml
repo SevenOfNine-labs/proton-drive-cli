@@ -40,6 +40,9 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         run: yarn lint
 
+      - name: Comment policy (AGENTS.md, Code Comments and Legacy)
+        run: bash scripts/check-comment-policy.sh
+
       - name: Build
         run: yarn build
 

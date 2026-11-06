@@ -1,16 +1,16 @@
 import { AuthApiClient } from '../api/auth';
+import { isHttpClientError } from '../api/http-client';
+import { AppError } from '../errors/types';
 import { SessionManager } from './session';
-import { createKeyPasswordStore } from './key-password-store';
-import { isAccessTokenExpiringSoon } from './token-expiry';
 import { SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
 
+/** Outcome of DELETE /auth/v4 for a session being logged out. */
+type Revocation = 'revoked' | 'signed-out' | 'failed';
+
 /**
- * Session lifecycle service.
- *
- * Browser-fork login is implemented by BrowserForkAuthService. This service is
- * intentionally limited to existing-session operations so production code
- * cannot create Proton account sessions from username/password credentials.
+ * Lifecycle of an existing session: read, refresh, logout. Sessions are
+ * created only by BrowserForkAuthService (`proton-drive-cli login`).
  */
 export class AuthService {
   private authApi: AuthApiClient;
@@ -20,18 +20,13 @@ export class AuthService {
   }
 
   /**
-   * Get current session or throw error if not authenticated.
+   * The saved session; throws when there is none.
    */
   async getSession(): Promise<SessionCredentials> {
     const existingSession = await SessionManager.loadSession();
     if (!existingSession) {
       throw new Error('No valid session found. Please login first using browser sign-in: proton-drive-cli login');
     }
-
-    if (isAccessTokenExpiringSoon(existingSession)) {
-      return await this.refreshSession();
-    }
-
     return existingSession;
   }
 
@@ -43,59 +38,62 @@ export class AuthService {
   }
 
   /**
-   * Refresh the access token using the refresh token.
-   */
-  async refreshSession(): Promise<SessionCredentials> {
-    try {
-      const updatedSession = await SessionManager.refreshSession(undefined, this.appVersion);
-      logger.info('Access token refreshed');
-      return updatedSession;
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Token refresh failed: ${error.message}`);
-      }
-      throw new Error('Token refresh failed: Unknown error');
-    }
-  }
-
-  /**
    * Logout and clear the current session.
    *
-   * Order matters: the key-password entry is removed first, while
-   * session.json still names its provider and host; then the server session
-   * is revoked; then the local session and crypto cache are deleted. A
-   * failed revocation (network, token already invalid) is logged and local
-   * cleanup still completes, so a logout never leaves tokens on disk.
+   * The server session is revoked (DELETE /auth/v4), its key-password entry
+   * removed, then session.json and the crypto cache are deleted unless a new
+   * login replaced them meanwhile. A failed revocation is logged and never
+   * prevents the local cleanup; without a valid session only an invalid
+   * session file is deleted.
+   *
+   * @returns `revoked`: whether the server session has ended
    */
-  async logout(): Promise<void> {
+  async logout(): Promise<{ revoked: boolean }> {
     try {
       const session = await SessionManager.loadSession();
-      if (session) {
-        if (session.authMode === 'browser-fork' && session.keyPasswordPersisted) {
-          const keyPasswordStore = createKeyPasswordStore({
-            provider: session.keyPasswordProvider,
-            host: session.keyPasswordHost,
-          });
-          await keyPasswordStore.remove(session.uid).catch((error) => {
-            logger.warn(`Could not remove browser-fork key password: ${error instanceof Error ? error.message : error}`);
-          });
-        }
-
-        try {
-          await this.authApi.logout(session.uid, session.accessToken);
-        } catch (error) {
-          logger.warn(`Could not revoke session on server: ${error instanceof Error ? error.message : error}`);
-        }
+      if (!session) {
+        await SessionManager.clearInvalidSession();
+        return { revoked: false };
       }
-
-      await SessionManager.clearSession();
-      await SessionManager.clearCryptoCache();
+      const revocation = await this.revoke(session);
+      if (revocation !== 'signed-out') {
+        await SessionManager.removeKeyPassword(session);
+        await SessionManager.clearSession(session.uid);
+      }
       logger.info('Logged out successfully');
+      return { revoked: revocation !== 'failed' };
     } catch (error) {
       if (error instanceof Error) {
         throw new Error(`Logout failed: ${error.message}`);
       }
       throw new Error('Logout failed: Unknown error');
+    }
+  }
+
+  /**
+   * DELETE /auth/v4; an HTTP 401 is answered with one refresh. A rejected
+   * refresh token means the session ended elsewhere and was signed out locally.
+   */
+  private async revoke(session: SessionCredentials): Promise<Revocation> {
+    try {
+      await this.authApi.logout(session.uid, session.accessToken);
+      return 'revoked';
+    } catch (error) {
+      if (isHttpClientError(error) && error.response?.status === 401) {
+        try {
+          const refreshed = await SessionManager.refreshSession(session, this.appVersion);
+          await this.authApi.logout(refreshed.uid, refreshed.accessToken);
+          return 'revoked';
+        } catch (retryError) {
+          if (retryError instanceof AppError && retryError.details?.signedOut) {
+            return 'signed-out';
+          }
+          logger.warn(`Could not revoke session on server: ${retryError instanceof Error ? retryError.message : retryError}`);
+          return 'failed';
+        }
+      }
+      logger.warn(`Could not revoke session on server: ${error instanceof Error ? error.message : error}`);
+      return 'failed';
     }
   }
 }

@@ -1,11 +1,14 @@
 import {
   createLoginCommand,
+  createLogoutCommand,
   createSessionRefreshCommand,
   loginWithBrowserFork,
   resolveBrowserForkKeyPasswordOptions,
 } from './login';
 import { SessionManager } from '../auth/session';
+import { AuthService } from '../auth';
 import { HttpClientError } from '../api/http-client';
+import { AppError, ErrorCode, RateLimitError } from '../errors/types';
 
 jest.mock('ora', () => jest.fn(() => ({
   start: jest.fn().mockReturnThis(),
@@ -26,6 +29,7 @@ jest.mock('../utils/open-browser', () => ({
 jest.mock('../auth/session', () => ({
   SessionManager: {
     loadSession: jest.fn(),
+    readStoredSession: jest.fn(),
     refreshSession: jest.fn(),
   },
 }));
@@ -36,6 +40,12 @@ import { openBrowserUrl } from '../utils/open-browser';
 const mockOutputResult = outputResult as jest.MockedFunction<typeof outputResult>;
 const mockOpenBrowserUrl = openBrowserUrl as jest.MockedFunction<typeof openBrowserUrl>;
 const mockSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
+const sessionFields = {
+  uid: 'uid-123',
+  scopes: ['drive'],
+  keyPasswordProvider: 'pass-cli' as const,
+  keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+};
 
 describe('resolveBrowserForkKeyPasswordOptions', () => {
   const originalEnv = { ...process.env };
@@ -64,10 +74,9 @@ describe('resolveBrowserForkKeyPasswordOptions', () => {
     });
   });
 
-  it('defaults to pass-cli and ignores PROTON_CREDENTIAL_PROVIDER', () => {
+  it('defaults to pass-cli', () => {
     delete process.env.PROTON_KEY_PASSWORD_PROVIDER;
     delete process.env.PROTON_KEY_PASSWORD_HOST;
-    process.env.PROTON_CREDENTIAL_PROVIDER = 'git-credential';
 
     expect(resolveBrowserForkKeyPasswordOptions()).toEqual({
       keyPasswordProvider: 'pass-cli',
@@ -149,24 +158,23 @@ describe('createSessionRefreshCommand', () => {
 
   it('emits JSON success without token values', async () => {
     mockSessionManager.loadSession.mockResolvedValue({
-      sessionId: 'session-id',
-      uid: 'uid-123',
+      ...sessionFields,
       accessToken: 'old-access-token',
       refreshToken: 'old-refresh-token',
-      scopes: ['drive'],
-      passwordMode: 1,
     });
     mockSessionManager.refreshSession.mockResolvedValue({
-      sessionId: 'session-id',
-      uid: 'uid-123',
+      ...sessionFields,
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
-      scopes: ['drive'],
-      passwordMode: 1,
       tokenExpiresAt: 1893456000000,
     });
 
     await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
+
+    expect(mockSessionManager.refreshSession).toHaveBeenCalledWith(expect.objectContaining({
+      uid: 'uid-123',
+      accessToken: 'old-access-token',
+    }));
 
     const output = (console.log as jest.Mock).mock.calls.flat().join('\n');
     expect(output).toContain('"ok":true');
@@ -191,14 +199,11 @@ describe('createSessionRefreshCommand', () => {
     expect(console.log).not.toHaveBeenCalled();
   });
 
-  it('emits JSON terminal failure with redacted API details', async () => {
+  it('emits a retryable JSON failure with redacted API details while the session stays', async () => {
     mockSessionManager.loadSession.mockResolvedValue({
-      sessionId: 'session-id',
-      uid: 'uid-123',
+      ...sessionFields,
       accessToken: 'old-access-token',
       refreshToken: 'old-refresh-token',
-      scopes: ['drive'],
-      passwordMode: 1,
     });
     mockSessionManager.refreshSession.mockRejectedValue(new HttpClientError(
       'Request failed with status 400',
@@ -228,13 +233,140 @@ describe('createSessionRefreshCommand', () => {
       ok: false,
       state: 'refresh_failed',
       errorCode: 'API_ERROR',
-      recoverable: false,
+      recoverable: true,
       statusCode: 400,
       protonCode: 10013,
       protonError: 'Invalid refresh token',
+      action: 'retry_after_backoff',
     });
-    expect(parsed.action).toContain('stop:');
     expect(output).not.toContain('raw-refresh-token');
     expect(output).not.toContain('uid-123');
+  });
+
+  it('reports a rate-limited refresh as retryable with its Retry-After', async () => {
+    mockSessionManager.loadSession.mockResolvedValue({ ...sessionFields, accessToken: 'access', refreshToken: 'refresh' });
+    mockSessionManager.refreshSession.mockRejectedValue(new RateLimitError('Rate limited', { retryAfter: 120, protonCode: 2028 }));
+
+    await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
+
+    const parsed = JSON.parse((console.log as jest.Mock).mock.calls.flat().join('\n'));
+    expect(parsed).toMatchObject({ errorCode: 'RATE_LIMITED', recoverable: true, retryAfter: 120, action: 'retry_after_backoff' });
+  });
+
+  it('reports a busy session lock as retryable', async () => {
+    mockSessionManager.loadSession.mockResolvedValue({ ...sessionFields, accessToken: 'access', refreshToken: 'refresh' });
+    mockSessionManager.refreshSession.mockRejectedValue(Object.assign(new Error('Lock file is already being held'), { code: 'ELOCKED' }));
+
+    await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
+
+    const parsed = JSON.parse((console.log as jest.Mock).mock.calls.flat().join('\n'));
+    expect(parsed).toMatchObject({ errorCode: 'TIMEOUT', recoverable: true, action: 'retry_after_backoff' });
+  });
+
+  it('reports the sign-out after a rejected refresh token as SESSION_EXPIRED', async () => {
+    mockSessionManager.loadSession.mockResolvedValue({
+      ...sessionFields,
+      accessToken: 'old-access-token',
+      refreshToken: 'old-refresh-token',
+    });
+    mockSessionManager.refreshSession.mockRejectedValue(new AppError(
+      'Proton rejected the refresh token; the session was signed out. Run: proton-drive-cli login',
+      ErrorCode.SESSION_EXPIRED,
+      { signedOut: true, statusCode: 400, apiError: { Code: 10013, Error: 'Invalid refresh token' } },
+      false,
+    ));
+
+    await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
+
+    expect(process.exitCode).toBe(1);
+    const parsed = JSON.parse((console.log as jest.Mock).mock.calls.flat().join('\n'));
+    expect(parsed).toMatchObject({
+      ok: false,
+      state: 'refresh_failed',
+      errorCode: 'SESSION_EXPIRED',
+      statusCode: 400,
+      protonCode: 10013,
+      recoverable: false,
+    });
+    expect(parsed.action).toContain('proton-drive-cli login');
+  });
+});
+
+describe('createLogoutCommand', () => {
+  const originalLog = console.log;
+  const originalError = console.error;
+  let logout: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    console.log = jest.fn();
+    console.error = jest.fn();
+    logout = jest.spyOn(AuthService.prototype, 'logout').mockResolvedValue({ revoked: true });
+  });
+
+  afterEach(() => {
+    console.log = originalLog;
+    console.error = originalError;
+    logout.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  const printed = (stream: typeof console.log) => (stream as jest.Mock).mock.calls.flat().join('\n');
+
+  it('logs out a session whose access token expired locally', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({
+      kind: 'valid',
+      session: { ...sessionFields, accessToken: 'a', refreshToken: 'r', tokenExpiresAt: Date.now() - 60_000 },
+    });
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(printed(console.log)).toContain('Logged out successfully');
+    expect(printed(console.error)).toBe('');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('warns when the server did not confirm the revocation, after the local cleanup', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({
+      kind: 'valid',
+      session: { ...sessionFields, accessToken: 'a', refreshToken: 'r' },
+    });
+    logout.mockResolvedValue({ revoked: false });
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(printed(console.error)).toContain('could not be revoked on the server');
+    expect(printed(console.log)).toContain('Logged out successfully');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('deletes a session file that login did not write', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'invalid' });
+    logout.mockResolvedValue({ revoked: false });
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(printed(console.error)).toBe('');
+    expect(printed(console.log)).toContain('Logged out successfully');
+  });
+
+  it('reports that nobody is logged in without touching anything', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'none' });
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(logout).not.toHaveBeenCalled();
+    expect(printed(console.log)).toContain('Not currently logged in');
+  });
+
+  it('exits 1 when the local cleanup fails', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'invalid' });
+    logout.mockRejectedValue(new Error('Logout failed: EACCES'));
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(process.exitCode).toBe(1);
   });
 });

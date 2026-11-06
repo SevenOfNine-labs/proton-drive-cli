@@ -39,14 +39,12 @@ async function cleanup(): Promise<void> {
  * Setup graceful shutdown handlers
  */
 export function setupShutdownHandlers(): void {
-  // Handle Ctrl+C
   process.on('SIGINT', async () => {
     console.log(chalk.yellow('\n\n⚠️  Received interrupt signal (Ctrl+C)'));
     await cleanup();
     process.exit(130); // Standard exit code for SIGINT
   });
 
-  // Handle termination
   process.on('SIGTERM', async () => {
     console.log(chalk.yellow('\n\n⚠️  Received termination signal'));
     await cleanup();

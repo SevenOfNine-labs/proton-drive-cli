@@ -18,9 +18,12 @@ For local development, invoke the CLI directly with `node dist/index.js`.
 
 ## Authentication
 
-Account authentication is browser-fork only. The CLI never accepts the Proton
-account password through flags, stdin, environment variables, bridge JSON, or
-credential-provider lookup.
+Account authentication is browser-fork only: the account password is entered
+on Proton's sign-in page and never reaches the CLI. The flow, polling
+schedule, key unlock and token refresh send the same requests as the official
+Proton account module (`submodules/sdk/incubating/account/js`), which a test
+runs side by side with this CLI; the deliberate deviations are listed in
+[Browser-Fork Authentication](docs/architecture/browser-fork-auth.md#deviations-from-the-official-module).
 
 ```bash
 proton-drive-cli login
@@ -32,7 +35,8 @@ proton-drive-cli logout
 The login command opens Proton's browser sign-in flow and stores only session
 tokens in `~/.proton-drive-cli/session.json`. The browser-derived key password
 is stored under a UID-scoped entry in the configured key-password provider
-(`pass-cli` by default, `git-credential` on request).
+(`pass-cli` by default, `git-credential` on request); it unlocks the account
+keys of every account type.
 
 ## Offline Readiness
 
@@ -43,9 +47,9 @@ proton-drive-cli doctor
 proton-drive-cli doctor --json
 ```
 
-`doctor` and `bridge auth-state` are local-only checks. They do not perform SRP
-login, token refresh, remote validation, or credential resolution for account
-passwords.
+`doctor` and `bridge auth-state` are local checks: they never refresh tokens or
+send a request to the Proton API. The key-password check runs the session's
+credential provider, and `pass-cli` can contact Proton Pass to read the entry.
 
 ## File Operations
 
@@ -60,8 +64,7 @@ proton-drive-cli mv /Documents/old.pdf /Documents/new.pdf
 proton-drive-cli rm /Documents/old.pdf
 ```
 
-All file operations require a ready browser-fork session. Two-password accounts
-may also require an explicit data-password source configured by the caller.
+All file operations require a ready browser-fork session.
 
 ## Bridge Protocol
 
@@ -75,11 +78,9 @@ printf '{"oid":"<64 hex chars>","path":"/tmp/object.bin"}\n' | proton-drive-cli 
 ```
 
 Supported commands are `auth-state`, `init`, `upload`, `download`, `exists`,
-`batch-exists`, `delete`, `batch-delete` and `list`. Request fields that
-would carry account-login data (`username`, `password`, `allowLogin`,
-`credentialProvider`) are rejected before any command runs; a mailbox/data
-password is reached only through `dataCredentialProvider` and
-`dataCredentialHost`.
+`batch-exists`, `delete`, `batch-delete` and `list`. No request field carries
+a secret, and a request with an unknown field is rejected before any command
+runs.
 
 The contract is published as JSON Schema (draft 2020-12) under
 `schemas/bridge/v1/` and validated against real command output by the test

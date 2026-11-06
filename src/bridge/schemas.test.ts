@@ -1,8 +1,6 @@
 /**
- * The published contract under schemas/ must be valid JSON Schema (draft
- * 2020-12, Ajv strict mode), its data files must match their schemas, and
- * request fixtures must be accepted or rejected consistently with the
- * runtime validator.
+ * schemas/ is valid JSON Schema 2020-12 (Ajv strict mode), its data files match their schemas,
+ * and the request fixtures agree with the runtime validator.
  */
 
 import {
@@ -72,6 +70,7 @@ describe('schema files', () => {
         sessionValid: false,
         sessionExpired: false,
         sessionUidPresent: false,
+        keyPasswordAvailable: false,
         willAttemptNetwork: false,
         errors: [],
         actions: [],
@@ -89,7 +88,7 @@ describe('request schema and runtime validator agree', () => {
   it('accepts the root adapter request shapes', () => {
     const fixtures: Array<[string, Record<string, unknown>]> = [
       ['auth-state', {}],
-      ['auth-state', { dataCredentialProvider: 'pass-cli', dataCredentialHost: 'proton-data.proton-lfs-cli.local', storageBase: 'LFS', appVersion: 'external-drive-protonlfscli@0.1.2' }],
+      ['auth-state', { storageBase: 'LFS', appVersion: 'external-drive-protonlfscli@0.1.2' }],
       ['init', { storageBase: 'LFS' }],
       ['upload', { oid: VALID_OID, path: '/tmp/object', storageBase: 'LFS' }],
       ['download', { oid: VALID_OID, outputPath: '/tmp/object', storageBase: 'LFS' }],
@@ -105,26 +104,26 @@ describe('request schema and runtime validator agree', () => {
     }
   });
 
-  it('rejects secrets and account-login fields in both places', () => {
+  it('rejects unknown fields and malformed OIDs', () => {
     const rejected = [
-      { dataPassword: 'mailbox-password' },
-      { username: 'user@proton.me', password: 'secret' },
-      { allowLogin: true },
-      { credentialProvider: 'git-credential' },
+      { password: 'secret' },
+      { dataCredentialProvider: 'pass-cli' },
       { oid: 'not-an-oid' },
       { oids: ['bad'] },
     ];
     for (const request of rejected) {
       expect(requestSchema()(request)).toBe(false);
     }
-    expect(() => validateBridgeRequestForCommand('auth-state', { dataPassword: 'x' })).toThrow('Unknown bridge request field "dataPassword"');
+    expect(() => validateBridgeRequestForCommand('auth-state', { password: 'x' })).toThrow('Unknown bridge request field "password"');
     expect(() => validateBridgeRequestForCommand('upload', { oid: 'not-an-oid', path: '/tmp/x' })).not.toThrow();
   });
 
   it('exposes exactly the runtime request fields', () => {
     const schema = readJsonFile('bridge/v1/request.schema.json') as { properties: Record<string, unknown> };
     expect(Object.keys(schema.properties).sort()).toEqual([...BRIDGE_REQUEST_FIELDS].sort());
-    expect(BRIDGE_REQUEST_FIELDS).not.toContain('dataPassword');
+    expect([...BRIDGE_REQUEST_FIELDS].sort()).toEqual(
+      ['appVersion', 'folder', 'oid', 'oids', 'outputPath', 'path', 'storageBase'],
+    );
     expect(BRIDGE_COMMANDS).not.toContain('refresh');
   });
 });

@@ -87,7 +87,6 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @see {@link createRmCommand} for deleting files
  * @see {@link createMkdirCommand} for creating folders
  * @see {@link resolvePathToNodeUid} for path resolution
- * @since 0.1.0
  */
 export function createMvCommand(): Command {
   const mv = new Command('mv');
@@ -114,12 +113,10 @@ export function createMvCommand(): Command {
         const sameParent = srcParent === dstParent;
 
         if (sameParent) {
-          // Pure rename
           if (srcName !== dstName) {
             await client.renameNode(sourceUid, dstName);
           }
         } else {
-          // Move to different parent
           const newParentUid = await ensureFolderPath(client, dstParent);
           for await (const result of client.moveNodes([sourceUid], newParentUid)) {
             if (!result.ok) {
@@ -127,7 +124,6 @@ export function createMvCommand(): Command {
             }
           }
 
-          // Rename if basename differs
           if (srcName !== dstName) {
             await client.renameNode(sourceUid, dstName);
           }

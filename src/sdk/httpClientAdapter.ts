@@ -1,27 +1,14 @@
-/**
- * HTTP client adapter for the Proton Drive SDK.
- *
- * Implements ProtonDriveHTTPClient by injecting auth tokens from SessionManager
- * and executing requests with fetch(). Handles token refresh on HTTP 401
- * (Unauthorized) only, like Proton's official clients (go-proton-api, the web
- * client and the SDK account module, apiClient.ts). No Proton error code
- * triggers a refresh: HTTP 403 with code 9101 (insufficient scope) is not
- * refreshable because a refreshed token keeps the same scopes, and code 10013
- * (invalid refresh token) is the refresh endpoint's own rejection, which must
- * never start another refresh. Both are returned as-is so the bridge
- * classifies them.
- */
-
 import type {
   ProtonDriveHTTPClient,
   ProtonDriveHTTPClientBlobRequest,
   ProtonDriveHTTPClientJsonRequest,
 } from '@protontech/drive-sdk';
-import { SessionManager } from '../auth/session';
+import { SessionManager, type SessionTokens } from '../auth/session';
 import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
-import { getProtonAppVersion, VENDORED_DRIVE_SDK_VERSION } from '../constants';
+import { toAppError } from '../errors/classify';
+import { DRIVE_SDK_VERSION_HEADER, getProtonAppVersion, VENDORED_DRIVE_SDK_VERSION } from '../constants';
 import { updateServerTimeFromHeaders } from '../utils/server-time';
 import {
   processDriveRequirementHeaders,
@@ -30,14 +17,17 @@ import {
 
 const API_BASE_URL = 'https://drive-api.proton.me';
 
-// Proton API error codes that indicate rate-limiting or anti-abuse
-const RATE_LIMIT_ERROR_CODES = new Set([
-  2028,   // Rate-limiting
-  85131,  // Anti-abuse
-]);
+/** Proton API codes for rate limiting (2028) and anti-abuse (85131). */
+const RATE_LIMIT_ERROR_CODES = new Set([2028, 85131]);
 
+/**
+ * ProtonDriveHTTPClient of the Proton Drive SDK: injects the session tokens
+ * and refreshes on HTTP 401 only, like Proton's official clients (SDK account
+ * module apiClient.ts, go-proton-api). No Proton code triggers a refresh:
+ * code 9101 (insufficient scope, HTTP 403) survives a refresh and code 10013
+ * is the refresh endpoint's own rejection; both are returned as-is.
+ */
 export class HTTPClientAdapter implements ProtonDriveHTTPClient {
-  private refreshInProgress: Promise<void> | null = null;
   private readonly appVersion: string;
   private readonly requirementNoticesEmitted = new Set<string>();
 
@@ -47,26 +37,18 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
     await assertNotRateLimited();
-
-    // Use getValidSession() to proactively refresh tokens if expiring soon
-    const session = await SessionManager.getValidSession(this.appVersion);
+    const session = await SessionManager.loadSession();
     if (session) {
       headers.set('Authorization', `Bearer ${session.accessToken}`);
       headers.set('x-pm-uid', session.uid);
     }
-    // The adapter owns the client identity: always stamp the validated value.
     headers.set('x-pm-appversion', this.appVersion);
-    // The vendored SDK reports its package.json placeholder (0.0.1) in
-    // x-pm-drive-sdk-version; Proton only stamps the real version at publish
-    // time. Report the pinned release instead, as the official CLI does.
-    headers.set('x-pm-drive-sdk-version', `js@${VENDORED_DRIVE_SDK_VERSION}`);
+    headers.set('x-pm-drive-sdk-version', DRIVE_SDK_VERSION_HEADER);
   }
 
   /**
-   * Learn from every API response, successful or not: the server clock for
-   * OpenPGP operations (see utils/server-time.ts) and Proton's SDK
-   * requirement notices, which announce when this build must be updated
-   * (for example for the Drive cryptographic model migration).
+   * Every response, failed or not, sets the server clock for OpenPGP
+   * (utils/server-time.ts) and may carry SDK requirement notices (api/drive-requirements.ts).
    */
   private observeResponse(response: Response): void {
     updateServerTimeFromHeaders(response.headers);
@@ -98,7 +80,6 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   }
 
   private resolveUrl(url: string): string {
-    // The SDK provides relative URLs like /drive/v2/volumes
     if (url.startsWith('/')) {
       return `${API_BASE_URL}${url}`;
     }
@@ -123,7 +104,6 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
       );
     }
 
-    // Check Proton error codes for rate-limiting
     if (!response.ok) {
       try {
         const clone = response.clone();
@@ -140,34 +120,21 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
           );
         }
       } catch (err) {
-        // Re-throw if it's already a RateLimitError
         if (err instanceof RateLimitError) {
           throw err;
         }
-        // Response body isn't JSON or parsing failed — not a rate-limit error
       }
     }
   }
 
-  private async refreshTokenIfNeeded(): Promise<void> {
-    // Deduplicate concurrent refresh attempts within this process
-    if (this.refreshInProgress) {
-      return this.refreshInProgress;
-    }
-
-    this.refreshInProgress = (async () => {
-      try {
-        const session = await SessionManager.loadSession();
-        if (!session) throw new Error('No session to refresh');
-
-        await SessionManager.refreshSessionOrAdoptRotated(session, this.appVersion);
-        logger.info('Token refreshed (reactive, after 401)');
-      } finally {
-        this.refreshInProgress = null;
-      }
-    })();
-
-    return this.refreshInProgress;
+  /**
+   * Refresh after an HTTP 401; requests rejected with the same access token
+   * share one refresh per process, and SessionManager skips it when the
+   * session's token already differs (official ApiClient.refreshSessionIfPossible).
+   */
+  private async refreshTokenIfNeeded(rejected: SessionTokens): Promise<void> {
+    await SessionManager.refreshSessionOrAdoptRotated(rejected, this.appVersion);
+    logger.info('Session refreshed after HTTP 401');
   }
 
   /**
@@ -189,28 +156,21 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
 
     let response = await fetch(url, fetchOpts);
     this.observeResponse(response);
-
-    // Check for rate-limiting BEFORE attempting token refresh
-    // (rate-limit errors should not trigger refresh attempts)
     await this.checkRateLimit(response);
 
     if (response.status === 401) {
       try {
-        await this.refreshTokenIfNeeded();
-        await this.injectAuthHeaders(headers);
-        response = await fetch(url, fetchOpts);
-        this.observeResponse(response);
-
-        // Check rate-limiting on retry response as well
-        await this.checkRateLimit(response);
+        await this.refreshTokenIfNeeded({
+          uid: headers.get('x-pm-uid') ?? '',
+          accessToken: bearerToken(headers.get('Authorization')),
+        });
       } catch (refreshErr) {
-        // Re-throw rate-limit errors immediately
-        if (refreshErr instanceof RateLimitError) {
-          throw refreshErr;
-        }
-        logger.warn(`Token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`);
-        // Return the original error response so the caller gets the API error
+        throw toAppError(refreshErr);
       }
+      await this.injectAuthHeaders(headers);
+      response = await fetch(url, fetchOpts);
+      this.observeResponse(response);
+      await this.checkRateLimit(response);
     }
 
     return response;
@@ -248,4 +208,9 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
 
     return this.fetchWithRefresh(url, fetchOpts, request.headers, request.timeoutMs, request.signal);
   }
+}
+
+/** Token of an `Authorization: Bearer <token>` header value, or '' when absent. */
+function bearerToken(authorization: string | null): string {
+  return authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
 }

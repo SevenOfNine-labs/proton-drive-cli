@@ -1,7 +1,6 @@
 # Architecture
 
-This document is intentionally short. The current architecture is browser-fork
-auth plus a session-only bridge.
+The architecture is browser-fork login plus a session-only bridge.
 
 See:
 
@@ -13,7 +12,9 @@ See:
 Runtime truth lives in:
 
 - `src/auth/browser-fork.ts`
+- `src/auth/session.ts`
 - `src/auth/index.ts`
+- `src/crypto/drive-crypto.ts`
 - `src/sdk/client.ts`
 - `src/bridge/protocol.ts`
 - `src/bridge/validators.ts`
@@ -23,6 +24,7 @@ Runtime truth lives in:
 Tests that protect the contract:
 
 - `src/auth/flow-safety.test.ts`
+- `src/auth/session.test.ts`
 - `src/cli/bridge.test.ts`
 - `src/cli/e2e.test.ts`
 - `src/sdk/client.test.ts`

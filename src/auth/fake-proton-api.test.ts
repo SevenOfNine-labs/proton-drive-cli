@@ -21,7 +21,7 @@ describe('fake Proton auth harness', () => {
     jest.restoreAllMocks();
   });
 
-  it('models browser session-fork instead of direct SRP login', async () => {
+  it('models the browser session fork', async () => {
     mockGet
       .mockResolvedValueOnce({
         data: { Code: 1000, Selector: 'selector-1', UserCode: 'user-code-1' },
@@ -34,7 +34,6 @@ describe('fake Proton auth harness', () => {
           AccessToken: 'access-token',
           RefreshToken: 'refresh-token',
           Scopes: ['full'],
-          PasswordMode: 2,
         },
       });
 

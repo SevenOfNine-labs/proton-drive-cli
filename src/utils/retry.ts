@@ -1,21 +1,4 @@
-/**
- * Retry with exponential backoff for transient failures.
- *
- * The backoff loop is p-retry (https://github.com/sindresorhus/p-retry);
- * this module only contributes the project's retry policy, which is derived
- * from the same error classification the bridge reports to the Go adapter
- * (errors/classify):
- *
- * Never retried:
- * - Rate-limit errors (Proton codes 2028/85131, HTTP 429)
- * - CAPTCHA errors (Proton codes 9001/12087)
- * - Permanent failures (4xx client errors except 408, auth, validation)
- *
- * Retried:
- * - Network errors (ECONNRESET, ETIMEDOUT, ENOTFOUND, SDK ConnectionError)
- * - Server errors (5xx) and request timeouts (408, ECONNABORTED)
- * - Error names or codes listed in `retryableErrors`
- */
+/** Retry with exponential backoff (p-retry, https://github.com/sindresorhus/p-retry) under the project's policy. */
 
 import pRetry from 'p-retry';
 import { ErrorCode, isCaptchaError, isRateLimitError } from '../errors/types';
@@ -58,7 +41,14 @@ const RETRYABLE_ERROR_CODES = new Set<ErrorCode>([
 ]);
 
 /**
- * Decide whether a failed attempt may be retried.
+ * Decide whether a failed attempt may be retried, from the classification the
+ * bridge reports to the Go adapter (errors/classify).
+ *
+ * Never retried: rate limits (Proton codes 2028/85131, HTTP 429), CAPTCHA
+ * (Proton codes 9001/12087) and permanent failures (4xx except 408, auth,
+ * validation). Retried: network errors (ECONNRESET, ETIMEDOUT, ENOTFOUND, SDK
+ * ConnectionError), server errors (5xx), request timeouts (408, ECONNABORTED)
+ * and the error names or codes in `retryableErrors`.
  */
 export function isRetryableError(error: unknown, config: RetryConfig = DEFAULT_RETRY_CONFIG): boolean {
   if (isRateLimitError(error) || isCaptchaError(error)) {
@@ -133,7 +123,6 @@ export function createRetryConfig(overrides: Partial<RetryConfig>): RetryConfig 
   return {
     ...DEFAULT_RETRY_CONFIG,
     ...overrides,
-    // Merge retryableErrors sets if provided
     retryableErrors: overrides.retryableErrors
       ? new Set([...DEFAULT_RETRY_CONFIG.retryableErrors, ...overrides.retryableErrors])
       : DEFAULT_RETRY_CONFIG.retryableErrors,

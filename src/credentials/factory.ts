@@ -1,25 +1,10 @@
-/**
- * Credential provider factory and orchestration.
- *
- * Provides:
- * - createProvider(): Instantiate a provider by name
- * - normalizeProviderName(): Normalize aliases ('git' → 'git-credential')
- */
-
 import type { CredentialProvider, ProviderName } from './types';
 import { GitCredentialProvider } from './git-credential';
 import { PassCliProvider } from './pass-cli';
-import { StdinProvider } from './stdin';
-import { InteractiveProvider } from './interactive';
-
-export interface ProviderOptions {
-  host?: string;
-}
 
 /**
- * Normalize provider name aliases.
- *   'git' → 'git-credential'
- *   'pass' → 'pass-cli'
+ * Normalize a provider name; `git` and `pass` are accepted as aliases of
+ * `git-credential` and `pass-cli`.
  */
 export function normalizeProviderName(name: string): ProviderName {
   const normalized = name.trim().toLowerCase();
@@ -30,28 +15,18 @@ export function normalizeProviderName(name: string): ProviderName {
     case 'pass':
     case 'pass-cli':
       return 'pass-cli';
-    case 'stdin':
-      return 'stdin';
-    case 'interactive':
-      return 'interactive';
     default:
       throw new Error(`Unknown credential provider: ${name}`);
   }
 }
 
-/**
- * Create a credential provider instance by name.
- */
-export function createProvider(name: ProviderName, options?: ProviderOptions): CredentialProvider {
+/** Create the provider `name` for entries at credential host `host`. */
+export function createProvider(name: ProviderName, host: string): CredentialProvider {
   switch (name) {
     case 'git-credential':
-      return new GitCredentialProvider(options?.host);
+      return new GitCredentialProvider(host);
     case 'pass-cli':
-      return new PassCliProvider(options?.host);
-    case 'stdin':
-      return new StdinProvider();
-    case 'interactive':
-      return new InteractiveProvider();
+      return new PassCliProvider(host);
     default:
       throw new Error(`Unknown credential provider: ${name}`);
   }

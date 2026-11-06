@@ -1,4 +1,5 @@
-const mockSaveSession = jest.fn();
+const mockReplaceSession = jest.fn();
+const mockRemoveKeyPassword = jest.fn();
 const mockGetSessionFilePath = jest.fn(() => '/tmp/proton-drive-cli/session.json');
 const mockKeyPasswordStore = {
   provider: 'git-credential' as const,
@@ -11,7 +12,8 @@ const mockKeyPasswordStore = {
 
 jest.mock('./session', () => ({
   SessionManager: {
-    saveSession: mockSaveSession,
+    replaceSession: mockReplaceSession,
+    removeKeyPassword: mockRemoveKeyPassword,
     getSessionFilePath: mockGetSessionFilePath,
   },
 }));
@@ -20,8 +22,10 @@ import { createCipheriv } from 'crypto';
 import { HttpClientError } from '../api/http-client';
 import { ErrorCode } from '../errors/types';
 import {
+  BROWSER_FORK_INITIAL_DELAY_MS,
+  BROWSER_FORK_MAX_POLL_TIME_MS,
+  BROWSER_FORK_POLL_INTERVAL_MS,
   BrowserForkAuthService,
-  DEFAULT_BROWSER_FORK_PASSWORD_MODE,
   generateBrowserForkSignInUrl,
   parseBrowserForkUserKeyPassword,
 } from './browser-fork';
@@ -82,12 +86,35 @@ describe('browser fork auth helpers', () => {
   });
 });
 
+/** Fork API answering `pending` times with 422, then approving `uid`. */
+function forkApi(encryptionKey: Buffer, uid: string, pending = 0) {
+  const getSessionForkStatus = jest.fn();
+  for (let i = 0; i < pending; i++) {
+    getSessionForkStatus.mockRejectedValueOnce(pendingForkError());
+  }
+  getSessionForkStatus.mockResolvedValue({
+    Code: 1000,
+    Payload: encryptForkPayload(encryptionKey, { keyPassword: 'derived-user-key-password' }),
+    UID: uid,
+    AccessToken: 'access-token',
+    RefreshToken: 'refresh-token',
+  });
+  return {
+    initSessionFork: jest.fn().mockResolvedValue({ Code: 1000, Selector: 'selector-123', UserCode: 'user-code-123' }),
+    getSessionForkStatus,
+    logout: jest.fn().mockResolvedValue(undefined),
+    refreshToken: jest.fn(),
+  };
+}
+
 describe('BrowserForkAuthService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockKeyPasswordStore.store.mockResolvedValue(undefined);
-    mockKeyPasswordStore.verify.mockResolvedValue(true);
+    mockKeyPasswordStore.load.mockResolvedValue('derived-user-key-password');
     mockKeyPasswordStore.remove.mockResolvedValue(undefined);
+    mockReplaceSession.mockResolvedValue(null);
+    mockRemoveKeyPassword.mockResolvedValue(undefined);
   });
 
   it('polls until approval and saves a token-only browser-fork session', async () => {
@@ -100,6 +127,8 @@ describe('BrowserForkAuthService', () => {
       now += ms;
     });
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -114,7 +143,6 @@ describe('BrowserForkAuthService', () => {
           AccessToken: 'access-token',
           RefreshToken: 'refresh-token',
           Scopes: ['drive'],
-          PasswordMode: 1,
           ExpiresIn: 120,
         }),
     };
@@ -148,43 +176,47 @@ describe('BrowserForkAuthService', () => {
       'uid-123',
       'derived-user-key-password'
     );
-    expect(mockKeyPasswordStore.verify).toHaveBeenCalledWith('uid-123');
-    expect(mockSaveSession).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'uid-123',
+    expect(mockKeyPasswordStore.load).toHaveBeenCalledWith('uid-123');
+    expect(mockReplaceSession).toHaveBeenCalledWith({
       uid: 'uid-123',
       accessToken: 'access-token',
       refreshToken: 'refresh-token',
       scopes: ['drive'],
-      passwordMode: 1,
-      authMode: 'browser-fork',
-      keyPasswordPersisted: true,
       keyPasswordProvider: 'git-credential',
       keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
-    }));
+      tokenExpiresAt: expect.any(Number),
+    });
+    expect(mockRemoveKeyPassword).not.toHaveBeenCalled();
   });
 
-  it('defaults omitted PasswordMode to one-password browser-fork readiness', async () => {
+  it('follows the official session-fork polling schedule by default', async () => {
+    expect(BROWSER_FORK_INITIAL_DELAY_MS).toBe(5_000);
+    expect(BROWSER_FORK_POLL_INTERVAL_MS).toBe(5_000);
+    expect(BROWSER_FORK_MAX_POLL_TIME_MS).toBe(600_000);
+
     const encryptionKey = Buffer.alloc(32, 13);
-    const encryptedPayload = encryptForkPayload(encryptionKey, {
-      keyPassword: 'derived-user-key-password',
-    });
-    const authApi = {
-      initSessionFork: jest.fn().mockResolvedValue({
-        Code: 1000,
-        Selector: 'selector-123',
-        UserCode: 'user-code-123',
-      }),
-      getSessionForkStatus: jest.fn().mockResolvedValue({
-        Code: 1000,
-        Payload: encryptedPayload,
-        UID: 'uid-123',
-        AccessToken: 'access-token',
-        RefreshToken: 'refresh-token',
-        Scopes: ['drive'],
-      }),
-    };
+    const sleepMs = jest.fn(async (_ms: number) => {});
     const service = new BrowserForkAuthService({
-      authApi,
+      authApi: forkApi(encryptionKey, 'uid-123', 1),
+      sleepMs,
+      encryptionKeyFactory: () => encryptionKey,
+      keyPasswordStore: mockKeyPasswordStore,
+    });
+
+    await service.login();
+
+    expect(sleepMs.mock.calls.map(([ms]) => ms)).toEqual([5_000, 5_000]);
+  });
+
+  it('removes the key password of the previous session when the login yields another UID', async () => {
+    const previous = { uid: 'uid-old', keyPasswordProvider: 'pass-cli', keyPasswordHost: 'old-host' };
+    mockReplaceSession.mockImplementation(async () => {
+      expect(mockRemoveKeyPassword).not.toHaveBeenCalled();
+      return previous;
+    });
+    const encryptionKey = Buffer.alloc(32, 14);
+    const service = new BrowserForkAuthService({
+      authApi: forkApi(encryptionKey, 'uid-new'),
       sleepMs: jest.fn(async () => {}),
       encryptionKeyFactory: () => encryptionKey,
       keyPasswordStore: mockKeyPasswordStore,
@@ -192,11 +224,24 @@ describe('BrowserForkAuthService', () => {
 
     await service.login({ initialDelayMs: 0 });
 
-    expect(mockSaveSession).toHaveBeenCalledWith(expect.objectContaining({
-      passwordMode: DEFAULT_BROWSER_FORK_PASSWORD_MODE,
-      authMode: 'browser-fork',
-      keyPasswordPersisted: true,
-    }));
+    expect(mockReplaceSession).toHaveBeenCalledWith(expect.objectContaining({ uid: 'uid-new' }));
+    expect(mockRemoveKeyPassword).toHaveBeenCalledWith(previous);
+    expect(mockKeyPasswordStore.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps the key password when the login yields the previous session UID', async () => {
+    mockReplaceSession.mockResolvedValue({ uid: 'uid-same', keyPasswordProvider: 'pass-cli', keyPasswordHost: 'h' });
+    const encryptionKey = Buffer.alloc(32, 15);
+    const service = new BrowserForkAuthService({
+      authApi: forkApi(encryptionKey, 'uid-same'),
+      sleepMs: jest.fn(async () => {}),
+      encryptionKeyFactory: () => encryptionKey,
+      keyPasswordStore: mockKeyPasswordStore,
+    });
+
+    await service.login({ initialDelayMs: 0 });
+
+    expect(mockRemoveKeyPassword).not.toHaveBeenCalled();
   });
 
   it('times out while Proton keeps reporting that the fork is pending', async () => {
@@ -206,6 +251,8 @@ describe('BrowserForkAuthService', () => {
       now += ms;
     });
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -227,11 +274,11 @@ describe('BrowserForkAuthService', () => {
       maxPollTimeMs: 15,
     })).rejects.toMatchObject({
       code: ErrorCode.TIMEOUT,
-      details: { authMode: 'browser-fork' },
+      details: { maxPollTimeMs: 15 },
     });
 
     expect(authApi.getSessionForkStatus).toHaveBeenCalledTimes(2);
-    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockReplaceSession).not.toHaveBeenCalled();
   });
 
   it('polls the session fork at a fixed interval until the time budget ends', async () => {
@@ -241,6 +288,8 @@ describe('BrowserForkAuthService', () => {
       now += ms;
     });
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -273,6 +322,8 @@ describe('BrowserForkAuthService', () => {
       keyPassword: 'derived-user-key-password',
     });
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -295,7 +346,7 @@ describe('BrowserForkAuthService', () => {
     await expect(service.login({ initialDelayMs: 0 }))
       .rejects.toMatchObject({ code: ErrorCode.AUTH_FAILED });
     expect(mockKeyPasswordStore.store).not.toHaveBeenCalled();
-    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockReplaceSession).not.toHaveBeenCalled();
   });
 
   it('does not save a session when key password readback verification fails', async () => {
@@ -303,8 +354,10 @@ describe('BrowserForkAuthService', () => {
     const encryptedPayload = encryptForkPayload(encryptionKey, {
       keyPassword: 'derived-user-key-password',
     });
-    mockKeyPasswordStore.verify.mockResolvedValue(false);
+    mockKeyPasswordStore.load.mockResolvedValue('another-key-password');
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -333,7 +386,8 @@ describe('BrowserForkAuthService', () => {
       'derived-user-key-password'
     );
     expect(mockKeyPasswordStore.remove).toHaveBeenCalledWith('uid-123');
-    expect(mockSaveSession).not.toHaveBeenCalled();
+    expect(mockReplaceSession).not.toHaveBeenCalled();
+    expect(authApi.logout).toHaveBeenCalledWith('uid-123', 'access-token');
   });
 
   it('rolls back the stored key password when saving the session fails', async () => {
@@ -341,8 +395,10 @@ describe('BrowserForkAuthService', () => {
     const encryptedPayload = encryptForkPayload(encryptionKey, {
       keyPassword: 'derived-user-key-password',
     });
-    mockSaveSession.mockRejectedValueOnce(new Error('disk full'));
+    mockReplaceSession.mockRejectedValueOnce(new Error('disk full'));
     const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
       initSessionFork: jest.fn().mockResolvedValue({
         Code: 1000,
         Selector: 'selector-123',
@@ -367,5 +423,38 @@ describe('BrowserForkAuthService', () => {
       .rejects.toThrow('disk full');
 
     expect(mockKeyPasswordStore.remove).toHaveBeenCalledWith('uid-123');
+    expect(authApi.logout).toHaveBeenCalledWith('uid-123', 'access-token');
+  });
+
+  it('removes the key password of the replaced session and revokes it, refreshing once on HTTP 401', async () => {
+    const encryptionKey = Buffer.alloc(32, 12);
+    const previous = {
+      uid: 'uid-old',
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      scopes: [],
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    };
+    mockReplaceSession.mockResolvedValueOnce(previous);
+    const authApi = forkApi(encryptionKey, 'uid-123', 0);
+    authApi.logout
+      .mockRejectedValueOnce(new HttpClientError('Request failed with status 401', {
+        response: { data: { Code: 401 }, status: 401, headers: {}, config: {} },
+      }))
+      .mockResolvedValueOnce(undefined);
+    authApi.refreshToken.mockResolvedValueOnce({ UID: 'uid-old', AccessToken: 'old-access-2', RefreshToken: 'old-refresh-2' });
+    const service = new BrowserForkAuthService({
+      authApi,
+      sleepMs: jest.fn(async () => {}),
+      encryptionKeyFactory: () => encryptionKey,
+      keyPasswordStore: mockKeyPasswordStore,
+    });
+
+    await service.login({ initialDelayMs: 0 });
+
+    expect(mockRemoveKeyPassword).toHaveBeenCalledWith(previous);
+    expect(authApi.refreshToken).toHaveBeenCalledWith('uid-old', 'old-access', 'old-refresh');
+    expect(authApi.logout).toHaveBeenLastCalledWith('uid-old', 'old-access-2');
   });
 });

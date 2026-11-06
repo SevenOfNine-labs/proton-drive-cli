@@ -56,9 +56,9 @@ describe('DriveCryptoService', () => {
   describe('initialize', () => {
     test('throws when API calls fail (no real API)', async () => {
       (UserApiClient as jest.Mock).mockImplementation(() => ({
-        getKeySalts: jest.fn().mockRejectedValue(new Error('No valid session')),
+        getUser: jest.fn().mockRejectedValue(new Error('No valid session')),
       }));
-      await expect(new DriveCryptoService().initialize('password')).rejects.toThrow();
+      await expect(new DriveCryptoService().initialize('key-password')).rejects.toThrow('No valid session');
     });
   });
 });

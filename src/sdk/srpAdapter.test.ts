@@ -1,8 +1,6 @@
 /**
- * SRP adapter on @protontech/crypto/srp. The vectors were recorded from the
- * previous in-tree SRP and key-password implementation (same inputs, same
- * mocked randomness and modulus) so that the switch to the library is proven
- * bit-for-bit equivalent.
+ * SRP adapter on @protontech/crypto/srp against recorded vectors (fixed inputs, mocked randomness
+ * and modulus).
  */
 import * as path from 'path';
 import { getSrp } from '@protontech/crypto/srp';
@@ -91,7 +89,7 @@ describe('SRPModuleAdapter', () => {
   });
 
   describe('getSrp', () => {
-    it('computes the same version-4 proofs as the previous implementation', async () => {
+    it('computes the recorded version-4 proofs', async () => {
       const randomSpy = mockRandomValues();
       try {
         const result = await adapter.getSrp(

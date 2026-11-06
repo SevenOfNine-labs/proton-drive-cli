@@ -8,21 +8,17 @@ import { redactSensitive } from '../utils/redaction';
 export function handleError(error: unknown, debug: boolean = false): void {
   const appError = toAppError(error);
 
-  // Display main error message
   console.error(chalk.red.bold('\n✗ Error:'), appError.toUserMessage());
 
-  // Show recovery suggestion
   const suggestion = appError.getRecoverySuggestion();
   if (suggestion) {
     console.error(chalk.yellow('\n💡 Suggestion:'), suggestion);
   }
 
-  // Show recovery hint for temporary errors
   if (appError.isRecoverable && !suggestion) {
     console.error(chalk.yellow('\n💡 This error may be temporary. Please try again.'));
   }
 
-  // Show details in debug mode
   if (debug) {
     console.error(chalk.dim('\n📋 Debug Information:'));
     console.error(chalk.dim('  Error Code:'), appError.code);

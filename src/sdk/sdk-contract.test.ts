@@ -1,17 +1,6 @@
 /**
- * SDK Contract Tests
- *
- * These tests verify that the @protontech/drive-sdk public API matches
- * the contracts our code depends on. After `git pull` on the SDK submodule,
- * these tests will FAIL if:
- *
- * 1. The SDK removes or renames a public export
- * 2. ProtonDriveClient constructor parameter shape changes
- * 3. ProtonDriveClient instance method signatures change
- * 4. Adapter interfaces (OpenPGPCryptoProxy, ProtonDriveHTTPClient, ProtonDriveAccount) change
- * 5. Enum values we depend on change (NodeType, etc.)
- *
- * These tests DO NOT require authentication or network access.
+ * Public API of @protontech/drive-sdk this CLI relies on (exports, ProtonDriveClient constructor and
+ * methods, adapter interfaces, enums), offline.
  */
 
 import {

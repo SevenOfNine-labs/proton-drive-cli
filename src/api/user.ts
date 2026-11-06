@@ -1,8 +1,9 @@
 import { HttpClient } from './http-client';
 import { User, Address } from '../types/crypto';
 import { SessionManager } from '../auth/session';
-import { getProtonAppVersion } from '../constants';
-import { AppError, ErrorCode } from '../errors/types';
+import { DRIVE_SDK_VERSION_HEADER, getProtonAppVersion } from '../constants';
+import { AppError, RateLimitError } from '../errors/types';
+import { toAppError } from '../errors/classify';
 
 /**
  * Proton error codes of GET /core/v4/keys/all meaning that no Proton account
@@ -24,24 +25,32 @@ export interface AuthModulus {
 }
 
 /**
- * User API client for fetching user keys and addresses.
+ * Query of GET /core/v4/addresses (official account module, accountApi.ts
+ * addresses()).
+ */
+const ADDRESSES_QUERY = new URLSearchParams({ Page: '0', PageSize: '50' }).toString();
+
+/**
+ * Authenticated account API client: user and address records with their
+ * keys, public keys of other addresses, and the SRP modulus.
  *
- * Supports an optional crypto-init cache: when present, getKeySalts/getUser/
- * getAddresses return cached data (from a previous subprocess) instead of
- * making API calls. The cache is tied to the session UID and auto-invalidates
- * on re-login.
+ * getUser and getAddresses serve the crypto-init cache (crypto-cache.json)
+ * when it belongs to the current session, so bridge subprocesses share one
+ * fetch per CRYPTO_CACHE_TTL_MS.
  */
 export class UserApiClient {
   private client: HttpClient;
   private baseUrl: string;
   private readonly appVersion: string;
 
-  // In-memory cache populated from disk on first access
+  /** Cache loaded from disk on first access; `{}` once a load found none. */
   private _cryptoCache: {
-    keySalts?: Array<{ ID: string; KeySalt: string | null }>;
     user?: User;
     addresses?: Address[];
   } | null = null;
+
+  /** Session UID each record was fetched under (`x-pm-uid` of its request). */
+  private readonly recordUids = new Map<User | Address[], string>();
 
   constructor(
     baseUrl: string = 'https://drive-api.proton.me',
@@ -55,10 +64,10 @@ export class UserApiClient {
       headers: {
         'Content-Type': 'application/json',
         'x-pm-appversion': this.appVersion,
+        'x-pm-drive-sdk-version': DRIVE_SDK_VERSION_HEADER,
       },
     });
 
-    // Add request interceptor to include auth token
     this.client.interceptors.request.use(
       async (config) => {
         const session = await SessionManager.loadSession();
@@ -74,75 +83,70 @@ export class UserApiClient {
       }
     );
 
-    // Add response interceptor with token refresh on 401
+    // HTTP 401: refresh once with the rejected access token, then retry
+    // (official ApiClient refresh hook, apiClient.ts).
     this.client.interceptors.response.use(
       (response) => response,
       async (error) => {
         if (error.response) {
           const { status, data, config: originalConfig } = error.response;
 
-          // Handle 401 Unauthorized - try token refresh before giving up
           if (status === 401 && !originalConfig?._retried) {
             originalConfig._retried = true;
-            const session = await SessionManager.loadSession();
-            if (!session) {
-              throw new Error('Session expired and refresh failed. Please login again.');
-            }
+            const rejected = {
+              uid: String(originalConfig.headers?.['x-pm-uid'] ?? ''),
+              accessToken: bearerToken(originalConfig.headers?.['Authorization']),
+            };
             let freshSession;
             try {
-              freshSession = await SessionManager.refreshSessionOrAdoptRotated(session, this.appVersion);
-            } catch {
-              throw new Error('Session expired and refresh failed. Please login again.');
+              freshSession = await SessionManager.refreshSessionOrAdoptRotated(rejected, this.appVersion);
+            } catch (refreshError) {
+              throw toAppError(refreshError);
             }
             originalConfig.headers['Authorization'] = `Bearer ${freshSession.accessToken}`;
             originalConfig.headers['x-pm-uid'] = freshSession.uid;
             return this.client.request(originalConfig);
           }
 
-          // Handle other API errors
-          if (data?.Error) {
+          const classified = toAppError(error);
+          if (data?.Error && !(classified instanceof RateLimitError)) {
             throw new AppError(
               `API Error (${data.Code}): ${data.Error}`,
-              ErrorCode.API_ERROR,
-              { protonCode: data.Code, status },
+              classified.code,
+              { ...classified.details, protonCode: data.Code, status },
+              classified.isRecoverable,
             );
           }
+          throw classified;
         }
-        throw error;
+        throw toAppError(error);
       }
     );
   }
 
-  /**
-   * Load crypto cache from disk (once per process).
-   * Populates in-memory cache for subsequent calls.
-   */
   private async loadCacheIfNeeded(): Promise<void> {
-    if (this._cryptoCache !== null) return; // Already attempted
+    if (this._cryptoCache !== null) return;
     const cache = await SessionManager.loadCryptoCache();
+    this._cryptoCache = cache ? { user: cache.user, addresses: cache.addresses } : {};
     if (cache) {
-      this._cryptoCache = {
-        keySalts: cache.keySalts,
-        user: cache.user,
-        addresses: cache.addresses,
-      };
-    } else {
-      this._cryptoCache = {}; // Mark as attempted (no cache available)
+      this.recordUids.set(cache.user, cache.sessionUid);
+      this.recordUids.set(cache.addresses, cache.sessionUid);
     }
   }
 
   /**
-   * Save current API responses to disk cache.
-   * Called after all 3 API calls complete during crypto initialization.
+   * Store the user and address records in the crypto-init cache when both
+   * were fetched under the same session UID. Records served from the cache
+   * are not written back, so the cache keeps the time of their fetch and
+   * expires CRYPTO_CACHE_TTL_MS after it.
    */
-  async saveCryptoCache(
-    keySalts: Array<{ ID: string; KeySalt: string | null }>,
-    user: User,
-    addresses: Address[],
-  ): Promise<void> {
-    const session = await SessionManager.loadSession();
-    if (session) {
-      await SessionManager.saveCryptoCache(session.uid, keySalts, user, addresses);
+  async saveCryptoCache(user: User, addresses: Address[]): Promise<void> {
+    if (this._cryptoCache?.user === user && this._cryptoCache.addresses === addresses) {
+      return;
+    }
+    const uid = this.recordUids.get(user);
+    if (uid !== undefined && uid === this.recordUids.get(addresses)) {
+      await SessionManager.saveCryptoCache(uid, user, addresses);
     }
   }
 
@@ -155,6 +159,7 @@ export class UserApiClient {
     if (this._cryptoCache?.user) return this._cryptoCache.user;
 
     const response = await this.client.get<{ Code: number; User: User }>('/core/v4/users');
+    this.recordUids.set(response.data.User, String(response.config.headers?.['x-pm-uid'] ?? ''));
     return response.data.User;
   }
 
@@ -166,23 +171,11 @@ export class UserApiClient {
     await this.loadCacheIfNeeded();
     if (this._cryptoCache?.addresses) return this._cryptoCache.addresses;
 
-    const response = await this.client.get<{ Code: number; Addresses: Address[] }>('/core/v4/addresses');
+    const response = await this.client.get<{ Code: number; Addresses: Address[] }>(
+      `/core/v4/addresses?${ADDRESSES_QUERY}`,
+    );
+    this.recordUids.set(response.data.Addresses, String(response.config.headers?.['x-pm-uid'] ?? ''));
     return response.data.Addresses;
-  }
-
-  /**
-   * Get salts for key decryption
-   * @returns Array of key salts
-   */
-  async getKeySalts(): Promise<Array<{ ID: string; KeySalt: string | null }>> {
-    await this.loadCacheIfNeeded();
-    if (this._cryptoCache?.keySalts) return this._cryptoCache.keySalts;
-
-    const response = await this.client.get<{
-      Code: number;
-      KeySalts: Array<{ ID: string; KeySalt: string | null }>;
-    }>('/core/v4/keys/salts');
-    return response.data.KeySalts;
   }
 
   /**
@@ -223,4 +216,11 @@ export class UserApiClient {
     }
     return { Modulus, ModulusID };
   }
+}
+
+/** Token of an `Authorization: Bearer <token>` header value, or '' when absent. */
+function bearerToken(authorization: unknown): string {
+  return typeof authorization === 'string' && authorization.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length)
+    : '';
 }

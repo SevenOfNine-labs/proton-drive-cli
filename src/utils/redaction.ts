@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 export const REDACTED_VALUE = '[redacted]';
 
 const EXACT_SENSITIVE_KEYS = new Set([
@@ -7,24 +9,29 @@ const EXACT_SENSITIVE_KEYS = new Set([
   'captchatoken',
   'clientephemeral',
   'clientproof',
-  'datapassword',
-  'fido2',
   'humanverificationtoken',
-  'loginpassword',
-  'mailboxpassword',
   'privatekey',
   'refreshtoken',
   'serverproof',
   'srpsession',
-  'twofactorcode',
   'uid',
   'xpmhumanverificationtoken',
   'xpmuid',
 ]);
 
+/** Keys whose values name where a secret is stored, never the secret itself. */
+const SECRET_LOCATION_KEYS = new Set(['keypasswordprovider', 'keypasswordhost']);
+
 const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const SECRET_ASSIGNMENT_PATTERN =
   /\b((?:access|refresh|captcha|human[-_]?verification|session|password|secret|token)[A-Za-z0-9_-]*=)[^&\s]+/gi;
+/** The userinfo of a URI authority (RFC 3986, 3.2.1), such as a session UID in git's prompts. */
+const URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi;
+
+/** First 8 hex digits of the SHA-256 (FIPS 180-4) of a session UID, for logs. */
+export function uidFingerprint(uid: string): string {
+  return createHash('sha256').update(uid).digest('hex').slice(0, 8);
+}
 
 export function redactSensitive(value: unknown): unknown {
   return redactValue(value, new WeakSet<object>());
@@ -61,13 +68,17 @@ function redactValue(value: unknown, seen: WeakSet<object>): unknown {
 function redactString(value: string): string {
   return value
     .replace(BEARER_PATTERN, `Bearer ${REDACTED_VALUE}`)
-    .replace(SECRET_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`);
+    .replace(SECRET_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`)
+    .replace(URL_USERINFO_PATTERN, `$1${REDACTED_VALUE}@`);
 }
 
 function isSensitiveKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
   if (EXACT_SENSITIVE_KEYS.has(normalized)) {
     return true;
+  }
+  if (SECRET_LOCATION_KEYS.has(normalized)) {
+    return false;
   }
   if (normalized.includes('password') || normalized.includes('secret')) {
     return true;

@@ -1,18 +1,6 @@
 /**
- * Server-time synchronisation for OpenPGP operations.
- *
- * Proton's official clients (and the SDK CLI since js/v0.23.0, see
- * `cli/src/api/serverTimeHook.ts` upstream) date keys and signatures with the
- * API server's clock instead of the device clock: a device clock that runs
- * ahead produces keys and signatures "from the future" that the API rejects
- * as invalid, and a clock that runs behind rejects material other clients
- * just created. The offset is learned from the `x-pm-date` or `date` header
- * of every API response and applied by the OpenPGP operations of this
- * package and, through `@protontech/crypto`'s own clock, by every operation
- * of the Proton crypto endpoint (its pmcrypto layer defaults `date` to that
- * clock, including the signature-verification tolerance it adds). That clock
- * is the newest server date observed, not an offset: it advances with each
- * later response and ignores earlier dates.
+ * API server clock for OpenPGP dates, as Proton's official clients use it (sdk
+ * `cli/src/api/serverTimeHook.ts`), learned from each response's `x-pm-date` or `date` header.
  */
 
 import { updateServerTime as updateProtonCryptoServerTime } from '@protontech/crypto/serverTime';

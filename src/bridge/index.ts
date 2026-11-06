@@ -1,27 +1,17 @@
-/**
- * Shared bridge exports for Git LFS integration.
- *
- * proton-drive-cli owns the bridge protocol (stdin/stdout JSON contract).
- * The Go adapter calls `node proton-drive-cli bridge <command>` directly,
- * and src/cli/bridge.ts imports these types, validators, and OID path helpers.
- */
+/** Bridge protocol exports (types, validators, OID paths) for src/cli/bridge.ts and its tests. */
 
 export {
-  // Types
   BridgeRequest,
   BridgeResponse,
 
-  // Constants
   OID_PATTERN,
 
-  // Validators
   invalidRequest,
   validateOid,
   validateLocalPath,
   validateBridgeRequestForCommand,
   errorToStatusCode,
 
-  // OID path mapping
   oidToPath,
   pathToOid,
 } from './validators';

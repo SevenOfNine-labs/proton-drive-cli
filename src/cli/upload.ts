@@ -109,7 +109,6 @@ import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../util
  * @see {@link createDownloadCommand} for downloading files
  * @see {@link validateFilePath} for file validation logic
  * @see {@link ensureFolderPath} for folder resolution
- * @since 0.1.0
  */
 export function createUploadCommand(): Command {
   const cmd = new Command('upload');
@@ -130,7 +129,6 @@ export function createUploadCommand(): Command {
       let uploadDestination: string;
 
       try {
-        // Handle stdin upload
         if (file === '-') {
           isStdin = true;
 
@@ -224,10 +222,8 @@ export function createUploadCommand(): Command {
           initSpinner.succeed('Client initialized');
         }
 
-        // Resolve parent folder to UID
         const parentUid = await ensureFolderPath(client, uploadDestination);
 
-        // Upload file via SDK
         const fileStream = (await import('fs')).createReadStream(actualFilePath);
         const webStream = Readable.toWeb(fileStream) as ReadableStream;
 

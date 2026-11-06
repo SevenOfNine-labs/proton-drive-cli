@@ -24,8 +24,9 @@ The only account authentication path is Proton browser session-fork:
 6. The browser-derived key password is stored in the configured key-password
    provider and verified by readback before the session is accepted.
 
-Direct SRP account-password login is not part of production runtime. SRP code
-that remains is SDK/key-derivation plumbing and is not an account-login path.
+The SRP module adapter (`src/sdk/srpAdapter.ts`) implements the SDK's
+`SRPModule` interface, which the Drive SDK uses for its own password-protected
+features; it is not an account-login path.
 
 ## Git LFS Integration
 
@@ -41,9 +42,8 @@ createSDKClient(existing browser-fork session)
 ProtonDriveClient
 ```
 
-The bridge cannot create a Proton account session. It can refresh existing
-tokens, unlock browser-fork key material, and consume data-password inputs for
-two-password accounts.
+The bridge cannot create a Proton account session. It refreshes the existing
+session's tokens and unlocks the account keys with the stored key password.
 
 ## Bridge Protocol
 
@@ -56,12 +56,14 @@ Supported commands: `auth-state`, `init`, `upload`, `download`, `exists`,
 described by `schemas/bridge/v1/payloads/<command>.schema.json`; every error
 envelope carries `details.errorCode` from `schemas/bridge/v1/error-code-map.json`.
 
-Account-login request fields are rejected.
+No request field carries a secret; unknown fields are rejected.
 
 ## Non-Negotiables
 
 - Account password entry happens only in Proton's browser sign-in page.
 - No production path may submit account passwords or SRP auth proofs.
-- `auth-state` and `doctor` stay offline and local-only.
+- `auth-state` and `doctor` send no request to the Proton API; the
+  key-password check runs the credential provider, and `pass-cli` can contact
+  Proton Pass.
 - Session files store tokens and metadata only, never passwords.
 - The bridge fails closed unless the local auth state is `ready`.

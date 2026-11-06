@@ -1,9 +1,4 @@
-/**
- * Helper functions for Git LFS bridge operations
- * Handles OID-based path mapping and folder structure for Git LFS objects
- *
- * Uses ProtonDriveClient (official SDK) for all Drive operations.
- */
+/** OID-to-path mapping and folder handling of Git LFS objects through ProtonDriveClient. */
 
 import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { NodeType } from '@protontech/drive-sdk';
@@ -12,10 +7,9 @@ import { logger } from '../utils/logger';
 import { resolvePathToNodeUid, findFileInFolder } from '../sdk/pathResolver';
 import { describeNodeErrors, getNodeName } from '../sdk/nodeEntity';
 
-/** Node types we recognize. SDK 0.9.8+ added album/photo — skip them. */
+/** Node types of Git LFS storage; the SDK's album and photo nodes are skipped. */
 const KNOWN_NODE_TYPES = new Set<string>([NodeType.File, NodeType.Folder]);
 
-// Re-export canonical oidToPath/pathToOid from bridge/validators (no heavy deps)
 export { oidToPath, pathToOid } from '../bridge/validators';
 import { oidToPath } from '../bridge/validators';
 
@@ -148,7 +142,6 @@ export async function deleteByOid(
     }
   }
 
-  // Permanently delete
   for await (const result of client.deleteNodes([nodeUid])) {
     if (!result.ok) {
       throw new Error(`Failed to delete OID ${oid}: ${JSON.stringify(result.error)}`);

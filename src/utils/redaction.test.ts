@@ -1,4 +1,4 @@
-import { REDACTED_VALUE, redactSensitive } from './redaction';
+import { REDACTED_VALUE, redactSensitive, uidFingerprint } from './redaction';
 
 describe('redactSensitive', () => {
   it('redacts Proton auth fields recursively while preserving safe metadata', () => {
@@ -51,8 +51,8 @@ describe('redactSensitive', () => {
 
   it('redacts password-like and auth-header keys', () => {
     const redacted = redactSensitive({
-      password: 'login-password',
-      dataPassword: 'mailbox-password',
+      password: 'secret',
+      keyPassword: 'derived-key-password',
       headers: {
         Authorization: 'Bearer access-token',
         'x-pm-uid': 'uid-123',
@@ -63,10 +63,20 @@ describe('redactSensitive', () => {
     }) as any;
 
     expect(redacted.password).toBe(REDACTED_VALUE);
-    expect(redacted.dataPassword).toBe(REDACTED_VALUE);
+    expect(redacted.keyPassword).toBe(REDACTED_VALUE);
     expect(redacted.headers.Authorization).toBe(REDACTED_VALUE);
     expect(redacted.headers['x-pm-uid']).toBe(REDACTED_VALUE);
     expect(redacted.nested.privateKey).toBe(REDACTED_VALUE);
+  });
+
+  it('keeps the provider and host that locate the key password', () => {
+    expect(redactSensitive({
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    })).toEqual({
+      keyPasswordProvider: 'pass-cli',
+      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    });
   });
 
   it('masks bearer and token assignment strings', () => {
@@ -79,6 +89,18 @@ describe('redactSensitive', () => {
     expect(redactSensitive('password=secret token=abc')).toBe(
       `password=${REDACTED_VALUE} token=${REDACTED_VALUE}`
     );
+  });
+
+  it('masks the userinfo of a URL (RFC 3986, 3.2.1), as in git credential prompts', () => {
+    expect(redactSensitive("could not read Password for 'https://uid-123@proton-drive-key.proton-lfs-cli.local': terminal prompts disabled"))
+      .toBe(`could not read Password for 'https://${REDACTED_VALUE}@proton-drive-key.proton-lfs-cli.local': terminal prompts disabled`);
+    expect(redactSensitive('https://proton-drive-key.proton-lfs-cli.local/path?q=a@b')).toBe('https://proton-drive-key.proton-lfs-cli.local/path?q=a@b');
+  });
+
+  it('fingerprints a session UID without revealing it', () => {
+    expect(uidFingerprint('uid-123')).toMatch(/^[0-9a-f]{8}$/);
+    expect(uidFingerprint('uid-123')).toBe(uidFingerprint('uid-123'));
+    expect(uidFingerprint('uid-123')).not.toBe(uidFingerprint('uid-124'));
   });
 
   it('handles circular objects without throwing', () => {

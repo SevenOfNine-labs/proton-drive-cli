@@ -1,7 +1,7 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
 import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
-import { RateLimitError } from '../errors/types';
+import { AppError, ErrorCode, RateLimitError } from '../errors/types';
 import { DEFAULT_PROTON_APP_VERSION, VENDORED_DRIVE_SDK_VERSION } from '../constants';
 import { isServerTimeSynced, resetServerTime, serverTime } from '../utils/server-time';
 import { logger } from '../utils/logger';
@@ -24,15 +24,14 @@ describe('HTTPClientAdapter', () => {
     uid: 'test-uid-123',
     accessToken: 'access-token-abc',
     refreshToken: 'refresh-token-xyz',
-    username: 'test@proton.me',
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     adapter = new HTTPClientAdapter();
 
-    // Mock both getValidSession (for auth header injection) and loadSession (for refresh flow)
-    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(fakeSession);
+    // loadSession serves the auth headers and the refresh flow
+    (SessionManager.loadSession as jest.Mock).mockResolvedValue(fakeSession);
     (SessionManager.loadSession as jest.Mock).mockResolvedValue(fakeSession);
     (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockResolvedValue({
       ...fakeSession,
@@ -111,7 +110,7 @@ describe('HTTPClientAdapter', () => {
     });
 
     it('skips auth headers when no session exists', async () => {
-      (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+      (SessionManager.loadSession as jest.Mock).mockResolvedValue(null);
       const headers = new Headers();
 
       await adapter.fetchJson({
@@ -280,21 +279,15 @@ describe('HTTPClientAdapter', () => {
   });
 
   describe('401 token refresh', () => {
-    it('refreshes token and retries on 401', async () => {
+    it('refreshes with the rejected access token and retries on 401', async () => {
       const refreshedSession = { ...fakeSession, accessToken: 'new-access-token' };
 
       mockFetch
         .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
         .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
-
-      // Mock getValidSession for auth header injection
-      (SessionManager.getValidSession as jest.Mock)
-        .mockResolvedValueOnce(fakeSession)   // initial auth injection
-        .mockResolvedValueOnce(refreshedSession); // retry auth injection after refresh
-
-      // Mock loadSession for refresh flow
       (SessionManager.loadSession as jest.Mock)
-        .mockResolvedValueOnce(fakeSession);   // refresh load
+        .mockResolvedValueOnce(fakeSession)
+        .mockResolvedValueOnce(refreshedSession);
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',
@@ -306,24 +299,38 @@ describe('HTTPClientAdapter', () => {
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(SessionManager.refreshSessionOrAdoptRotated).toHaveBeenCalledWith(
-        fakeSession,
+        { uid: fakeSession.uid, accessToken: fakeSession.accessToken },
         DEFAULT_PROTON_APP_VERSION
       );
+      expect(mockFetch.mock.calls[1][1].headers.get('Authorization')).toBe('Bearer new-access-token');
     });
 
-    it('returns original 401 if refresh fails', async () => {
+    it('fails with the refresh failure\'s own code when the refresh fails', async () => {
       mockFetch.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
+      const networkDown = Object.assign(new Error('fetch failed'), { name: 'HttpClientError', code: 'ECONNREFUSED' });
+      (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockRejectedValue(networkDown);
 
-      (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
-
-      const response = await adapter.fetchJson({
+      await expect(adapter.fetchJson({
         url: '/api/endpoint',
         method: 'GET',
         headers: new Headers(),
         timeoutMs: 30000,
-      });
+      })).rejects.toMatchObject({ code: ErrorCode.CONNECTION_REFUSED, isRecoverable: true });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
 
-      expect(response.status).toBe(401);
+    it('fails with SESSION_EXPIRED when the refresh signed the session out', async () => {
+      mockFetch.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
+      const signedOut = new AppError('signed out', ErrorCode.SESSION_EXPIRED, { signedOut: true }, false);
+      (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockRejectedValue(signedOut);
+
+      await expect(adapter.fetchJson({
+        url: '/api/endpoint',
+        method: 'GET',
+        headers: new Headers(),
+        timeoutMs: 30000,
+      })).rejects.toBe(signedOut);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('refreshes token on fetchBlob 401', async () => {
@@ -340,28 +347,6 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-    });
-
-    it('deduplicates concurrent refresh attempts', async () => {
-      mockFetch
-        .mockResolvedValueOnce(new Response('', { status: 401 }))
-        .mockResolvedValueOnce(new Response('', { status: 401 }))
-        .mockResolvedValueOnce(new Response('OK', { status: 200 }))
-        .mockResolvedValueOnce(new Response('OK', { status: 200 }));
-
-      const refreshMock = (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockResolvedValue({
-        ...fakeSession,
-        accessToken: 'new-token',
-        refreshToken: 'new-refresh',
-      });
-
-      // Fire two requests concurrently
-      const [res1, res2] = await Promise.all([
-        adapter.fetchJson({ url: '/a', method: 'GET', headers: new Headers(), timeoutMs: 30000 }),
-        adapter.fetchBlob({ url: '/b', method: 'GET', headers: new Headers(), timeoutMs: 30000 }),
-      ]);
-
-      expect(refreshMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -509,7 +494,7 @@ describe('HTTPClientAdapter abort signals', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     adapter = new HTTPClientAdapter();
-    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (SessionManager.loadSession as jest.Mock).mockResolvedValue(null);
     (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -566,7 +551,7 @@ describe('HTTPClientAdapter server time', () => {
     jest.clearAllMocks();
     resetServerTime();
     adapter = new HTTPClientAdapter();
-    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (SessionManager.loadSession as jest.Mock).mockResolvedValue(null);
     (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -602,7 +587,7 @@ describe('HTTPClientAdapter Drive requirement notices', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     adapter = new HTTPClientAdapter();
-    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (SessionManager.loadSession as jest.Mock).mockResolvedValue(null);
     (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
   });
 
