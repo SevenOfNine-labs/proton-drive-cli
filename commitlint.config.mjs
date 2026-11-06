@@ -4,6 +4,10 @@
 const PR_REF_SUFFIX = / \(#\d+\)$/;
 
 export default {
+  // Conventional Commits 1.0.0 parser (conventional-changelog-conventionalcommits),
+  // which understands the "!" breaking-change marker; the rules below
+  // override the preset's defaults.
+  extends: ['@commitlint/config-conventional'],
   plugins: [
     {
       rules: {
