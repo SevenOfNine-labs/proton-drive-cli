@@ -1,5 +1,4 @@
 import { createDecipheriv, randomBytes } from 'crypto';
-import { jwtDecode } from 'jwt-decode';
 import { AuthApiClient } from '../api/auth';
 import { isHttpClientError } from '../api/http-client';
 import { getProtonAppVersion } from '../constants';
@@ -13,20 +12,24 @@ import {
   normalizeKeyPasswordProvider,
 } from './key-password-store';
 import { SessionManager } from './session';
+import { resolveTokenExpiresAt } from './token-expiry';
 
 export const PROTON_ACCOUNT_URL = 'https://account.proton.me';
 export const DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID = 'external-drive';
 export const BROWSER_FORK_INITIAL_DELAY_MS = 1_000;
-export const BROWSER_FORK_POLL_INTERVAL_MS = 1_000;
-export const BROWSER_FORK_FAST_POLL_TIME_MS = 15_000;
-export const BROWSER_FORK_BACKOFF_POLL_INTERVAL_MS = 5_000;
+/**
+ * Interval between session-fork status polls while the API answers 422 (not
+ * ready yet). Matches the official Proton account module
+ * (incubating/account/js/src/authWeb.ts FORK_POLL_INTERVAL_MS).
+ */
+export const BROWSER_FORK_POLL_INTERVAL_MS = 5_000;
 export const BROWSER_FORK_MAX_POLL_TIME_MS = 10 * 60 * 1_000;
 export const DEFAULT_BROWSER_FORK_PASSWORD_MODE = 1;
 
 const FORK_AAD = Buffer.from('fork', 'utf8');
 
-type BrowserForkAuthApi = Pick<AuthApiClient, 'initSessionFork' | 'getSessionForkStatus'>;
-type SleepFn = (ms: number) => Promise<void>;
+export type BrowserForkAuthApi = Pick<AuthApiClient, 'initSessionFork' | 'getSessionForkStatus'>;
+export type SleepFn = (ms: number) => Promise<void>;
 
 export interface BrowserForkSignInUrl {
   encryptionKey: Buffer;
@@ -49,8 +52,6 @@ export interface BrowserForkLoginOptions {
   authClientId?: string;
   initialDelayMs?: number;
   pollIntervalMs?: number;
-  fastPollTimeMs?: number;
-  backoffPollIntervalMs?: number;
   maxPollTimeMs?: number;
   onSignInUrl?: (signInUrl: string) => void | Promise<void>;
 }
@@ -70,19 +71,6 @@ function resolveAuthClientId(appVersion?: string): string {
   // `cli-drive` identity is reserved for Proton's own CLI.
   getProtonAppVersion(appVersion);
   return DEFAULT_BROWSER_FORK_AUTH_CLIENT_ID;
-}
-
-function resolveTokenExpiresAt(accessToken: string, expiresIn?: number): number | undefined {
-  if (expiresIn && Number.isFinite(expiresIn) && expiresIn > 0) {
-    return Date.now() + expiresIn * 1000;
-  }
-
-  try {
-    const decoded = jwtDecode<{ exp?: number }>(accessToken);
-    return decoded.exp ? decoded.exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function isPendingForkStatus(error: unknown): boolean {
@@ -175,8 +163,6 @@ export class BrowserForkAuthService {
     const startedAt = this.now();
     const maxPollTimeMs = options.maxPollTimeMs ?? BROWSER_FORK_MAX_POLL_TIME_MS;
     const pollIntervalMs = options.pollIntervalMs ?? BROWSER_FORK_POLL_INTERVAL_MS;
-    const fastPollTimeMs = options.fastPollTimeMs ?? BROWSER_FORK_FAST_POLL_TIME_MS;
-    const backoffPollIntervalMs = options.backoffPollIntervalMs ?? BROWSER_FORK_BACKOFF_POLL_INTERVAL_MS;
 
     while (true) {
       const elapsedMs = this.now() - startedAt;
@@ -195,7 +181,7 @@ export class BrowserForkAuthService {
       } catch (error: unknown) {
         if (isPendingForkStatus(error)) {
           logger.debug('Browser fork authentication not ready yet');
-          await this.sleepMs(elapsedMs < fastPollTimeMs ? pollIntervalMs : backoffPollIntervalMs);
+          await this.sleepMs(pollIntervalMs);
           continue;
         }
         throw error;
@@ -245,7 +231,7 @@ export class BrowserForkAuthService {
       keyPasswordPersisted: true,
       keyPasswordProvider: keyPasswordStore.provider,
       keyPasswordHost: keyPasswordStore.host,
-      tokenExpiresAt: resolveTokenExpiresAt(status.AccessToken, status.ExpiresIn),
+      tokenExpiresAt: resolveTokenExpiresAt(status.ExpiresIn),
     };
 
     try {

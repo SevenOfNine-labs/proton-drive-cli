@@ -14,6 +14,7 @@
 import { execFile } from 'child_process';
 
 import { PROTON_CREDENTIAL_HOST } from '../constants';
+import { AppError, ErrorCode } from '../errors/types';
 import type { CredentialProvider, Credentials } from './types';
 import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
@@ -28,18 +29,54 @@ const DEFAULT_PROTOCOL = 'https';
 const TIMEOUT_MS = 10_000;
 
 /**
+ * git-credential(1) attribute values may contain any byte except NUL and
+ * newline; CR is excluded as well because git strips a trailing CR itself.
+ */
+const FORBIDDEN_VALUE_CHARS = /[\r\n\0]/;
+
+/**
+ * Environment for `git credential`: never prompt on the terminal or through
+ * an askpass program (git(1): GIT_TERMINAL_PROMPT, GIT_ASKPASS, SSH_ASKPASS),
+ * so a missing entry fails immediately instead of blocking until the timeout.
+ */
+function gitCredentialEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS: '',
+  };
+}
+
+/**
+ * Reject attribute values that would break the key=value line protocol.
+ */
+export function assertCredentialValue(name: string, value: string): void {
+  if (FORBIDDEN_VALUE_CHARS.test(value)) {
+    throw new AppError(
+      `git credential ${name} must not contain CR, LF or NUL`,
+      ErrorCode.VALIDATION_ERROR,
+      { field: name },
+      false,
+    );
+  }
+}
+
+/**
  * Parse `key=value` lines from git credential output.
+ *
+ * Only a trailing CR/LF is stripped: values keep leading and trailing
+ * whitespace, and the first `=` separates key from value. A blank line ends
+ * the attribute list.
  */
 function parseCredentialOutput(output: string): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const line of output.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const eqIndex = trimmed.indexOf('=');
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line === '') break;
+    const eqIndex = line.indexOf('=');
     if (eqIndex < 1) continue;
-    const key = trimmed.substring(0, eqIndex);
-    const value = trimmed.substring(eqIndex + 1);
-    result[key] = value;
+    result[line.substring(0, eqIndex)] = line.substring(eqIndex + 1);
   }
   return result;
 }
@@ -49,10 +86,12 @@ function parseCredentialOutput(output: string): Record<string, string> {
  */
 function formatCredentialInput(fields: Partial<GitCredential>): string {
   const lines: string[] = [];
-  if (fields.protocol) lines.push(`protocol=${fields.protocol}`);
-  if (fields.host) lines.push(`host=${fields.host}`);
-  if (fields.username) lines.push(`username=${fields.username}`);
-  if (fields.password) lines.push(`password=${fields.password}`);
+  for (const name of ['protocol', 'host', 'username', 'password'] as const) {
+    const value = fields[name];
+    if (!value) continue;
+    assertCredentialValue(name, value);
+    lines.push(`${name}=${value}`);
+  }
   lines.push(''); // trailing blank line signals end of input
   return lines.join('\n');
 }
@@ -68,7 +107,7 @@ function runGitCredential(
     const child = execFile(
       'git',
       ['credential', action],
-      { timeout: TIMEOUT_MS },
+      { timeout: TIMEOUT_MS, env: gitCredentialEnvironment() },
       (error, stdout, stderr) => {
         if (error) {
           const msg = stderr?.trim() || error.message;
@@ -79,12 +118,15 @@ function runGitCredential(
       },
     );
 
+    // An early exit of git closes stdin; the exit status reported to the
+    // callback above is the error, so the EPIPE on the stream is not rethrown.
+    child.stdin?.on('error', () => {});
     child.stdin?.write(stdinData);
     child.stdin?.end();
   });
 }
 
-// ─── Standalone functions (backward compat) ────────────────────────
+// ─── git-credential(1) operations used by the provider ─────────────
 
 /**
  * Resolve credentials using `git credential fill`.
@@ -151,6 +193,7 @@ export class GitCredentialProvider implements CredentialProvider {
 
   constructor(host?: string) {
     this.host = host || PROTON_CREDENTIAL_HOST;
+    assertCredentialValue('host', this.host);
   }
 
   async isAvailable(): Promise<boolean> {

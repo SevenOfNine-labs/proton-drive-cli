@@ -14,7 +14,7 @@
  *   - isHttpClientError(err) type guard
  */
 
-import { SessionManager } from '../auth/session';
+import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { updateServerTimeFromHeaders } from '../utils/server-time';
 
 export interface HttpClientConfig {
@@ -64,11 +64,11 @@ export function isHttpClientError(error: unknown): error is HttpClientError {
     return error instanceof HttpClientError;
 }
 
-type RequestInterceptor = (config: RequestConfig & { headers: Record<string, string> }) =>
+export type RequestInterceptor = (config: RequestConfig & { headers: Record<string, string> }) =>
     Promise<RequestConfig & { headers: Record<string, string> }> |
     (RequestConfig & { headers: Record<string, string> });
 
-type ResponseErrorInterceptor = (error: any) => Promise<any>;
+export type ResponseErrorInterceptor = (error: any) => Promise<any>;
 
 export class HttpClient {
     private baseURL: string;
@@ -159,15 +159,15 @@ export class HttpClient {
         }
 
         const url = `${this.baseURL}${path}`;
-        await SessionManager.assertNotRateLimited();
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeout);
+        await assertNotRateLimited();
 
         try {
             const fetchOptions: RequestInit = {
                 method,
                 headers: mergedConfig.headers,
-                signal: controller.signal,
+                // The budget covers the whole exchange, body included: the
+                // signal stays armed until the body has been read.
+                signal: AbortSignal.timeout(this.timeout),
             };
 
             if (body !== undefined) {
@@ -175,7 +175,6 @@ export class HttpClient {
             }
 
             const res = await fetch(url, fetchOptions);
-            clearTimeout(timer);
             updateServerTimeFromHeaders(res.headers);
 
             // Parse response headers
@@ -184,17 +183,7 @@ export class HttpClient {
                 responseHeaders[key] = value;
             });
 
-            // Parse body (handle empty responses)
-            let data: any;
-            const contentType = res.headers.get('content-type') || '';
-            const text = await res.text();
-            if (text && contentType.includes('application/json')) {
-                data = JSON.parse(text);
-            } else if (text) {
-                try { data = JSON.parse(text); } catch { data = text; }
-            } else {
-                data = null;
-            }
+            const data = this.parseBody(await res.text(), res.headers.get('content-type') || '');
 
             if (!res.ok) {
                 // Detect rate-limiting before creating generic error
@@ -203,7 +192,7 @@ export class HttpClient {
                     // Extract retry-after header if present
                     const retryAfterHeader = res.headers.get('retry-after');
                     const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
-                    const cooldown = await SessionManager.recordRateLimitCooldown({
+                    const cooldown = await recordRateLimitCooldown({
                         retryAfter,
                         protonCode,
                         message: data?.Error,
@@ -281,17 +270,15 @@ export class HttpClient {
 
             return result;
         } catch (err: any) {
-            clearTimeout(timer);
-
             // Already an HttpClientError (from !res.ok above) — rethrow
             if (err instanceof HttpClientError) throw err;
             // Already processed by interceptors — rethrow
-            if (err instanceof Error && !(err instanceof TypeError) && err.name !== 'AbortError') throw err;
+            if (err instanceof Error && !(err instanceof TypeError) && !isAbortError(err)) throw err;
 
             // Map network/timeout errors
             let code: string | undefined;
             let message = err?.message || 'Network error';
-            if (err?.name === 'AbortError') {
+            if (isAbortError(err)) {
                 code = 'ECONNABORTED';
                 message = 'Request timed out';
             } else if (err?.cause?.code) {
@@ -315,4 +302,37 @@ export class HttpClient {
             throw handled;
         }
     }
+
+    /**
+     * Decode a response body: JSON when declared or parseable, the raw text
+     * otherwise, `null` when empty. A body declared as JSON that does not
+     * parse is a protocol error of the server, reported as HttpClientError
+     * rather than as a bare SyntaxError.
+     */
+    private parseBody(text: string, contentType: string): any {
+        if (!text) {
+            return null;
+        }
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            if (contentType.includes('application/json')) {
+                throw new HttpClientError(
+                    `Malformed JSON response body: ${error instanceof Error ? error.message : String(error)}`,
+                    { code: 'EBADJSON' },
+                );
+            }
+            return text;
+        }
+    }
+}
+
+/**
+ * `AbortSignal.timeout` rejects with a DOMException named TimeoutError, a
+ * caller's signal with one named AbortError; matched by name because a
+ * DOMException is not necessarily an `Error` of this realm.
+ */
+function isAbortError(error: unknown): boolean {
+    const name = (error as { name?: unknown } | null)?.name;
+    return name === 'AbortError' || name === 'TimeoutError';
 }

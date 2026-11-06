@@ -2,8 +2,13 @@
  * Tests for retry utility with exponential backoff
  */
 
-import { retryWithBackoff, createRetryConfig, DEFAULT_RETRY_CONFIG } from './retry';
-import { RateLimitError, CaptchaError, ErrorCode } from '../errors/types';
+import { RateLimitedError, ServerError } from '@protontech/drive-sdk';
+import { retryWithBackoff, createRetryConfig, DEFAULT_RETRY_CONFIG, isRetryableError } from './retry';
+import { RateLimitError, CaptchaError } from '../errors/types';
+
+function httpError(status: number, message = `HTTP ${status}`): Error {
+  return Object.assign(new Error(message), { response: { status, headers: {}, data: {} } });
+}
 
 describe('retry utility', () => {
   beforeEach(() => {
@@ -34,7 +39,7 @@ describe('retry utility', () => {
     });
 
     it('should retry 5xx server errors', async () => {
-      const serverError = { response: { status: 503 }, message: 'Service unavailable' };
+      const serverError = httpError(503, 'Service unavailable');
       const operation = jest
         .fn()
         .mockRejectedValueOnce(serverError)
@@ -72,18 +77,18 @@ describe('retry utility', () => {
     });
 
     it('should NOT retry permanent 4xx errors', async () => {
-      const clientError = { response: { status: 400 }, message: 'Bad request' };
+      const clientError = httpError(400, 'Bad request');
       const operation = jest.fn().mockRejectedValue(clientError);
 
       await expect(
         retryWithBackoff(operation, DEFAULT_RETRY_CONFIG, 'test op')
-      ).rejects.toEqual(clientError);
+      ).rejects.toBe(clientError);
 
       expect(operation).toHaveBeenCalledTimes(1);
     });
 
     it('should retry 408 timeout errors', async () => {
-      const timeoutError = { response: { status: 408 }, message: 'Request timeout' };
+      const timeoutError = httpError(408, 'Request timeout');
       const operation = jest
         .fn()
         .mockRejectedValueOnce(timeoutError)
@@ -198,6 +203,41 @@ describe('retry utility', () => {
       ).rejects.toThrow('UnknownError');
 
       expect(operation).toHaveBeenCalledTimes(1); // No retry
+    });
+  });
+
+  describe('SDK errors', () => {
+    it('retries SDK 5xx server errors and connection failures', async () => {
+      const outage = Object.assign(new ServerError('Upstream'), { statusCode: 503 });
+      const operation = jest.fn().mockRejectedValueOnce(outage).mockResolvedValue('ok');
+
+      await expect(retryWithBackoff(operation, createRetryConfig({ initialDelayMs: 1 }), 'sdk')).resolves.toBe('ok');
+      expect(operation).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([401, 403, 404, 422])('does not retry SDK status %i', async (status) => {
+      const error = Object.assign(new ServerError('nope'), { statusCode: status });
+      const operation = jest.fn().mockRejectedValue(error);
+
+      await expect(retryWithBackoff(operation, createRetryConfig({ initialDelayMs: 1 }), 'sdk')).rejects.toBe(error);
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry SDK rate limiting', async () => {
+      const error = Object.assign(new RateLimitedError('slow down'), { statusCode: 429, code: 85131 });
+      expect(isRetryableError(error)).toBe(false);
+      const operation = jest.fn().mockRejectedValue(error);
+
+      await expect(retryWithBackoff(operation, createRetryConfig({ initialDelayMs: 1 }), 'sdk')).rejects.toBe(error);
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs the operation once when maxAttempts is 1', async () => {
+      const error = Object.assign(new Error('reset'), { code: 'ECONNRESET' });
+      const operation = jest.fn().mockRejectedValue(error);
+
+      await expect(retryWithBackoff(operation, createRetryConfig({ maxAttempts: 1 }), 'once')).rejects.toBe(error);
+      expect(operation).toHaveBeenCalledTimes(1);
     });
   });
 

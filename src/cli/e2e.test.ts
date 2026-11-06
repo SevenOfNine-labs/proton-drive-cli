@@ -159,3 +159,55 @@ describe('bridge protocol', () => {
     expect(r.json.error).toContain('Unknown bridge request field "credentialProvider"');
   });
 });
+
+describe('bridge stdout contract', () => {
+  function stdoutLines(stdout: string): string[] {
+    return stdout.split('\n').filter((line) => line.length > 0);
+  }
+
+  it('writes exactly one JSON line to stdout for auth-state', async () => {
+    const home = makeTempHome();
+    const r = await runCli(['bridge', 'auth-state'], { stdin: '{}\n', env: { HOME: home } });
+
+    expect(r.code).toBe(0);
+    const lines = stdoutLines(r.stdout);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ ok: true, payload: { state: 'needs_login' } });
+  });
+
+  it('keeps stdout to the envelope even with --debug and DEBUG=true', async () => {
+    const home = makeTempHome();
+    const r = await runCli(['--debug', 'bridge', 'auth-state'], { stdin: '{}\n', env: { HOME: home, DEBUG: 'true' } });
+
+    const lines = stdoutLines(r.stdout);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).ok).toBe(true);
+  });
+
+  it('answers unreadable input with an error envelope and exit code 1', async () => {
+    const r = await runCli(['bridge', 'auth-state'], { stdin: 'not json' });
+
+    expect(r.code).toBe(1);
+    const lines = stdoutLines(r.stdout);
+    expect(lines).toHaveLength(1);
+    const envelope = JSON.parse(lines[0]);
+    expect(envelope).toMatchObject({ ok: false, code: 400 });
+    expect(JSON.parse(envelope.details)).toMatchObject({ errorCode: 'VALIDATION_ERROR' });
+  });
+
+  it('no longer exposes bridge refresh or the dataPassword request field', async () => {
+    const refresh = await runBridge('refresh', {});
+    expect(refresh.json).toMatchObject({ ok: false, code: 400, error: 'Unknown bridge command: refresh' });
+
+    const secret = await runBridge('auth-state', { dataPassword: 'mailbox-password' });
+    expect(secret.json).toMatchObject({ ok: false, code: 400 });
+    expect(secret.json.error).toContain('Unknown bridge request field "dataPassword"');
+  });
+
+  it('reports the program name as proton-drive-cli', async () => {
+    const r = await runCli(['--help']);
+
+    expect(r.stdout).toContain('Usage: proton-drive-cli');
+    expect(r.stdout).not.toMatch(/proton-drive (login|doctor|upload|ls) /);
+  });
+});

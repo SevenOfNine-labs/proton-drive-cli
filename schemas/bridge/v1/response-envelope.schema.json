@@ -2,14 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/response-envelope.schema.json",
   "title": "proton-drive-cli bridge response envelope",
+  "description": "The single JSON line `proton-drive-cli bridge <command>` writes to stdout. On success `payload` follows payloads/<command>.schema.json; on failure `details` is a JSON-encoded object following error-details.schema.json and `code` is the HTTP-like status from error-code-map.json.",
   "oneOf": [
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok"],
+      "required": [
+        "ok",
+        "payload"
+      ],
       "properties": {
-        "ok": { "const": true },
-        "payload": true,
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object"
+        },
         "error": false,
         "code": false,
         "details": false
@@ -18,13 +26,29 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok", "error", "code"],
+      "required": [
+        "ok",
+        "error",
+        "code",
+        "details"
+      ],
       "properties": {
-        "ok": { "const": false },
+        "ok": {
+          "const": false
+        },
         "payload": false,
-        "error": { "type": "string", "minLength": 1 },
-        "code": { "type": "integer", "minimum": 100 },
-        "details": { "type": "string" }
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "type": "integer",
+          "minimum": 100
+        },
+        "details": {
+          "type": "string",
+          "minLength": 2
+        }
       }
     }
   ]

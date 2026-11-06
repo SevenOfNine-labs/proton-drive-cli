@@ -1,12 +1,15 @@
 import { Command } from 'commander';
+import { createHash } from 'crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
 import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../auth/browser-fork';
 import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
+import { DEFAULT_KEY_PASSWORD_PROVIDER } from '../credentials';
 import { AppError } from '../errors/types';
-import { handleError, toAppError } from '../errors/handler';
+import { toAppError } from '../errors/classify';
+import { handleError } from '../errors/handler';
 import { isVerbose, isQuiet, outputResult } from '../utils/output';
 import { openBrowserUrl } from '../utils/open-browser';
 import { authTrace } from '../utils/auth-trace';
@@ -17,19 +20,24 @@ export interface BrowserForkKeyPasswordOptions {
   keyPasswordHost?: string;
 }
 
+/**
+ * Resolve the key-password store options: command option, then
+ * PROTON_KEY_PASSWORD_PROVIDER / PROTON_KEY_PASSWORD_HOST, then the default
+ * provider (pass-cli). No other environment variable is consulted.
+ */
 export function resolveBrowserForkKeyPasswordOptions(
   options: BrowserForkKeyPasswordOptions = {}
 ): BrowserForkAuthServiceOptions {
   const keyPasswordProvider =
     options.keyPasswordProvider?.trim() ||
     process.env.PROTON_KEY_PASSWORD_PROVIDER?.trim() ||
-    process.env.PROTON_CREDENTIAL_PROVIDER?.trim();
+    DEFAULT_KEY_PASSWORD_PROVIDER;
   const keyPasswordHost =
     options.keyPasswordHost?.trim() ||
     process.env.PROTON_KEY_PASSWORD_HOST?.trim();
 
   return {
-    ...(keyPasswordProvider ? { keyPasswordProvider } : {}),
+    keyPasswordProvider,
     ...(keyPasswordHost ? { keyPasswordHost } : {}),
   };
 }
@@ -108,10 +116,10 @@ export async function loginWithBrowserFork(
  * @example
  * ```bash
  * # Browser login
- * proton-drive login
+ * proton-drive-cli login
  *
  * # Store browser-derived key password in Proton Pass
- * proton-drive login --key-password-provider pass-cli
+ * proton-drive-cli login --key-password-provider pass-cli
  * ```
  *
  * @example
@@ -134,7 +142,7 @@ export function createLoginCommand(): Command {
 
   command
     .description('Authenticate with Proton Drive through browser sign-in')
-    .option('--key-password-provider <type>', 'Credential provider for browser-fork key password: git-credential or pass-cli')
+    .option('--key-password-provider <type>', `Credential provider for browser-fork key password: pass-cli (default) or git-credential`)
     .option('--key-password-host <host>', 'Credential host/key for browser-fork key password')
     .action(async (options) => {
       try {
@@ -149,7 +157,7 @@ export function createLoginCommand(): Command {
       } catch (error) {
         authTrace('cli.login.failure', traceErrorFields(error));
         handleError(error, process.env.DEBUG === 'true');
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -197,11 +205,11 @@ function traceErrorFields(error: unknown): Record<string, unknown> {
  * @example
  * ```bash
  * # Logout from Proton Drive
- * proton-drive logout
+ * proton-drive-cli logout
  * # Output: ✓ Logged out successfully
  *
  * # Logout when not authenticated
- * proton-drive logout
+ * proton-drive-cli logout
  * # Output: Not currently logged in
  * ```
  *
@@ -240,7 +248,7 @@ export function createLogoutCommand(): Command {
         console.log(chalk.green('✓ Logged out successfully'));
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -271,7 +279,7 @@ export function createLogoutCommand(): Command {
  * @example
  * ```bash
  * # Check authentication status (authenticated)
- * proton-drive status
+ * proton-drive-cli status
  * # Output:
  * # ✓ Authenticated
  * #
@@ -282,11 +290,11 @@ export function createLogoutCommand(): Command {
  * #   Password Mode: Single
  *
  * # Check authentication status (not authenticated)
- * proton-drive status
+ * proton-drive-cli status
  * # Output:
  * # ✗ Not authenticated
  * #
- * # Run: proton-drive login
+ * # Run: proton-drive-cli login
  * ```
  *
  * @example
@@ -323,7 +331,7 @@ export function createStatusCommand(): Command {
           console.log(`  ${chalk.dim('Session ID:')} ${session.sessionId.substring(0, 20)}...`);
           console.log(`  ${chalk.dim('Scopes:')} ${session.scopes.join(', ')}`);
           console.log(`  ${chalk.dim('Password Mode:')} ${session.passwordMode === 1 ? 'Single' : 'Two-password'}`);
-          console.log(`  ${chalk.dim('Auth Mode:')} ${session.authMode || 'srp'}`);
+          console.log(`  ${chalk.dim('Auth Mode:')} ${session.authMode ?? 'not recorded'}`);
           if (session.authMode === 'browser-fork') {
             const keyPasswordStore = createKeyPasswordStore({
               provider: session.keyPasswordProvider,
@@ -334,11 +342,11 @@ export function createStatusCommand(): Command {
           }
         } else {
           console.log(chalk.yellow('✗ Not authenticated'));
-          console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive login'));
+          console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive-cli login'));
         }
       } catch (error) {
         handleError(error, process.env.DEBUG === 'true');
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -359,12 +367,15 @@ export function createStatusCommand(): Command {
  * - **On success**: Updates session file and exits silently with code 0
  * - **On failure**: Exits with code 1 (optionally logs error if DEBUG=true)
  *
- * # Safety Features
+ * # Scheduling
  *
- * - Uses POST /auth/v4/refresh endpoint (NOT a login attempt)
- * - Will never trigger CAPTCHA verification
- * - Will never trigger rate-limiting (refresh tokens have separate limits)
- * - Safe to call repeatedly (e.g., every 5 minutes by system tray)
+ * - Uses POST /auth/v4/refresh (not a login attempt), so it cannot trigger
+ *   CAPTCHA verification.
+ * - Refresh requests are rate-limited by Proton like any other endpoint, and a
+ *   refresh token is single-use: the caller schedules one refresh shortly
+ *   before `tokenExpiresAt` (the tray refreshes 10 minutes before expiry) and
+ *   stops when the token is rejected (`--json` reports `protonCode` 10013).
+ * - Concurrent refreshes are serialized through the session file lock.
  *
  * # Exit Codes
  *
@@ -376,36 +387,17 @@ export function createStatusCommand(): Command {
  * @example
  * ```bash
  * # Refresh session token (silent on success)
- * proton-drive session refresh
+ * proton-drive-cli session refresh
  * echo $?
  * # Output: 0
  *
+ * # Machine-readable result for the tray scheduler
+ * proton-drive-cli session refresh --json
+ * # Output: {"ok":true,"refreshed":true,"state":"refreshed","uidFingerprint":"…","tokenExpiresAt":…}
+ *
  * # Refresh with debug output
- * DEBUG=true proton-drive session refresh
+ * DEBUG=true proton-drive-cli session refresh
  * # Output: (error details if refresh fails)
- *
- * # Use in system tray heartbeat (every 5 minutes)
- * # Cron: Run every 5 minutes
- * 5 * * * * /usr/local/bin/proton-drive session refresh
- * ```
- *
- * @example
- * ```typescript
- * // Programmatic usage in system tray
- * import { createSessionRefreshCommand } from './cli/login';
- *
- * const program = new Command();
- * program.addCommand(createSessionRefreshCommand());
- *
- * // Heartbeat loop
- * setInterval(async () => {
- *   try {
- *     await program.parseAsync(['session', 'refresh'], { from: 'user' });
- *     console.log('Token refreshed');
- *   } catch (error) {
- *     console.error('Refresh failed:', error);
- *   }
- * }, 5 * 60 * 1000); // 5 minutes
  * ```
  *
  * @category CLI Commands
@@ -433,7 +425,7 @@ export function createSessionRefreshCommand(): Command {
               action: 'none',
             }));
           }
-          process.exit(0);
+          return;
         }
 
         const updated = await SessionManager.refreshSession(session);
@@ -452,7 +444,8 @@ export function createSessionRefreshCommand(): Command {
         } else if (process.env.DEBUG === 'true') {
           handleError(error, true);
         }
-        process.exit(1);
+        // stdout writes can complete asynchronously; process.exit would drop them.
+        process.exitCode = 1;
       }
     });
 
@@ -485,11 +478,10 @@ function refreshErrorEnvelope(error: unknown): Record<string, unknown> {
   };
 }
 
+/**
+ * Short, non-reversible identifier for a session UID in machine-readable
+ * output: the first 8 hex characters of its SHA-256 digest.
+ */
 function fingerprintForRefresh(value: string): string {
-  let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    hash = ((hash << 5) - hash) + value.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
+  return createHash('sha256').update(value).digest('hex').slice(0, 8);
 }

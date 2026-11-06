@@ -2,13 +2,15 @@
 
 ## Project Structure & Module Organization
 
-- `src/cli/`: User-facing commands (`login`, `ls`, `upload`, `bridge`, credential flows).
-- `src/auth/`: Authentication/session setup, SRP, CAPTCHA handling, token refresh.
-- `src/drive/`: Proton Drive operations and encrypted metadata/file workflows.
+- `src/cli/`: User-facing commands (`login`, `logout`, `status`, `session refresh`, `doctor`, `ls`, `upload`, `download`, `mkdir`, `rm`, `mv`, `cat`, `info`, `bridge`).
+- `src/auth/`: Browser-fork login, session persistence and token refresh, key-password store.
+- `src/bridge/`: Bridge protocol constants, request validators, OID path mapping.
+- `src/api/`: HTTP client for the Proton API.
 - `src/crypto/`: OpenPGP and encryption/decryption helpers.
 - `src/sdk/`: Wrapper layer around `@protontech/drive-sdk`.
-- `src/credential/`: Credential-provider implementations and validation.
-- `docs/`: Architecture, security, and operations docs for this CLI.
+- `src/credentials/`: Credential providers (`pass-cli`, `git-credential`) that store the key password and the optional data password.
+- `schemas/`: JSON Schemas of the bridge and doctor contracts.
+- `docs/`: Architecture, security, operations, and reference docs for this CLI.
 - `dist/`: Built output from TypeScript compilation (generated).
 
 ## Build, Test, and Development Commands

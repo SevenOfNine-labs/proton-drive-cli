@@ -29,23 +29,18 @@ const MockedAuthApiClient = AuthApiClient as jest.MockedClass<typeof AuthApiClie
 const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
 const mockedCreateKeyPasswordStore = createKeyPasswordStore as jest.MockedFunction<typeof createKeyPasswordStore>;
 
-function jwtExpiringIn(seconds: number): string {
-  const payload = Buffer.from(JSON.stringify({
-    exp: Math.floor(Date.now() / 1000) + seconds,
-  })).toString('base64url');
-  return `header.${payload}.signature`;
-}
-
 describe('AuthService', () => {
   const logout = jest.fn();
   const removeKeyPassword = jest.fn();
+  const calls: string[] = [];
   const session = {
     sessionId: 'uid-123',
     uid: 'uid-123',
-    accessToken: jwtExpiringIn(3600),
+    accessToken: 'opaque-access-token',
     refreshToken: 'refresh-token',
     scopes: ['full'],
     passwordMode: 1,
+    tokenExpiresAt: Date.now() + 3_600_000,
     authMode: 'browser-fork' as const,
     keyPasswordPersisted: true,
     keyPasswordProvider: 'git-credential' as const,
@@ -54,6 +49,11 @@ describe('AuthService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    calls.length = 0;
+    logout.mockImplementation(async () => { calls.push('logout'); });
+    removeKeyPassword.mockImplementation(async () => { calls.push('remove-key-password'); });
+    mockedSessionManager.clearSession.mockImplementation(async () => { calls.push('clear-session'); });
+    mockedSessionManager.clearCryptoCache.mockImplementation(async () => { calls.push('clear-crypto-cache'); });
     MockedAuthApiClient.mockImplementation(() => ({ logout } as unknown as AuthApiClient));
     mockedCreateKeyPasswordStore.mockReturnValue({
       provider: 'git-credential',
@@ -73,9 +73,9 @@ describe('AuthService', () => {
     expect(mockedSessionManager.refreshSession).not.toHaveBeenCalled();
   });
 
-  it('refreshes a locally expiring session', async () => {
-    const expiring = { ...session, accessToken: jwtExpiringIn(30) };
-    const refreshed = { ...session, accessToken: jwtExpiringIn(3600) };
+  it('refreshes a session whose tokenExpiresAt is within the threshold', async () => {
+    const expiring = { ...session, tokenExpiresAt: Date.now() + 30_000 };
+    const refreshed = { ...session, tokenExpiresAt: Date.now() + 3_600_000 };
     mockedSessionManager.loadSession.mockResolvedValue(expiring);
     mockedSessionManager.refreshSession.mockResolvedValue(refreshed);
 
@@ -86,6 +86,15 @@ describe('AuthService', () => {
       undefined,
       'external-drive-test@1.0.0',
     );
+  });
+
+  it('does not refresh a session without a known expiry (opaque token, no ExpiresIn)', async () => {
+    const { tokenExpiresAt, ...opaque } = session;
+    mockedSessionManager.loadSession.mockResolvedValue(opaque);
+
+    await expect(new AuthService().getSession()).resolves.toEqual(opaque);
+
+    expect(mockedSessionManager.refreshSession).not.toHaveBeenCalled();
   });
 
   it('fails closed when no session exists', async () => {
@@ -101,15 +110,22 @@ describe('AuthService', () => {
     await expect(new AuthService().isAuthenticated()).resolves.toBe(true);
   });
 
-  it('logs out, clears browser-fork key password, and removes local session state', async () => {
+  it('logs out: key password first, then server revocation with the session UID, then local state', async () => {
     mockedSessionManager.loadSession.mockResolvedValue(session);
-    logout.mockResolvedValue(undefined);
-    removeKeyPassword.mockResolvedValue(undefined);
 
     await new AuthService().logout();
 
-    expect(logout).toHaveBeenCalledWith(session.accessToken);
     expect(removeKeyPassword).toHaveBeenCalledWith('uid-123');
+    expect(logout).toHaveBeenCalledWith('uid-123', session.accessToken);
+    expect(calls).toEqual(['remove-key-password', 'logout', 'clear-session', 'clear-crypto-cache']);
+  });
+
+  it('still removes the local session when the server revocation fails', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(session);
+    logout.mockRejectedValue(new Error('Request failed with status 401'));
+
+    await new AuthService().logout();
+
     expect(mockedSessionManager.clearSession).toHaveBeenCalled();
     expect(mockedSessionManager.clearCryptoCache).toHaveBeenCalled();
   });

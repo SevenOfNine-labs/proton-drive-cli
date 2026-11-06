@@ -17,12 +17,12 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  *
  * **Trash** (default): Moves item to trash bin (recoverable via web UI)
  * ```bash
- * proton-drive rm /Documents/file.pdf
+ * proton-drive-cli rm /Documents/file.pdf
  * ```
  *
  * **Permanent** (`--permanent` flag): Permanently deletes item (non-recoverable)
  * ```bash
- * proton-drive rm /Documents/file.pdf --permanent
+ * proton-drive-cli rm /Documents/file.pdf --permanent
  * ```
  *
  * # Deletion Process
@@ -54,23 +54,23 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @example
  * ```bash
  * # Move file to trash (recoverable)
- * proton-drive rm /Documents/old-file.pdf
+ * proton-drive-cli rm /Documents/old-file.pdf
  *
  * # Permanently delete file (non-recoverable)
- * proton-drive rm /Documents/old-file.pdf --permanent
+ * proton-drive-cli rm /Documents/old-file.pdf --permanent
  *
  * # Delete folder (recursively deletes contents)
- * proton-drive rm /Old-Folder
+ * proton-drive-cli rm /Old-Folder
  *
  * # Permanent folder deletion
- * proton-drive rm /Old-Folder --permanent
+ * proton-drive-cli rm /Old-Folder --permanent
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive rm /file.pdf --permanent
+ * proton-drive-cli login
+ * proton-drive-cli rm /file.pdf --permanent
  *
  * # Quiet mode (for scripts)
- * proton-drive rm /file.pdf --quiet
+ * proton-drive-cli rm /file.pdf --quiet
  * ```
  *
  * @example

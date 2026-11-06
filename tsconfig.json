@@ -16,9 +16,31 @@
     "moduleResolution": "node",
     "types": ["node", "jest"],
     "baseUrl": ".",
+    // @protontech/crypto ships TypeScript sources behind an "exports" map that
+    // the "node" (node10) resolution does not read; these entries point the
+    // type checker at the same files Node, Jest and esbuild load (first the
+    // package's own node_modules, then a hoisting workspace root). The last two
+    // do the same for the "exports"-only entries the package imports.
     "paths": {
-      "@protontech/crypto": ["src/types/protontech-crypto.d.ts"]
-    }
+      "@protontech/crypto": [
+        "node_modules/@protontech/crypto/src/index.ts",
+        "../../node_modules/@protontech/crypto/src/index.ts"
+      ],
+      "@protontech/crypto/*": [
+        "node_modules/@protontech/crypto/src/*",
+        "../../node_modules/@protontech/crypto/src/*"
+      ],
+      "openpgp/lightweight": [
+        "node_modules/openpgp/dist/types/index.d.ts",
+        "../../node_modules/openpgp/dist/types/index.d.ts"
+      ],
+      "@openpgp/web-stream-tools": [
+        "node_modules/@openpgp/web-stream-tools/lib/types/index.d.ts",
+        "../../node_modules/@openpgp/web-stream-tools/lib/types/index.d.ts"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "submodules", "node_modules/**/*.ts"]

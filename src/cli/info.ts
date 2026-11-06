@@ -55,20 +55,20 @@ import { getNodeDisplayName } from '../sdk/nodeEntity';
  * @example
  * ```bash
  * # Show file metadata (verbose mode)
- * proton-drive info /Documents/report.pdf --verbose
+ * proton-drive-cli info /Documents/report.pdf --verbose
  *
  * # Show folder metadata
- * proton-drive info /Photos
+ * proton-drive-cli info /Photos
  *
  * # JSON output for parsing (normal mode)
- * proton-drive info /file.txt | jq .size
+ * proton-drive-cli info /file.txt | jq .size
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive info /Documents/file.pdf
+ * proton-drive-cli login
+ * proton-drive-cli info /Documents/file.pdf
  *
  * # Quiet mode (no output)
- * proton-drive info /file.txt --quiet
+ * proton-drive-cli info /file.txt --quiet
  * ```
  *
  * @example

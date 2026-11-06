@@ -2,21 +2,41 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request.schema.json",
   "title": "proton-drive-cli bridge request",
+  "description": "JSON object read from stdin by `proton-drive-cli bridge <command>`. request-field-rules.json lists which of these fields each command requires and accepts. Secrets never travel in a request: mailbox/data passwords are reached through the credential provider named by dataCredentialProvider/dataCredentialHost.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "dataPassword": { "type": "string" },
-    "dataCredentialProvider": { "type": "string" },
-    "dataCredentialHost": { "type": "string" },
-    "appVersion": { "type": "string" },
-    "oid": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
-    "path": { "type": "string" },
-    "outputPath": { "type": "string" },
-    "folder": { "type": "string" },
-    "storageBase": { "type": "string" },
+    "dataCredentialProvider": {
+      "type": "string"
+    },
+    "dataCredentialHost": {
+      "type": "string"
+    },
+    "appVersion": {
+      "type": "string"
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "path": {
+      "type": "string"
+    },
+    "outputPath": {
+      "type": "string"
+    },
+    "folder": {
+      "type": "string"
+    },
+    "storageBase": {
+      "type": "string"
+    },
     "oids": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Fa-f0-9]{64}$"
+      }
     }
   }
 }

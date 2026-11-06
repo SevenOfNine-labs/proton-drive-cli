@@ -1,15 +1,7 @@
 /**
- * Type definitions for cryptographic operations
+ * Type definitions for the Proton account key material (GET /core/v4/users
+ * and /core/v4/addresses).
  */
-import type * as openpgp from '@protontech/openpgp';
-
-/**
- * User's cryptographic keys
- */
-export interface UserKeys {
-  privateKeys: string[]; // Armored private keys
-  publicKeys: string[]; // Armored public keys
-}
 
 /**
  * Address key from API
@@ -59,46 +51,4 @@ export interface User {
   Name: string;
   Email: string;
   Keys: UserKey[];
-}
-
-/**
- * Decrypted share context
- */
-export interface DecryptedShareContext {
-  shareId: string;
-  shareKey: openpgp.PrivateKey;
-  sharePassphrase: string; // Decrypted passphrase
-}
-
-/**
- * Decrypted node context
- */
-export interface DecryptedNodeContext {
-  linkId: string;
-  nodeKey: openpgp.PrivateKey;
-  nodePassphrase: string; // Decrypted passphrase
-}
-
-/**
- * Key pair for OpenPGP
- */
-export interface KeyPair {
-  privateKey: openpgp.PrivateKey;
-  publicKey: openpgp.PublicKey;
-}
-
-/**
- * Decryption result
- */
-export interface DecryptionResult {
-  data: string | Uint8Array;
-  verified: boolean;
-}
-
-/**
- * Encryption result
- */
-export interface EncryptionResult {
-  message: string; // Armored encrypted message
-  signature?: string; // Armored signature
 }

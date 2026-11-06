@@ -1,23 +1,40 @@
 /**
- * Retry utilities with exponential backoff for transient failures
+ * Retry with exponential backoff for transient failures.
+ *
+ * The backoff loop is p-retry (https://github.com/sindresorhus/p-retry);
+ * this module only contributes the project's retry policy, which is derived
+ * from the same error classification the bridge reports to the Go adapter
+ * (errors/classify):
+ *
+ * Never retried:
+ * - Rate-limit errors (Proton codes 2028/85131, HTTP 429)
+ * - CAPTCHA errors (Proton codes 9001/12087)
+ * - Permanent failures (4xx client errors except 408, auth, validation)
+ *
+ * Retried:
+ * - Network errors (ECONNRESET, ETIMEDOUT, ENOTFOUND, SDK ConnectionError)
+ * - Server errors (5xx) and request timeouts (408, ECONNABORTED)
+ * - Error names or codes listed in `retryableErrors`
  */
 
-import { isRateLimitError, isCaptchaError } from '../errors/types';
+import pRetry from 'p-retry';
+import { ErrorCode, isCaptchaError, isRateLimitError } from '../errors/types';
+import { toAppError } from '../errors/classify';
 import { logger } from './logger';
 
 /**
  * Configuration for retry behavior
  */
 export interface RetryConfig {
-  /** Maximum number of retry attempts (including initial attempt) */
+  /** Maximum number of attempts (including the initial attempt) */
   maxAttempts: number;
-  /** Initial delay in milliseconds before first retry */
+  /** Initial delay in milliseconds before the first retry */
   initialDelayMs: number;
   /** Maximum delay in milliseconds (cap for exponential backoff) */
   maxDelayMs: number;
   /** Backoff multiplier (delay multiplied by this each retry) */
   backoffFactor: number;
-  /** Set of error names that should be retried */
+  /** Error names or codes that are retried in addition to the policy above */
   retryableErrors: Set<string>;
 }
 
@@ -25,7 +42,6 @@ export interface RetryConfig {
  * Default retry configuration
  * - 3 attempts total (1 initial + 2 retries)
  * - Start with 1s delay, max 10s, 2x backoff
- * - Retry network and timeout errors
  */
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxAttempts: 3,
@@ -35,144 +51,77 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   retryableErrors: new Set(['NetworkError', 'TimeoutError', 'ECONNABORTED']),
 };
 
+const RETRYABLE_ERROR_CODES = new Set<ErrorCode>([
+  ErrorCode.NETWORK_ERROR,
+  ErrorCode.TIMEOUT,
+  ErrorCode.CONNECTION_REFUSED,
+]);
+
 /**
- * Sleep for specified milliseconds
+ * Decide whether a failed attempt may be retried.
  */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+export function isRetryableError(error: unknown, config: RetryConfig = DEFAULT_RETRY_CONFIG): boolean {
+  if (isRateLimitError(error) || isCaptchaError(error)) {
+    return false;
+  }
+
+  const candidate = error as { name?: unknown; code?: unknown } | null | undefined;
+  if (typeof candidate?.name === 'string' && config.retryableErrors.has(candidate.name)) {
+    return true;
+  }
+  if (typeof candidate?.code === 'string' && config.retryableErrors.has(candidate.code)) {
+    return true;
+  }
+
+  const appError = toAppError(error);
+  if (RETRYABLE_ERROR_CODES.has(appError.code)) {
+    return true;
+  }
+  // API_ERROR is recoverable only for 5xx responses (errors/classify).
+  return appError.code === ErrorCode.API_ERROR && appError.isRecoverable;
 }
 
-/**
- * Check if an error is a permanent error that should never be retried
- * @param error - Error to check
- * @returns True if error is permanent (4xx client errors except 408/429)
- */
-function isPermanentError(error: any): boolean {
-  const status = error?.response?.status;
-  // 4xx errors are permanent except:
-  // - 408 Request Timeout (transient)
-  // - 429 Too Many Requests (handled separately as rate-limit)
-  if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Check if an error should be retried based on configuration
- * @param error - Error to check
- * @param config - Retry configuration
- * @returns True if error is retryable
- */
-function isRetryableError(error: any, config: RetryConfig): boolean {
-  // Network errors (connection reset, timeout, not found)
-  if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
-    return true;
-  }
-
-  // 5xx server errors are retryable
-  const status = error?.response?.status;
-  if (status >= 500 && status < 600) {
-    return true;
-  }
-
-  // 408 Request Timeout is retryable
-  if (status === 408) {
-    return true;
-  }
-
-  // Check custom retryable error list
-  if (config.retryableErrors.has(error.name)) {
-    return true;
-  }
-
-  // Check error code (e.g., ECONNABORTED)
-  if (error.code && config.retryableErrors.has(error.code)) {
-    return true;
-  }
-
-  return false;
+function describeError(error: unknown): string {
+  const candidate = error as { code?: unknown; response?: { status?: unknown }; statusCode?: unknown } | null;
+  return String(candidate?.code ?? candidate?.response?.status ?? candidate?.statusCode ?? 'unknown');
 }
 
 /**
  * Execute an async operation with automatic retry on transient failures.
  *
- * NEVER retries:
- * - Rate-limit errors (code 2028, 85131, HTTP 429)
- * - CAPTCHA errors (code 9001, 12087)
- * - Permanent errors (4xx client errors except 408)
- *
- * DOES retry:
- * - Network errors (ECONNRESET, ETIMEDOUT, ENOTFOUND)
- * - Server errors (5xx)
- * - Timeout errors (408, ECONNABORTED)
- * - Custom retryable errors in config
- *
  * @param operation - Async function to execute
- * @param config - Retry configuration (uses DEFAULT_RETRY_CONFIG if not provided)
+ * @param config - Retry configuration (DEFAULT_RETRY_CONFIG if not provided)
  * @param context - Human-readable context for logging (e.g., "Upload file abc.txt")
- * @returns Promise resolving to operation result
- * @throws Last error if all retry attempts fail
+ * @returns Promise resolving to the operation result
+ * @throws The last error when the operation is not retryable or attempts are exhausted
  */
 export async function retryWithBackoff<T>(
   operation: () => Promise<T>,
   config: RetryConfig = DEFAULT_RETRY_CONFIG,
   context: string = 'Operation'
 ): Promise<T> {
-  let lastError: Error | undefined;
-  let delayMs = config.initialDelayMs;
-
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error as Error;
-
-      // NEVER retry rate-limit errors — fail fast
-      if (isRateLimitError(error)) {
-        logger.debug(`${context} failed with rate-limit error, not retrying`);
-        throw error;
+  return pRetry(() => operation(), {
+    retries: config.maxAttempts - 1,
+    factor: config.backoffFactor,
+    minTimeout: config.initialDelayMs,
+    maxTimeout: config.maxDelayMs,
+    randomize: false,
+    onFailedAttempt: ({ retriesLeft }) => {
+      if (retriesLeft === 0 && config.maxAttempts > 1) {
+        logger.warn(`${context} failed after ${config.maxAttempts} attempts`);
       }
-
-      // NEVER retry CAPTCHA errors — user action required
-      if (isCaptchaError(error)) {
-        logger.debug(`${context} failed with CAPTCHA error, not retrying`);
-        throw error;
-      }
-
-      // NEVER retry permanent errors (4xx client errors)
-      if (isPermanentError(error)) {
-        logger.debug(`${context} failed with permanent error (${(error as any)?.response?.status}), not retrying`);
-        throw error;
-      }
-
-      // Check if error is retryable
+    },
+    shouldRetry: ({ error, attemptNumber, retryDelay }) => {
       if (!isRetryableError(error, config)) {
         logger.debug(`${context} failed with non-retryable error, not retrying`);
-        throw error;
+        return false;
       }
-
-      // If this was the last attempt, throw
-      if (attempt === config.maxAttempts) {
-        logger.warn(`${context} failed after ${config.maxAttempts} attempts`);
-        break;
-      }
-
-      // Log retry attempt
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const errorCode = (error as any)?.code || (error as any)?.response?.status || 'unknown';
-      logger.warn(`${context} failed (attempt ${attempt}/${config.maxAttempts}, error: ${errorCode}), retrying in ${delayMs}ms...`);
-
-      // Sleep before retry
-      await sleep(delayMs);
-
-      // Exponential backoff with cap
-      delayMs = Math.min(delayMs * config.backoffFactor, config.maxDelayMs);
-    }
-  }
-
-  // All attempts failed
-  throw lastError;
+      logger.warn(
+        `${context} failed (attempt ${attemptNumber}/${config.maxAttempts}, error: ${describeError(error)}), retrying in ${retryDelay}ms...`
+      );
+      return true;
+    },
+  });
 }
 
 /**

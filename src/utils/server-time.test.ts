@@ -54,3 +54,23 @@ describe('server-time', () => {
     expect(isServerTimeSynced()).toBe(false);
   });
 });
+
+describe('server-time propagation to @protontech/crypto', () => {
+  test('feeds the observed server date into the crypto endpoint clock, which only moves forward', async () => {
+    await jest.isolateModulesAsync(async () => {
+      const local = await import('./server-time');
+      const crypto = await import('@protontech/crypto/serverTime');
+      const serverDate = new Date(Date.now() - 3_600_000);
+
+      local.updateServerTime(serverDate);
+      expect(crypto.serverTime().getTime()).toBe(serverDate.getTime());
+
+      // pmcrypto keeps the newest server date it has seen.
+      local.updateServerTime(new Date(serverDate.getTime() - 1_000));
+      expect(crypto.serverTime().getTime()).toBe(serverDate.getTime());
+
+      local.resetServerTime();
+      expect(Math.abs(crypto.serverTime().getTime() - Date.now())).toBeLessThan(1_000);
+    });
+  });
+});

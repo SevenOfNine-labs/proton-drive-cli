@@ -13,10 +13,11 @@
 
 ## Bridge Commands
 
-Supported commands: `auth-state`, `upload`, `download`, `list`, `exists`,
-`delete`, `refresh`, `init`, `batch-exists`, and `batch-delete`.
+Supported commands: `auth-state`, `init`, `upload`, `download`, `exists`,
+`batch-exists`, `delete`, `batch-delete`, and `list`; payload schemas live in
+`schemas/bridge/v1/payloads/`.
 
-The bridge is session-only and rejects legacy login-shaped request fields.
+The bridge is session-only: account-login request fields are rejected.
 
 ## Test Evidence
 

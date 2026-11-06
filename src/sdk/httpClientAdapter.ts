@@ -4,11 +4,12 @@
  * Implements ProtonDriveHTTPClient by injecting auth tokens from SessionManager
  * and executing requests with fetch(). Handles token refresh on HTTP 401
  * (Unauthorized) only, like Proton's official clients (go-proton-api, the web
- * client and the SDK account module). HTTP 403 with Proton error code 9101
- * (insufficient scope) is NOT refreshable: a refreshed token keeps the same
- * scopes, so refreshing only rotates the refresh token across concurrent
- * bridge subprocesses and invites "invalid refresh token" (10013) races. The
- * 403 is returned as-is so the bridge classifies it as INSUFFICIENT_SCOPE.
+ * client and the SDK account module, apiClient.ts). No Proton error code
+ * triggers a refresh: HTTP 403 with code 9101 (insufficient scope) is not
+ * refreshable because a refreshed token keeps the same scopes, and code 10013
+ * (invalid refresh token) is the refresh endpoint's own rejection, which must
+ * never start another refresh. Both are returned as-is so the bridge
+ * classifies them.
  */
 
 import type {
@@ -17,6 +18,7 @@ import type {
   ProtonDriveHTTPClientJsonRequest,
 } from '@protontech/drive-sdk';
 import { SessionManager } from '../auth/session';
+import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { logger } from '../utils/logger';
 import { RateLimitError } from '../errors/types';
 import { getProtonAppVersion, VENDORED_DRIVE_SDK_VERSION } from '../constants';
@@ -26,31 +28,7 @@ import {
   SUPPORTED_REQUIREMENT_MASK_BY_SCOPE,
 } from '../api/drive-requirements';
 
-// Inline request types to avoid deep import issues
-interface HTTPClientBaseRequest {
-  url: string;
-  method: string;
-  headers: Headers;
-  timeoutMs: number;
-  signal?: AbortSignal;
-}
-
-interface HTTPClientJsonRequest extends HTTPClientBaseRequest {
-  json?: object;
-}
-
-interface HTTPClientBlobRequest extends HTTPClientBaseRequest {
-  body?: ProtonDriveHTTPClientBlobRequest['body'];
-  onProgress?: (progress: number) => void;
-}
-
 const API_BASE_URL = 'https://drive-api.proton.me';
-
-// Proton API error codes that indicate the access token needs refresh.
-// 9101 (insufficient scope, HTTP 403) is deliberately absent: see header.
-const AUTH_REFRESH_ERROR_CODES = new Set([
-  10013,  // Invalid access token
-]);
 
 // Proton API error codes that indicate rate-limiting or anti-abuse
 const RATE_LIMIT_ERROR_CODES = new Set([
@@ -68,7 +46,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
   }
 
   private async injectAuthHeaders(headers: Headers): Promise<void> {
-    await SessionManager.assertNotRateLimited();
+    await assertNotRateLimited();
 
     // Use getValidSession() to proactively refresh tokens if expiring soon
     const session = await SessionManager.getValidSession(this.appVersion);
@@ -135,7 +113,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get('retry-after');
       const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
-      const cooldown = await SessionManager.recordRateLimitCooldown({
+      const cooldown = await recordRateLimitCooldown({
         retryAfter,
         message: 'Rate limit exceeded (HTTP 429)',
       });
@@ -152,7 +130,7 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const body: any = await clone.json();
         if (body?.Code && RATE_LIMIT_ERROR_CODES.has(body.Code)) {
           logger.warn(`Proton API rate-limit error ${body.Code}: ${body.Error || 'unknown'}`);
-          const cooldown = await SessionManager.recordRateLimitCooldown({
+          const cooldown = await recordRateLimitCooldown({
             protonCode: body.Code,
             message: body.Error,
           });
@@ -171,37 +149,6 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     }
   }
 
-  /**
-   * Check if a response indicates the token needs to be refreshed.
-   * Returns true for HTTP 401 or Proton API invalid-access-token codes.
-   *
-   * For non-401 errors, clones the response and peeks at the JSON body
-   * to check the Proton error code without consuming the original response.
-   */
-  private async needsTokenRefresh(response: Response): Promise<boolean> {
-    if (response.status === 401) {
-      return true;
-    }
-
-    // Only check JSON body for non-2xx responses that might carry Proton error codes
-    if (response.ok) {
-      return false;
-    }
-
-    try {
-      const clone = response.clone();
-      const body: any = await clone.json();
-      if (body?.Code && AUTH_REFRESH_ERROR_CODES.has(body.Code)) {
-        logger.debug(`Proton API error ${body.Code}: ${body.Error || 'unknown'} — attempting token refresh`);
-        return true;
-      }
-    } catch {
-      // Response body isn't JSON — not an auth error
-    }
-
-    return false;
-  }
-
   private async refreshTokenIfNeeded(): Promise<void> {
     // Deduplicate concurrent refresh attempts within this process
     if (this.refreshInProgress) {
@@ -213,30 +160,8 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
         const session = await SessionManager.loadSession();
         if (!session) throw new Error('No session to refresh');
 
-        // Store original access token to detect cross-process updates
-        const originalAccessToken = session.accessToken;
-
-        try {
-          await SessionManager.refreshSession(session, this.appVersion);
-          logger.info('Token refreshed successfully (reactive, after 401)');
-        } catch (refreshErr) {
-          // Refresh token may have been consumed by another subprocess.
-          // Re-read the session file — another process may have already
-          // written a fresh token pair.
-          logger.debug('Refresh failed, re-reading session file (possible cross-process race)');
-          const updatedSession = await SessionManager.loadSession();
-          if (
-            updatedSession &&
-            updatedSession.accessToken !== originalAccessToken
-          ) {
-            // Another process already refreshed — use the new tokens
-            logger.info('Session refreshed by another process, using updated tokens');
-            return;
-          }
-          // Session unchanged — the refresh truly failed
-          logger.warn('Token refresh failed and no cross-process update detected');
-          throw refreshErr;
-        }
+        await SessionManager.refreshSessionOrAdoptRotated(session, this.appVersion);
+        logger.info('Token refreshed (reactive, after 401)');
       } finally {
         this.refreshInProgress = null;
       }
@@ -256,44 +181,39 @@ export class HTTPClientAdapter implements ProtonDriveHTTPClient {
     timeoutMs: number,
     externalSignal?: AbortSignal,
   ): Promise<Response> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    if (externalSignal) {
-      externalSignal.addEventListener('abort', () => controller.abort());
-    }
-    fetchOpts.signal = controller.signal;
+    // AbortSignal.any (WHATWG DOM) combines the SDK's signal, including one
+    // that is already aborted, with the request budget; no listener to
+    // remove afterwards.
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    fetchOpts.signal = externalSignal ? AbortSignal.any([externalSignal, timeoutSignal]) : timeoutSignal;
 
-    try {
-      let response = await fetch(url, fetchOpts);
-      this.observeResponse(response);
+    let response = await fetch(url, fetchOpts);
+    this.observeResponse(response);
 
-      // Check for rate-limiting BEFORE attempting token refresh
-      // (rate-limit errors should not trigger refresh attempts)
-      await this.checkRateLimit(response);
+    // Check for rate-limiting BEFORE attempting token refresh
+    // (rate-limit errors should not trigger refresh attempts)
+    await this.checkRateLimit(response);
 
-      if (await this.needsTokenRefresh(response)) {
-        try {
-          await this.refreshTokenIfNeeded();
-          await this.injectAuthHeaders(headers);
-          response = await fetch(url, fetchOpts);
-          this.observeResponse(response);
+    if (response.status === 401) {
+      try {
+        await this.refreshTokenIfNeeded();
+        await this.injectAuthHeaders(headers);
+        response = await fetch(url, fetchOpts);
+        this.observeResponse(response);
 
-          // Check rate-limiting on retry response as well
-          await this.checkRateLimit(response);
-        } catch (refreshErr) {
-          // Re-throw rate-limit errors immediately
-          if (refreshErr instanceof RateLimitError) {
-            throw refreshErr;
-          }
-          logger.warn(`Token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`);
-          // Return the original error response so the caller gets the API error
+        // Check rate-limiting on retry response as well
+        await this.checkRateLimit(response);
+      } catch (refreshErr) {
+        // Re-throw rate-limit errors immediately
+        if (refreshErr instanceof RateLimitError) {
+          throw refreshErr;
         }
+        logger.warn(`Token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`);
+        // Return the original error response so the caller gets the API error
       }
-
-      return response;
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    return response;
   }
 
   async fetchJson(request: ProtonDriveHTTPClientJsonRequest): Promise<Response> {

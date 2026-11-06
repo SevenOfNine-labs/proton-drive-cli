@@ -176,7 +176,7 @@ describe('error types', () => {
       expect(categorized.category).toBe(ErrorCategory.CAPTCHA);
       expect(categorized.retryable).toBe(false);
       expect(categorized.userMessage).toContain('CAPTCHA');
-      expect(categorized.recoverySuggestion).toContain('proton-drive login');
+      expect(categorized.recoverySuggestion).toContain('proton-drive-cli login');
     });
 
     it('should categorize 401 as auth error', () => {
@@ -190,7 +190,7 @@ describe('error types', () => {
       expect(categorized.category).toBe(ErrorCategory.AUTH);
       expect(categorized.retryable).toBe(false);
       expect(categorized.httpStatus).toBe(401);
-      expect(categorized.recoverySuggestion).toContain('proton-drive login');
+      expect(categorized.recoverySuggestion).toContain('proton-drive-cli login');
     });
 
     it('should categorize 404 as not found', () => {
@@ -390,12 +390,12 @@ describe('error types', () => {
   describe('AppError.getRecoverySuggestion', () => {
     it('should return recovery suggestion for AUTH_FAILED', () => {
       const error = new AppError('Auth failed', ErrorCode.AUTH_FAILED);
-      expect(error.getRecoverySuggestion()).toContain('proton-drive login');
+      expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
     });
 
     it('should return recovery suggestion for SESSION_EXPIRED', () => {
       const error = new AppError('Expired', ErrorCode.SESSION_EXPIRED);
-      expect(error.getRecoverySuggestion()).toContain('proton-drive login');
+      expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
     });
 
     it('should return recovery suggestion for TWO_FACTOR_REQUIRED', () => {
@@ -440,7 +440,7 @@ describe('error types', () => {
 
     it('should return recovery suggestion for CAPTCHA_REQUIRED', () => {
       const error = new AppError('CAPTCHA', ErrorCode.CAPTCHA_REQUIRED);
-      expect(error.getRecoverySuggestion()).toContain('proton-drive login');
+      expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
     });
 
     it('should return null for errors without recovery suggestions', () => {

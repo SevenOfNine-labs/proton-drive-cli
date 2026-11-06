@@ -14,7 +14,7 @@ import { AppError, ErrorCode } from '../errors/types';
 import {
   isStdinPiped,
   readStdinToTempFile,
-  cleanupTempFile,
+  type StdinTempFile,
   extractFilenameFromPath,
   getParentPath,
 } from '../utils/stdin';
@@ -31,13 +31,13 @@ import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../util
  *
  * **File Upload**: Provide a local file path as the source
  * ```bash
- * proton-drive upload ./document.pdf /Documents
+ * proton-drive-cli upload ./document.pdf /Documents
  * ```
  *
  * **Stdin Upload**: Use "-" as the source to read from stdin
  * ```bash
- * cat file.txt | proton-drive upload - /Documents/file.txt
- * echo "data" | proton-drive upload - /Documents --name file.txt
+ * cat file.txt | proton-drive-cli upload - /Documents/file.txt
+ * echo "data" | proton-drive-cli upload - /Documents --name file.txt
  * ```
  *
  * # Destination Path Behavior
@@ -76,23 +76,23 @@ import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../util
  * @example
  * ```bash
  * # Upload file to folder (keeps original filename)
- * proton-drive upload ./photo.jpg /Photos
+ * proton-drive-cli upload ./photo.jpg /Photos
  *
  * # Upload file with new name
- * proton-drive upload ./photo.jpg /Photos/vacation.jpg
+ * proton-drive-cli upload ./photo.jpg /Photos/vacation.jpg
  *
  * # Upload from stdin with filename in destination
- * cat large.bin | proton-drive upload - /Backups/large.bin
+ * cat large.bin | proton-drive-cli upload - /Backups/large.bin
  *
  * # Upload from stdin with --name flag
- * tar czf - ./project | proton-drive upload - /Archives --name project.tar.gz
+ * tar czf - ./project | proton-drive-cli upload - /Archives --name project.tar.gz
  *
  * # Disable progress output (for scripts)
- * proton-drive upload file.pdf /Documents --no-progress
+ * proton-drive-cli upload file.pdf /Documents --no-progress
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive upload file.pdf /Documents
+ * proton-drive-cli login
+ * proton-drive-cli upload file.pdf /Documents
  * ```
  *
  * @example
@@ -124,7 +124,7 @@ export function createUploadCommand(): Command {
       const startTime = Date.now();
       let uploadCancelled = false;
       let isStdin = false;
-      let tempFilePath: string | null = null;
+      let tempFile: StdinTempFile | null = null;
       let actualFilePath: string;
       let fileName: string;
       let uploadDestination: string;
@@ -154,8 +154,8 @@ export function createUploadCommand(): Command {
           } else {
             throw new AppError(
               'When uploading from stdin, you must either:\n' +
-              '  1. Include filename in destination: proton-drive upload - /Documents/myfile.txt\n' +
-              '  2. Use --name flag: proton-drive upload - /Documents --name myfile.txt',
+              '  1. Include filename in destination: proton-drive-cli upload - /Documents/myfile.txt\n' +
+              '  2. Use --name flag: proton-drive-cli upload - /Documents --name myfile.txt',
               ErrorCode.VALIDATION_ERROR,
               {},
               false
@@ -166,8 +166,8 @@ export function createUploadCommand(): Command {
           if (isVerbose()) {
             spinner = ora('Reading from stdin...').start();
           }
-          tempFilePath = await readStdinToTempFile();
-          actualFilePath = tempFilePath;
+          tempFile = await readStdinToTempFile();
+          actualFilePath = tempFile.path;
           if (spinner) {
             spinner.succeed('Data received from stdin');
           }
@@ -211,8 +211,8 @@ export function createUploadCommand(): Command {
           if (isVerbose()) {
             console.log(chalk.yellow('\n⚠️  Upload cancelled'));
           }
-          if (tempFilePath) {
-            await cleanupTempFile(tempFilePath);
+          if (tempFile) {
+            await tempFile.cleanup();
           }
         });
         let initSpinner;
@@ -265,8 +265,8 @@ export function createUploadCommand(): Command {
           progressSpinner.succeed(chalk.green('Upload complete'));
         }
 
-        if (tempFilePath) {
-          await cleanupTempFile(tempFilePath);
+        if (tempFile) {
+          await tempFile.cleanup();
         }
 
         const elapsedTime = (Date.now() - startTime) / 1000;
@@ -282,8 +282,8 @@ export function createUploadCommand(): Command {
           outputResult(nodeUid);
         }
       } catch (error) {
-        if (tempFilePath) {
-          await cleanupTempFile(tempFilePath);
+        if (tempFile) {
+          await tempFile.cleanup();
         }
 
         handleError(error, process.env.DEBUG === 'true');

@@ -1,11 +1,13 @@
 /**
  * Shared validators and types for the Git LFS bridge protocol.
  *
- * This module has NO transitive dependencies on chalk, DriveClient,
- * AuthService, or any other heavy module — only on errors/types.ts
- * (which itself has zero imports).
+ * This module has no transitive dependencies on chalk, the Drive client,
+ * AuthService or other heavy modules: only errors/types, errors/classify
+ * (which adds the SDK error classes) and bridge/protocol.
  */
 
+import { AppError, ErrorCode } from '../errors/types';
+import { toAppError } from '../errors/classify';
 import {
   BRIDGE_COMMAND_REQUEST_FIELDS,
   BRIDGE_REQUEST_FIELDS,
@@ -13,16 +15,6 @@ import {
   type BridgeCommand,
   type BridgeRequestField,
 } from './protocol';
-import {
-  ProtonDriveError,
-  ValidationError,
-  ServerError,
-  RateLimitedError,
-  ConnectionError,
-  DecryptionError,
-  IntegrityError,
-  AbortError,
-} from '@protontech/drive-sdk';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -30,7 +22,6 @@ import {
  * Bridge request payload from stdin
  */
 export interface BridgeRequest {
-  dataPassword?: string;
   dataCredentialProvider?: string;
   dataCredentialHost?: string;
   appVersion?: string;
@@ -44,13 +35,14 @@ export interface BridgeRequest {
 }
 
 /**
- * Bridge response envelope
+ * Bridge response envelope (schemas/bridge/v1/response-envelope.schema.json)
  */
 export interface BridgeResponse {
   ok: boolean;
-  payload?: any;
+  payload?: unknown;
   error?: string;
   code?: number;
+  /** JSON-encoded object described by schemas/bridge/v1/error-details.schema.json */
   details?: string;
 }
 
@@ -59,6 +51,11 @@ export interface BridgeResponse {
 /** Canonical regex for 64-character hex Git LFS OIDs */
 export const OID_PATTERN = /^[a-f0-9]{64}$/i;
 
+/** A request that fails validation: reported as HTTP 400 / VALIDATION_ERROR. */
+export function invalidRequest(message: string): AppError {
+  return new AppError(message, ErrorCode.VALIDATION_ERROR, {}, false);
+}
+
 // ─── Validators ──────────────────────────────────────────────────
 
 /**
@@ -66,10 +63,10 @@ export const OID_PATTERN = /^[a-f0-9]{64}$/i;
  */
 export function validateOid(oid: string): void {
   if (!oid || typeof oid !== 'string') {
-    throw new Error('OID is required');
+    throw invalidRequest('OID is required');
   }
   if (!OID_PATTERN.test(oid)) {
-    throw new Error('Invalid OID format: expected 64-character hex string');
+    throw invalidRequest('Invalid OID format: expected 64-character hex string');
   }
 }
 
@@ -78,13 +75,13 @@ export function validateOid(oid: string): void {
  */
 export function validateLocalPath(filePath: string): void {
   if (!filePath || typeof filePath !== 'string') {
-    throw new Error('File path is required');
+    throw invalidRequest('File path is required');
   }
   if (filePath.indexOf('\0') !== -1) {
-    throw new Error('Null bytes not allowed in path');
+    throw invalidRequest('Null bytes not allowed in path');
   }
   if (filePath.split(/[/\\]/).includes('..')) {
-    throw new Error('Path traversal not allowed');
+    throw invalidRequest('Path traversal not allowed');
   }
 }
 
@@ -92,9 +89,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function requestFieldType(field: BridgeRequestField): 'string' | 'boolean' | 'string-array' {
-  if (field === 'oids') return 'string-array';
-  return 'string';
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
 /**
@@ -110,43 +106,35 @@ export function validateBridgeRequestForCommand(
   request: unknown,
 ): asserts request is BridgeRequest {
   if (!isPlainObject(request)) {
-    throw new Error('Bridge request must be a JSON object');
+    throw invalidRequest('Bridge request must be a JSON object');
   }
 
-  const allowedFields = new Set(BRIDGE_COMMAND_REQUEST_FIELDS[command].allowed);
-  const knownFields = new Set(BRIDGE_REQUEST_FIELDS);
+  const allowedFields = new Set<string>(BRIDGE_COMMAND_REQUEST_FIELDS[command].allowed);
+  const knownFields = new Set<string>(BRIDGE_REQUEST_FIELDS);
 
   for (const field of Object.keys(request)) {
-    if (!knownFields.has(field as BridgeRequestField)) {
-      throw new Error(`Unknown bridge request field "${field}"`);
+    if (!knownFields.has(field)) {
+      throw invalidRequest(`Unknown bridge request field "${field}"`);
     }
-    if (!allowedFields.has(field as BridgeRequestField)) {
-      throw new Error(`Field "${field}" is not allowed for bridge ${command}`);
+    if (!allowedFields.has(field)) {
+      throw invalidRequest(`Field "${field}" is not allowed for bridge ${command}`);
     }
 
     const value = request[field];
-    const expectedType = requestFieldType(field as BridgeRequestField);
     if (value === undefined) continue;
-    if (expectedType === 'string' && typeof value !== 'string') {
-      throw new Error(`Field "${field}" must be a string`);
-    }
-    if (expectedType === 'boolean' && typeof value !== 'boolean') {
-      throw new Error(`Field "${field}" must be a boolean`);
-    }
-    if (expectedType === 'string-array') {
-      if (!Array.isArray(value)) {
-        throw new Error(`Field "${field}" must be an array of strings`);
+    if ((field as BridgeRequestField) === 'oids') {
+      if (!isStringArray(value)) {
+        throw invalidRequest(`Field "${field}" must be an array of strings`);
       }
-      if (!value.every((item) => typeof item === 'string')) {
-        throw new Error(`Field "${field}" must be an array of strings`);
-      }
+    } else if (typeof value !== 'string') {
+      throw invalidRequest(`Field "${field}" must be a string`);
     }
   }
 
   for (const field of BRIDGE_COMMAND_REQUEST_FIELDS[command].required) {
     const value = request[field];
     if (value === undefined || value === null || value === '') {
-      throw new Error(`Field "${field}" is required for bridge ${command}`);
+      throw invalidRequest(`Field "${field}" is required for bridge ${command}`);
     }
   }
 }
@@ -161,10 +149,10 @@ export function validateBridgeRequestForCommand(
  */
 export function oidToPath(storageBase: string, oid: string): string {
   if (!oid || oid.length < 2) {
-    throw new Error(`Invalid OID: must be at least 2 characters, got: ${oid}`);
+    throw invalidRequest(`Invalid OID: must be at least 2 characters, got: ${oid}`);
   }
   if (!OID_PATTERN.test(oid)) {
-    throw new Error(`Invalid OID format: expected 64-character hex string, got: ${oid}`);
+    throw invalidRequest(`Invalid OID format: expected 64-character hex string, got: ${oid}`);
   }
 
   const normalizedBase = storageBase.replace(/^\/+|\/+$/g, '');
@@ -182,11 +170,11 @@ export function oidToPath(storageBase: string, oid: string): string {
 export function pathToOid(filePath: string): string {
   const parts = filePath.replace(/^\/+/, '').split('/');
   if (parts.length < 4) {
-    throw new Error(`Invalid OID path format: ${filePath}`);
+    throw invalidRequest(`Invalid OID path format: ${filePath}`);
   }
   const oid = parts[3];
   if (!OID_PATTERN.test(oid)) {
-    throw new Error(`Invalid OID reconstructed from path: ${oid}`);
+    throw invalidRequest(`Invalid OID reconstructed from path: ${oid}`);
   }
   return oid.toLowerCase();
 }
@@ -194,30 +182,12 @@ export function pathToOid(filePath: string): string {
 // ─── Error Mapping ───────────────────────────────────────────────
 
 /**
- * Map error to HTTP status code.
+ * Map any error to the bridge HTTP status code.
  *
- * Checks in order:
- * 1. SDK error types (ProtonDriveError subclasses)
- * 2. Our AppError codes (ErrorCode enum)
- * 3. Message string patterns (fallback)
+ * The error is first classified into an AppError (errors/classify), then the
+ * AppError code is looked up in ERROR_CODE_STATUS, so the status and the
+ * `details.errorCode` reported to the Go adapter always agree.
  */
-export function errorToStatusCode(error: any): number {
-  // SDK error types — checked first so they're never misclassified by string matching
-  if (error instanceof RateLimitedError) return 429;
-  if (error instanceof ValidationError) return 400;
-  if (error instanceof ConnectionError) return 502;
-  if (error instanceof ServerError) return 502;
-  if (error instanceof DecryptionError) return 500;
-  if (error instanceof IntegrityError) return 500;
-  if (error instanceof AbortError) return 499;
-
-  const mappedStatus = statusCodeForErrorCode(error?.code);
-  if (mappedStatus !== undefined) return mappedStatus;
-
-  const msg = error?.message?.toLowerCase() || '';
-  if (msg.includes('not found')) return 404;
-  if (msg.includes('unauthorized') || msg.includes('login failed')) return 401;
-  if (msg.includes('invalid')) return 400;
-  if (msg.includes('captcha')) return 407;
-  return 500;
+export function errorToStatusCode(error: unknown): number {
+  return statusCodeForErrorCode(toAppError(error).code) ?? 500;
 }

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request-field-rules.schema.json",
+  "title": "proton-drive-cli bridge request field rules (schema for request-field-rules.json)",
+  "description": "Shape of the data file request-field-rules.json: for every bridge command, the request fields it requires and the fields it accepts. Field names are the properties of request.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "title", "commands"],
+  "properties": {
+    "$id": { "type": "string", "format": "uri" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "commands": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z][a-z-]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["required", "allowed"],
+        "properties": {
+          "required": { "$ref": "#/$defs/fieldList" },
+          "allowed": { "$ref": "#/$defs/fieldList" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fieldList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "dataCredentialProvider",
+          "dataCredentialHost",
+          "appVersion",
+          "oid",
+          "path",
+          "outputPath",
+          "folder",
+          "storageBase",
+          "oids"
+        ]
+      }
+    }
+  }
+}

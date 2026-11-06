@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/init.schema.json",
+  "title": "proton-drive-cli bridge init payload",
+  "description": "Success payload of `bridge init`. `storageBase` echoes the request value (default `LFS`); `path` is the normalized absolute Drive path that now exists.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["storageBase", "path", "initialized"],
+  "properties": {
+    "storageBase": { "type": "string", "minLength": 1 },
+    "path": { "type": "string", "pattern": "^/" },
+    "initialized": { "const": true }
+  }
+}

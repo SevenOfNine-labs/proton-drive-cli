@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/batch-delete.schema.json",
+  "title": "proton-drive-cli bridge batch-delete payload",
+  "description": "Success payload of `bridge batch-delete`: one boolean per requested OID (true when the object was deleted, false when it did not exist).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["results"],
+  "properties": {
+    "results": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Fa-f0-9]{64}$" },
+      "additionalProperties": { "type": "boolean" }
+    }
+  }
+}

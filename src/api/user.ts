@@ -2,6 +2,26 @@ import { HttpClient } from './http-client';
 import { User, Address } from '../types/crypto';
 import { SessionManager } from '../auth/session';
 import { getProtonAppVersion } from '../constants';
+import { AppError, ErrorCode } from '../errors/types';
+
+/**
+ * Proton error codes of GET /core/v4/keys/all meaning that no Proton account
+ * owns the address (official account module, accountApi.ts:
+ * ADDRESS_MISSING_CODE and DOMAIN_EXTERNAL_CODE map to AddressNotFoundError).
+ */
+const KEYS_ADDRESS_MISSING_CODE = 33_102;
+const KEYS_DOMAIN_EXTERNAL_CODE = 33_103;
+
+/** Public keys of an address as returned by GET /core/v4/keys/all. */
+export interface AddressPublicKeys {
+  Keys: Array<{ PublicKey: string; Flags?: number }>;
+}
+
+/** Response of GET /core/v4/auth/modulus, consumed by SRP verifier generation. */
+export interface AuthModulus {
+  Modulus: string;
+  ModulusID: string;
+}
 
 /**
  * User API client for fetching user keys and addresses.
@@ -68,32 +88,24 @@ export class UserApiClient {
             if (!session) {
               throw new Error('Session expired and refresh failed. Please login again.');
             }
+            let freshSession;
             try {
-              let freshSession;
-              try {
-                freshSession = await SessionManager.refreshSession(session, this.appVersion);
-              } catch {
-                // Refresh token may be consumed by another process — re-read session.
-                const updated = await SessionManager.loadSession();
-                if (!updated || updated.accessToken === session.accessToken) {
-                  throw new Error('Session expired and refresh failed. Please login again.');
-                }
-                freshSession = updated;
-              }
-              originalConfig.headers['Authorization'] = `Bearer ${freshSession.accessToken}`;
-              originalConfig.headers['x-pm-uid'] = freshSession.uid;
-              return this.client.request(originalConfig);
-            } catch (refreshErr) {
-              if (refreshErr instanceof Error && refreshErr.message.includes('Session expired')) {
-                throw refreshErr;
-              }
+              freshSession = await SessionManager.refreshSessionOrAdoptRotated(session, this.appVersion);
+            } catch {
               throw new Error('Session expired and refresh failed. Please login again.');
             }
+            originalConfig.headers['Authorization'] = `Bearer ${freshSession.accessToken}`;
+            originalConfig.headers['x-pm-uid'] = freshSession.uid;
+            return this.client.request(originalConfig);
           }
 
           // Handle other API errors
           if (data?.Error) {
-            throw new Error(`API Error (${data.Code}): ${data.Error}`);
+            throw new AppError(
+              `API Error (${data.Code}): ${data.Error}`,
+              ErrorCode.API_ERROR,
+              { protonCode: data.Code, status },
+            );
           }
         }
         throw error;
@@ -171,5 +183,44 @@ export class UserApiClient {
       KeySalts: Array<{ ID: string; KeySalt: string | null }>;
     }>('/core/v4/keys/salts');
     return response.data.KeySalts;
+  }
+
+  /**
+   * Public keys of a Proton address (GET /core/v4/keys/all, internal
+   * addresses only, as the official account module requests them).
+   *
+   * @returns The address keys, or null when no Proton account owns the email
+   */
+  async getAddressPublicKeys(email: string): Promise<AddressPublicKeys | null> {
+    const query = new URLSearchParams({ Email: email, InternalOnly: '1' });
+    try {
+      const response = await this.client.get<{ Code: number; Address?: AddressPublicKeys }>(
+        `/core/v4/keys/all?${query.toString()}`,
+      );
+      return response.data.Address ?? null;
+    } catch (error) {
+      if (
+        error instanceof AppError &&
+        (error.details?.protonCode === KEYS_ADDRESS_MISSING_CODE ||
+          error.details?.protonCode === KEYS_DOMAIN_EXTERNAL_CODE)
+      ) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Signed SRP modulus for verifier generation (GET /core/v4/auth/modulus).
+   */
+  async getAuthModulus(): Promise<AuthModulus> {
+    const response = await this.client.get<{ Code: number; Modulus: string; ModulusID: string }>(
+      '/core/v4/auth/modulus',
+    );
+    const { Modulus, ModulusID } = response.data;
+    if (!Modulus || !ModulusID) {
+      throw new Error('Incomplete auth modulus response');
+    }
+    return { Modulus, ModulusID };
   }
 }

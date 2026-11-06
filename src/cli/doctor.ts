@@ -12,7 +12,7 @@ import * as path from 'path';
 
 import { SessionManager } from '../auth/session';
 import { createKeyPasswordStore } from '../auth/key-password-store';
-import { createProvider, normalizeProviderName } from '../credentials';
+import { DEFAULT_KEY_PASSWORD_PROVIDER, createProvider, normalizeProviderName } from '../credentials';
 import type { ProviderName } from '../credentials';
 import { PROTON_DATA_CREDENTIAL_HOST, PROTON_KEY_PASSWORD_CREDENTIAL_HOST } from '../constants';
 import { getBridgeAuthState } from './bridge';
@@ -73,6 +73,11 @@ export const DOCTOR_CHECK_FIELDS = [
   'remediation',
 ] as const satisfies readonly (keyof DoctorCheck)[];
 
+/**
+ * Environment variables that would carry secrets. Secrets must not be passed
+ * through the environment: they are visible to every child process and in
+ * process listings, so doctor fails when any of these is set.
+ */
 const SECRET_ENV_NAMES = [
   'PROTON_DATA_PASSWORD',
   'PROTON_SECOND_FACTOR_CODE',
@@ -149,7 +154,7 @@ function checkSecretEnvironment(): DoctorCheck {
       'secret-env',
       'secret environment variables',
       'pass',
-      'No legacy secret environment variables are set.',
+      'No secret environment variables are set.',
     );
   }
 
@@ -157,8 +162,8 @@ function checkSecretEnvironment(): DoctorCheck {
     'secret-env',
     'secret environment variables',
     'fail',
-    `Legacy secret environment variable(s) set: ${present.join(', ')}`,
-    { remediation: 'Unset these variables and use git-credential or pass-cli entries instead.' },
+    `Secret environment variable(s) set: ${present.join(', ')}`,
+    { remediation: 'Secrets must not be passed through the environment; unset these variables and use git-credential or pass-cli entries instead.' },
   );
 }
 
@@ -196,8 +201,7 @@ async function checkKeyPasswordCredential(options: DoctorOptions): Promise<Docto
     options.keyPasswordProvider ||
     session?.keyPasswordProvider ||
     process.env.PROTON_KEY_PASSWORD_PROVIDER ||
-    process.env.PROTON_CREDENTIAL_PROVIDER ||
-    'git-credential';
+    DEFAULT_KEY_PASSWORD_PROVIDER;
   const host =
     options.keyPasswordHost ||
     session?.keyPasswordHost ||
@@ -220,7 +224,7 @@ async function checkKeyPasswordCredential(options: DoctorOptions): Promise<Docto
       'browser-fork key password',
       'fail',
       'Saved session was not created by browser-fork authentication.',
-      { remediation: 'Clear the legacy session and run proton-drive login.' },
+      { remediation: 'Clear the non-browser-fork session and run proton-drive-cli login.' },
     );
   }
 
@@ -230,7 +234,7 @@ async function checkKeyPasswordCredential(options: DoctorOptions): Promise<Docto
       'browser-fork key password',
       'fail',
       'Saved session does not record persisted browser-fork key material.',
-      { remediation: 'Clear the session and run proton-drive login again.' },
+      { remediation: 'Clear the session and run proton-drive-cli login again.' },
     );
   }
 
@@ -249,7 +253,7 @@ async function checkKeyPasswordCredential(options: DoctorOptions): Promise<Docto
       'browser-fork key password',
       'fail',
       `No key-password entry found for session UID at ${host}.`,
-      { remediation: 'Run proton-drive login again so browser-fork can store UID-scoped key material.' },
+      { remediation: 'Run proton-drive-cli login again so browser-fork can store UID-scoped key material.' },
     );
   } catch (error) {
     return makeCheck(
@@ -315,7 +319,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
       'session file hygiene',
       'warn',
       `No saved session found at ${sessionFile}.`,
-      { remediation: 'Run one interactive proton-drive login after offline gates pass.' },
+      { remediation: 'Run one interactive proton-drive-cli login after offline gates pass.' },
     );
   }
 
@@ -339,7 +343,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
         'session file hygiene',
         'fail',
         'Session file exists but does not contain the required token fields.',
-        { remediation: 'Move the corrupted session file aside and run interactive proton-drive login after offline gates pass.' },
+        { remediation: 'Move the corrupted session file aside and run interactive proton-drive-cli login after offline gates pass.' },
       );
     }
     if ('mailboxPassword' in session || 'password' in session) {
@@ -357,7 +361,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
         'session file hygiene',
         'fail',
         'Session file was not created by browser-fork authentication.',
-        { remediation: 'Move the legacy session file aside and run proton-drive login.' },
+        { remediation: 'Move the non-browser-fork session file aside and run proton-drive-cli login.' },
       );
     }
     if (!session.keyPasswordPersisted) {
@@ -366,7 +370,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
         'session file hygiene',
         'fail',
         'Session file is missing browser-fork key-password persistence metadata.',
-        { remediation: 'Move the incomplete session file aside and run proton-drive login.' },
+        { remediation: 'Move the incomplete session file aside and run proton-drive-cli login.' },
       );
     }
     return makeCheck(
@@ -390,8 +394,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const keyPasswordProvider =
     options.keyPasswordProvider ||
     process.env.PROTON_KEY_PASSWORD_PROVIDER ||
-    process.env.PROTON_CREDENTIAL_PROVIDER ||
-    'git-credential';
+    DEFAULT_KEY_PASSWORD_PROVIDER;
   const keyPasswordHost =
     options.keyPasswordHost ||
     process.env.PROTON_KEY_PASSWORD_HOST ||
@@ -462,7 +465,7 @@ export function formatDoctorReport(report: DoctorReport): string {
 export function createDoctorCommand(): Command {
   return new Command('doctor')
     .description('Run offline auth/session preflight checks without logging in')
-    .option('--key-password-provider <type>', 'Browser-fork key password provider: git-credential or pass-cli', process.env.PROTON_KEY_PASSWORD_PROVIDER || process.env.PROTON_CREDENTIAL_PROVIDER || 'git-credential')
+    .option('--key-password-provider <type>', 'Browser-fork key password provider: pass-cli or git-credential', process.env.PROTON_KEY_PASSWORD_PROVIDER || DEFAULT_KEY_PASSWORD_PROVIDER)
     .option('--key-password-host <host>', 'Browser-fork key password credential host/key', process.env.PROTON_KEY_PASSWORD_HOST || PROTON_KEY_PASSWORD_CREDENTIAL_HOST)
     .option('--data-credential-provider <type>', 'Optional mailbox/data password credential provider', process.env.PROTON_DATA_CREDENTIAL_PROVIDER)
     .option('--data-credential-host <host>', 'Mailbox/data password credential host/key', process.env.PROTON_DATA_CREDENTIAL_HOST || PROTON_DATA_CREDENTIAL_HOST)
@@ -480,7 +483,8 @@ export function createDoctorCommand(): Command {
         console.log(formatDoctorReport(report));
       }
       if (!report.ok) {
-        process.exit(1);
+        // stdout writes can complete asynchronously; process.exit would drop them.
+        process.exitCode = 1;
       }
     });
 }

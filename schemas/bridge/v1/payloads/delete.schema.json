@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/delete.schema.json",
+  "title": "proton-drive-cli bridge delete payload",
+  "description": "Success payload of `bridge delete`. A missing object is reported as an error envelope (404, FILE_NOT_FOUND), never as a success.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["oid", "deleted"],
+  "properties": {
+    "oid": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "deleted": { "const": true }
+  }
+}

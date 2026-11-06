@@ -1,8 +1,8 @@
-import { HttpClient } from './http-client';
-import { SessionManager } from '../auth/session';
+import { HttpClient, HttpClientError } from './http-client';
+import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { RateLimitError } from '../errors/types';
 
-jest.mock('../auth/session');
+jest.mock('../auth/rate-limit');
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
@@ -10,8 +10,8 @@ global.fetch = mockFetch;
 describe('HttpClient rate-limit cooldown', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
-    (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+    (recordRateLimitCooldown as jest.Mock).mockResolvedValue({
       cooldownUntil: Date.now() + 60_000,
       retryAfter: 60,
       recordedAt: new Date().toISOString(),
@@ -19,7 +19,7 @@ describe('HttpClient rate-limit cooldown', () => {
   });
 
   it('fails fast during persisted cooldown without making a request', async () => {
-    (SessionManager.assertNotRateLimited as jest.Mock).mockRejectedValue(
+    (assertNotRateLimited as jest.Mock).mockRejectedValue(
       new RateLimitError('Rate limited by Proton API', { retryAfter: 45 })
     );
     const client = HttpClient.create({ baseURL: 'https://drive-api.proton.me' });
@@ -30,7 +30,7 @@ describe('HttpClient rate-limit cooldown', () => {
   });
 
   it('records cooldown when HTTP 429 is returned', async () => {
-    (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+    (recordRateLimitCooldown as jest.Mock).mockResolvedValue({
       cooldownUntil: Date.now() + 90_000,
       retryAfter: 90,
       recordedAt: new Date().toISOString(),
@@ -53,10 +53,48 @@ describe('HttpClient rate-limit cooldown', () => {
       protonCode: 2028,
     });
 
-    expect(SessionManager.recordRateLimitCooldown).toHaveBeenCalledWith({
+    expect(recordRateLimitCooldown).toHaveBeenCalledWith({
       retryAfter: 90,
       protonCode: 2028,
       message: 'Too many requests',
     });
+  });
+});
+
+describe('HttpClient response handling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('reports a malformed JSON body as HttpClientError instead of a bare SyntaxError', async () => {
+    mockFetch.mockResolvedValue(new Response('{"Code": 1000', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = HttpClient.create({ baseURL: 'https://drive-api.proton.me' });
+
+    const error = await client.get('/core/v4/users').catch((e) => e);
+
+    expect(error).toBeInstanceOf(HttpClientError);
+    expect(error.code).toBe('EBADJSON');
+    expect(error.message).toMatch(/Malformed JSON response body/);
+  });
+
+  it('returns plain text bodies as text', async () => {
+    mockFetch.mockResolvedValue(new Response('pong', { status: 200, headers: { 'content-type': 'text/plain' } }));
+    const client = HttpClient.create({ baseURL: 'https://drive-api.proton.me' });
+
+    await expect(client.get('/ping')).resolves.toMatchObject({ data: 'pong', status: 200 });
+  });
+
+  it('arms one timeout signal for the whole exchange and maps it to ECONNABORTED', async () => {
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+    const client = HttpClient.create({ baseURL: 'https://drive-api.proton.me', timeout: 50 });
+
+    await expect(client.get('/slow')).rejects.toMatchObject({ code: 'ECONNABORTED', message: 'Request timed out' });
   });
 });

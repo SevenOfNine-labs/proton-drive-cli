@@ -2,6 +2,7 @@ import { HttpClient } from './http-client';
 import { UserApiClient } from './user';
 import { SessionManager } from '../auth/session';
 import { DEFAULT_PROTON_APP_VERSION } from '../constants';
+import { AppError, ErrorCode } from '../errors/types';
 
 jest.mock('./http-client');
 jest.mock('../auth/session');
@@ -30,7 +31,7 @@ beforeEach(() => {
   };
   MockedHttpClient.create = jest.fn().mockReturnValue(mockHttpInstance as any);
   mockedSessionManager.loadSession.mockResolvedValue(fakeSession as any);
-  mockedSessionManager.refreshSession.mockResolvedValue({
+  mockedSessionManager.refreshSessionOrAdoptRotated.mockResolvedValue({
     ...fakeSession,
     accessToken: 'new-token',
   } as any);
@@ -112,7 +113,7 @@ describe('UserApiClient', () => {
 
       await responseInterceptorReject(error);
 
-      expect(mockedSessionManager.refreshSession).toHaveBeenCalledWith(
+      expect(mockedSessionManager.refreshSessionOrAdoptRotated).toHaveBeenCalledWith(
         fakeSession,
         DEFAULT_PROTON_APP_VERSION
       );
@@ -144,7 +145,24 @@ describe('UserApiClient', () => {
       );
     });
 
-    test('throws API error with code and message', async () => {
+    test('throws session expired on 401 when refresh and the cross-process re-read both fail', async () => {
+      new UserApiClient();
+      captureInterceptors();
+      mockedSessionManager.refreshSessionOrAdoptRotated.mockRejectedValue(new Error('Invalid refresh token'));
+
+      const error = {
+        response: {
+          status: 401,
+          data: {},
+          config: { headers: {}, _retried: false },
+        },
+      };
+      await expect(responseInterceptorReject(error)).rejects.toThrow(
+        'Session expired and refresh failed'
+      );
+    });
+
+    test('throws API error with code and message, keeping the Proton code', async () => {
       new UserApiClient();
       captureInterceptors();
 
@@ -158,6 +176,9 @@ describe('UserApiClient', () => {
       await expect(responseInterceptorReject(error)).rejects.toThrow(
         'API Error (2000): Something went wrong'
       );
+      await expect(responseInterceptorReject(error)).rejects.toMatchObject({
+        details: { protonCode: 2000, status: 422 },
+      });
     });
   });
 
@@ -204,6 +225,53 @@ describe('UserApiClient', () => {
       const result = await client.getKeySalts();
       expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/keys/salts');
       expect(result[0].KeySalt).toBe('abcdef');
+    });
+  });
+
+  describe('getAddressPublicKeys', () => {
+    test('queries /core/v4/keys/all for internal keys of the email', async () => {
+      const client = new UserApiClient();
+      mockHttpInstance.get.mockResolvedValue({
+        data: { Code: 1000, Address: { Keys: [{ PublicKey: '-----BEGIN PGP PUBLIC KEY BLOCK-----', Flags: 3 }] } },
+      });
+
+      const result = await client.getAddressPublicKeys('Other@Proton.me');
+
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/keys/all?Email=Other%40Proton.me&InternalOnly=1');
+      expect(result?.Keys).toHaveLength(1);
+    });
+
+    test.each([33102, 33103])('returns null when Proton reports no account for the address (code %s)', async (code) => {
+      const client = new UserApiClient();
+      mockHttpInstance.get.mockRejectedValue(
+        new AppError(`API Error (${code}): Address not found`, ErrorCode.API_ERROR, { protonCode: code, status: 422 }),
+      );
+
+      await expect(client.getAddressPublicKeys('nobody@example.com')).resolves.toBeNull();
+    });
+
+    test('propagates other failures', async () => {
+      const client = new UserApiClient();
+      mockHttpInstance.get.mockRejectedValue(new Error('network down'));
+
+      await expect(client.getAddressPublicKeys('other@proton.me')).rejects.toThrow('network down');
+    });
+  });
+
+  describe('getAuthModulus', () => {
+    test('returns the signed modulus and its ID', async () => {
+      const client = new UserApiClient();
+      mockHttpInstance.get.mockResolvedValue({ data: { Code: 1000, Modulus: 'signed', ModulusID: 'mod-1' } });
+
+      await expect(client.getAuthModulus()).resolves.toEqual({ Modulus: 'signed', ModulusID: 'mod-1' });
+      expect(mockHttpInstance.get).toHaveBeenCalledWith('/core/v4/auth/modulus');
+    });
+
+    test('rejects an incomplete response', async () => {
+      const client = new UserApiClient();
+      mockHttpInstance.get.mockResolvedValue({ data: { Code: 1000, Modulus: 'signed' } });
+
+      await expect(client.getAuthModulus()).rejects.toThrow('Incomplete auth modulus response');
     });
   });
 });

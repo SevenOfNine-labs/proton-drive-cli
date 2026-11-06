@@ -2,17 +2,22 @@
   "entryPoints": [
     "src/index.ts",
     "src/cli/bridge.ts",
+    "src/cli/bridge-helpers.ts",
     "src/cli/login.ts",
     "src/cli/doctor.ts",
     "src/auth/index.ts",
     "src/auth/browser-fork.ts",
     "src/auth/key-password-store.ts",
     "src/auth/session.ts",
+    "src/auth/token-expiry.ts",
+    "src/api/auth.ts",
+    "src/api/http-client.ts",
     "src/bridge/protocol.ts",
-    "src/drive/change-tokens.ts",
+    "src/credentials/types.ts",
+    "src/types/auth.ts",
     "src/utils/retry.ts",
-    "src/utils/circuit-breaker.ts",
-    "src/errors/types.ts"
+    "src/errors/types.ts",
+    "src/errors/classify.ts"
   ],
   "out": "docs/api",
   "name": "Proton Drive CLI API Documentation",
@@ -32,7 +37,11 @@
     "Error Handling",
     "*"
   ],
-  "sort": ["kind", "instance-first", "alphabetical"],
+  "sort": [
+    "kind",
+    "instance-first",
+    "alphabetical"
+  ],
   "exclude": [
     "**/*.test.ts",
     "**/*.spec.ts",

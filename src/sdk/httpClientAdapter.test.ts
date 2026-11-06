@@ -1,5 +1,6 @@
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SessionManager } from '../auth/session';
+import { assertNotRateLimited, recordRateLimitCooldown } from '../auth/rate-limit';
 import { RateLimitError } from '../errors/types';
 import { DEFAULT_PROTON_APP_VERSION, VENDORED_DRIVE_SDK_VERSION } from '../constants';
 import { isServerTimeSynced, resetServerTime, serverTime } from '../utils/server-time';
@@ -7,6 +8,7 @@ import { logger } from '../utils/logger';
 
 // Mock dependencies
 jest.mock('../auth/session');
+jest.mock('../auth/rate-limit');
 jest.mock('../utils/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
@@ -32,13 +34,13 @@ describe('HTTPClientAdapter', () => {
     // Mock both getValidSession (for auth header injection) and loadSession (for refresh flow)
     (SessionManager.getValidSession as jest.Mock).mockResolvedValue(fakeSession);
     (SessionManager.loadSession as jest.Mock).mockResolvedValue(fakeSession);
-    (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+    (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockResolvedValue({
       ...fakeSession,
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
     });
-    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
-    (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+    (recordRateLimitCooldown as jest.Mock).mockResolvedValue({
       cooldownUntil: Date.now() + 60_000,
       retryAfter: 60,
       recordedAt: new Date().toISOString(),
@@ -163,7 +165,7 @@ describe('HTTPClientAdapter', () => {
 
   describe('rate-limit cooldown', () => {
     it('fails fast during persisted cooldown without calling fetch', async () => {
-      (SessionManager.assertNotRateLimited as jest.Mock).mockRejectedValue(
+      (assertNotRateLimited as jest.Mock).mockRejectedValue(
         new RateLimitError('Rate limited by Proton API', { retryAfter: 30 })
       );
 
@@ -178,7 +180,7 @@ describe('HTTPClientAdapter', () => {
     });
 
     it('records cooldown on HTTP 429 before throwing', async () => {
-      (SessionManager.recordRateLimitCooldown as jest.Mock).mockResolvedValue({
+      (recordRateLimitCooldown as jest.Mock).mockResolvedValue({
         cooldownUntil: Date.now() + 120_000,
         retryAfter: 120,
         recordedAt: new Date().toISOString(),
@@ -195,11 +197,11 @@ describe('HTTPClientAdapter', () => {
         timeoutMs: 30000,
       })).rejects.toMatchObject({ retryAfter: 120 });
 
-      expect(SessionManager.recordRateLimitCooldown).toHaveBeenCalledWith({
+      expect(recordRateLimitCooldown).toHaveBeenCalledWith({
         retryAfter: 120,
         message: 'Rate limit exceeded (HTTP 429)',
       });
-      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+      expect(SessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
     });
 
     it('records cooldown on Proton rate-limit error codes before throwing', async () => {
@@ -218,11 +220,11 @@ describe('HTTPClientAdapter', () => {
         protonCode: 2028,
       });
 
-      expect(SessionManager.recordRateLimitCooldown).toHaveBeenCalledWith({
+      expect(recordRateLimitCooldown).toHaveBeenCalledWith({
         protonCode: 2028,
         message: 'Too many recent attempts',
       });
-      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+      expect(SessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
     });
   });
 
@@ -303,7 +305,7 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(SessionManager.refreshSession).toHaveBeenCalledWith(
+      expect(SessionManager.refreshSessionOrAdoptRotated).toHaveBeenCalledWith(
         fakeSession,
         DEFAULT_PROTON_APP_VERSION
       );
@@ -312,7 +314,7 @@ describe('HTTPClientAdapter', () => {
     it('returns original 401 if refresh fails', async () => {
       mockFetch.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
 
-      (SessionManager.refreshSession as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
+      (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockRejectedValue(new Error('Refresh failed'));
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',
@@ -347,7 +349,7 @@ describe('HTTPClientAdapter', () => {
         .mockResolvedValueOnce(new Response('OK', { status: 200 }))
         .mockResolvedValueOnce(new Response('OK', { status: 200 }));
 
-      const refreshMock = (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
+      const refreshMock = (SessionManager.refreshSessionOrAdoptRotated as jest.Mock).mockResolvedValue({
         ...fakeSession,
         accessToken: 'new-token',
         refreshToken: 'new-refresh',
@@ -385,7 +387,7 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(403);
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+      expect(SessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
       // The body is left intact for the bridge's INSUFFICIENT_SCOPE classification.
       await expect(response.json()).resolves.toMatchObject({ Code: 9101 });
     });
@@ -402,10 +404,30 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(403);
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(SessionManager.refreshSession).not.toHaveBeenCalled();
+      expect(SessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
     });
 
-    it('refreshes on error code 10013 (invalid access token)', async () => {
+    it('does NOT refresh on code 10013 (invalid refresh token) unless the status is 401', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ Code: 10013, Error: 'Invalid refresh token' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      const response = await adapter.fetchJson({
+        url: '/auth/v4/refresh',
+        method: 'POST',
+        headers: new Headers(),
+        timeoutMs: 30000,
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(SessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
+    });
+
+    it('refreshes on a 401 whatever Proton code it carries', async () => {
       mockFetch
         .mockResolvedValueOnce(
           new Response(JSON.stringify({ Code: 10013, Error: 'Invalid access token' }), {
@@ -414,12 +436,6 @@ describe('HTTPClientAdapter', () => {
           })
         )
         .mockResolvedValueOnce(new Response('{"Code": 1000}', { status: 200 }));
-
-      (SessionManager.refreshSession as jest.Mock).mockResolvedValue({
-        ...fakeSession,
-        accessToken: 'new-token',
-        refreshToken: 'new-refresh',
-      });
 
       const response = await adapter.fetchJson({
         url: '/api/endpoint',
@@ -430,6 +446,7 @@ describe('HTTPClientAdapter', () => {
 
       expect(response.status).toBe(200);
       expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(SessionManager.refreshSessionOrAdoptRotated).toHaveBeenCalledTimes(1);
     });
 
     it('does NOT refresh on non-auth 403 (e.g. forbidden resource)', async () => {
@@ -486,6 +503,62 @@ describe('HTTPClientAdapter', () => {
 });
 
 
+describe('HTTPClientAdapter abort signals', () => {
+  let adapter: HTTPClientAdapter;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    adapter = new HTTPClientAdapter();
+    (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('passes an already-aborted SDK signal through to fetch', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled by the SDK'));
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      if (init.signal?.aborted) throw new DOMException('This operation was aborted', 'AbortError');
+      return new Response('{"Code": 1000}', { status: 200 });
+    });
+
+    await expect(adapter.fetchJson({
+      url: '/drive/v2/volumes',
+      method: 'GET',
+      headers: new Headers(),
+      timeoutMs: 1000,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('aborts the request when the SDK aborts it later', async () => {
+    const controller = new AbortController();
+    let signal: AbortSignal | undefined;
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      signal = init.signal ?? undefined;
+      return new Response('{"Code": 1000}', { status: 200 });
+    });
+
+    await adapter.fetchBlob({ url: '/drive/v2/blocks/abc', method: 'GET', headers: new Headers(), timeoutMs: 1000, signal: controller.signal });
+
+    expect(signal?.aborted).toBe(false);
+    controller.abort();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('arms a timeout signal when the SDK passes none', async () => {
+    let signal: AbortSignal | undefined;
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      signal = init.signal ?? undefined;
+      return new Response('{"Code": 1000}', { status: 200 });
+    });
+
+    await adapter.fetchJson({ url: '/drive/v2/volumes', method: 'GET', headers: new Headers(), timeoutMs: 1000 });
+
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+  });
+});
+
 describe('HTTPClientAdapter server time', () => {
   let adapter: HTTPClientAdapter;
 
@@ -494,7 +567,7 @@ describe('HTTPClientAdapter server time', () => {
     resetServerTime();
     adapter = new HTTPClientAdapter();
     (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
-    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -530,7 +603,7 @@ describe('HTTPClientAdapter Drive requirement notices', () => {
     jest.clearAllMocks();
     adapter = new HTTPClientAdapter();
     (SessionManager.getValidSession as jest.Mock).mockResolvedValue(null);
-    (SessionManager.assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
+    (assertNotRateLimited as jest.Mock).mockResolvedValue(undefined);
   });
 
   const request = () =>

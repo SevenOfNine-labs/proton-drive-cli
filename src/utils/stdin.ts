@@ -1,7 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
 import { pipeline } from 'stream/promises';
 import { createWriteStream } from 'fs';
 import { AppError, ErrorCode } from '../errors/types';
@@ -14,11 +13,24 @@ export function isStdinPiped(): boolean {
 }
 
 /**
- * Read stdin to a temporary file and return the path
- * This is necessary because we need to know the file size upfront
- * and be able to read the file multiple times for chunking
+ * A spool file holding piped stdin, owned by the caller until `cleanup()`.
  */
-export async function readStdinToTempFile(): Promise<string> {
+export interface StdinTempFile {
+  /** Absolute path of the spooled data */
+  path: string;
+  /** Remove the spool file and its private directory */
+  cleanup(): Promise<void>;
+}
+
+/**
+ * Spool stdin to a temporary file and return it.
+ *
+ * The SDK needs the size upfront and may read the data more than once, so the
+ * stream is written to disk first. The file lives in a private directory from
+ * fs.mkdtemp (mode 0700) and is created exclusively (`wx`) with mode 0600, so
+ * no other user can pre-create or read it.
+ */
+export async function readStdinToTempFile(): Promise<StdinTempFile> {
   if (!isStdinPiped()) {
     throw new AppError(
       'No input provided via stdin',
@@ -28,19 +40,17 @@ export async function readStdinToTempFile(): Promise<string> {
     );
   }
 
-  // Create temp file
-  const tmpDir = os.tmpdir();
-  const tmpFile = path.join(tmpDir, `proton-drive-upload-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`);
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'proton-drive-upload-'));
+  const tmpFile = path.join(tmpDir, 'stdin');
+  const cleanup = async (): Promise<void> => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  };
 
   try {
-    // Write stdin to temp file
-    const writeStream = createWriteStream(tmpFile);
-    await pipeline(process.stdin, writeStream);
+    await pipeline(process.stdin, createWriteStream(tmpFile, { flags: 'wx', mode: 0o600 }));
 
-    // Verify file was written
     const stats = await fs.stat(tmpFile);
     if (stats.size === 0) {
-      await fs.unlink(tmpFile);
       throw new AppError(
         'No data received from stdin',
         ErrorCode.INVALID_FILE,
@@ -49,26 +59,10 @@ export async function readStdinToTempFile(): Promise<string> {
       );
     }
 
-    return tmpFile;
+    return { path: tmpFile, cleanup };
   } catch (error) {
-    // Clean up temp file on error
-    try {
-      await fs.unlink(tmpFile);
-    } catch {
-      // Ignore cleanup errors
-    }
+    await cleanup();
     throw error;
-  }
-}
-
-/**
- * Clean up temporary file
- */
-export async function cleanupTempFile(filePath: string): Promise<void> {
-  try {
-    await fs.unlink(filePath);
-  } catch (error) {
-    // Ignore cleanup errors
   }
 }
 

@@ -1,3 +1,11 @@
+/**
+ * Bridge protocol constants shared by the CLI, the Go adapter contract tests
+ * and the JSON schemas under schemas/bridge/v1.
+ *
+ * Secrets never travel through a bridge request: the account password and the
+ * mailbox/data password are reached only through the configured credential
+ * providers (`dataCredentialProvider`/`dataCredentialHost`).
+ */
 import { ErrorCode } from '../errors/types';
 
 export const BRIDGE_COMMANDS = [
@@ -7,7 +15,6 @@ export const BRIDGE_COMMANDS = [
   'list',
   'exists',
   'delete',
-  'refresh',
   'init',
   'batch-exists',
   'batch-delete',
@@ -32,7 +39,6 @@ export const BRIDGE_AUTH_STATES = [
 export type BridgeAuthState = typeof BRIDGE_AUTH_STATES[number];
 
 export const BRIDGE_REQUEST_FIELDS = [
-  'dataPassword',
   'dataCredentialProvider',
   'dataCredentialHost',
   'appVersion',
@@ -52,7 +58,6 @@ export interface BridgeCommandRequestFields {
 }
 
 export const BRIDGE_COMMON_REQUEST_FIELDS = [
-  'dataPassword',
   'dataCredentialProvider',
   'dataCredentialHost',
   'appVersion',
@@ -83,10 +88,6 @@ export const BRIDGE_COMMAND_REQUEST_FIELDS = {
   delete: {
     required: ['oid'],
     allowed: [...BRIDGE_COMMON_REQUEST_FIELDS, 'oid'],
-  },
-  refresh: {
-    required: [],
-    allowed: ['appVersion'],
   },
   init: {
     required: [],

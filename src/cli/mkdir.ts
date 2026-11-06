@@ -49,17 +49,17 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @example
  * ```bash
  * # Create folder in root
- * proton-drive mkdir / Documents
+ * proton-drive-cli mkdir / Documents
  *
  * # Create nested folder (parent must exist)
- * proton-drive mkdir /Documents Projects
+ * proton-drive-cli mkdir /Documents Projects
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive mkdir /Photos Vacation
+ * proton-drive-cli login
+ * proton-drive-cli mkdir /Photos Vacation
  *
  * # Quiet mode (outputs only folder UID)
- * proton-drive mkdir /Backups 2024 --quiet
+ * proton-drive-cli mkdir /Backups 2024 --quiet
  * ```
  *
  * @example

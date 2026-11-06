@@ -2,7 +2,9 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import * as fs from 'fs/promises';
+import { createWriteStream } from 'fs';
 import { Writable } from 'stream';
+import { finished } from 'stream/promises';
 import { createSDKClient } from '../sdk/client';
 import { resolvePathToNodeUid } from '../sdk/pathResolver';
 import { handleError } from '../errors/handler';
@@ -57,20 +59,20 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @example
  * ```bash
  * # Download file from Drive
- * proton-drive download /Documents/file.pdf ./file.pdf
+ * proton-drive-cli download /Documents/file.pdf ./file.pdf
  *
  * # Download with verbose progress
- * proton-drive download /Photos/vacation.jpg ./vacation.jpg --verbose
+ * proton-drive-cli download /Photos/vacation.jpg ./vacation.jpg --verbose
  *
  * # Download without signature verification (not recommended)
- * proton-drive download /Backups/data.bin ./data.bin --skip-verification
+ * proton-drive-cli download /Backups/data.bin ./data.bin --skip-verification
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive download /Documents/file.pdf ./file.pdf
+ * proton-drive-cli login
+ * proton-drive-cli download /Documents/file.pdf ./file.pdf
  *
  * # Quiet mode (for scripts)
- * proton-drive download /file.txt ./file.txt --quiet
+ * proton-drive-cli download /file.txt ./file.txt --quiet
  * ```
  *
  * @example
@@ -126,7 +128,7 @@ async function downloadCommand(sourcePath: string, outputPath: string, options: 
     const downloader = await client.getFileDownloader(nodeUid);
     const claimedSize = downloader.getClaimedSizeInBytes() || 0;
 
-    const fileStream = (await import('fs')).createWriteStream(outputPath);
+    const fileStream = createWriteStream(outputPath);
     const webStream = Writable.toWeb(fileStream) as WritableStream;
 
     const onProgress = (downloaded: number) => {
@@ -161,6 +163,11 @@ async function downloadCommand(sourcePath: string, outputPath: string, options: 
       ? downloader.unsafeDownloadToStream(webStream, onProgress)
       : downloader.downloadToStream(webStream, onProgress);
     await ctrl.completion();
+    // The size below must be the flushed size: end the stream and wait for it.
+    if (!fileStream.writableEnded) {
+      fileStream.end();
+    }
+    await finished(fileStream);
 
     if (progressSpinner) {
       progressSpinner.succeed(chalk.green('Download complete'));

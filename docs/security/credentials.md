@@ -38,6 +38,6 @@ The session directory is `0700`; session and cooldown files are `0600`.
 
 ## Offline Gates
 
-`proton-drive doctor` and `proton-drive bridge auth-state` inspect only local
+`proton-drive-cli doctor` and `proton-drive-cli bridge auth-state` inspect only local
 state. They do not perform token refresh, remote validation, SRP login, or
 account-password credential lookup.

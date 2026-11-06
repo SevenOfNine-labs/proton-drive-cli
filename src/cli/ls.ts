@@ -79,20 +79,20 @@ function getNodeIcon(type: string): string {
  * @example
  * ```bash
  * # List root directory
- * proton-drive ls
+ * proton-drive-cli ls
  *
  * # List specific folder
- * proton-drive ls /Documents
+ * proton-drive-cli ls /Documents
  *
  * # Long listing format with details
- * proton-drive ls /Photos -l
+ * proton-drive-cli ls /Photos -l
  *
  * # Quiet mode (names only, for scripts)
- * proton-drive ls /Documents --quiet
+ * proton-drive-cli ls /Documents --quiet
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive ls /
+ * proton-drive-cli login
+ * proton-drive-cli ls /
  * ```
  *
  * @example

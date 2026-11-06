@@ -1,21 +1,11 @@
 {
   "name": "@sevenofnine-ai/proton-drive-cli",
   "version": "0.1.2",
+  "private": true,
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "description": "End-to-end encrypted CLI for Proton Drive with Git LFS bridge support",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./bridge": {
-      "types": "./dist/bridge/index.d.ts",
-      "default": "./dist/bridge/index.js"
-    }
-  },
   "scripts": {
-    "build": "tsc && node scripts/build-runtime.mjs",
+    "build": "tsc --noEmit && node scripts/build-runtime.mjs",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
@@ -25,21 +15,11 @@
     "watch": "tsc --watch",
     "install-global": "yarn build && yarn link",
     "uninstall-global": "yarn unlink",
-    "prepack": "find node_modules/@protontech/drive-sdk/src -type f -delete 2>/dev/null; find node_modules/@protontech/drive-sdk/dist -name '*.test.*' -delete 2>/dev/null; true",
-    "prepublishOnly": "yarn build",
-    "package": "yarn build && npm pack",
     "docs": "typedoc",
     "docs:watch": "typedoc --watch",
     "docs:serve": "npx http-server docs/api -p 8080"
   },
   "bin": "./dist/index.js",
-  "files": [
-    "dist/**/*",
-    "!dist/**/*.test.*",
-    "schemas/**/*",
-    "README.md",
-    "LICENSE"
-  ],
   "keywords": [
     "proton",
     "drive",
@@ -58,12 +38,6 @@
     "url": "https://github.com/SevenOfNine-labs/proton-drive-cli/issues"
   },
   "homepage": "https://github.com/SevenOfNine-labs/proton-drive-cli#readme",
-  "bundledDependencies": [
-    "@protontech/drive-sdk"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
   "author": "Proton Drive CLI Contributors",
   "license": "MIT",
   "packageManager": "yarn@4.1.1",
@@ -73,11 +47,16 @@
   "devDependencies": {
     "@swc/cli": "^0.8.0",
     "@swc/core": "^1.15.3",
+    "@swc/jest": "^0.2.39",
     "@types/fs-extra": "^11.0.4",
     "@types/inquirer": "^9.0.9",
     "@types/jest": "^29.5.14",
     "@types/mime-types": "^3.0.1",
-    "@types/node": "^25.0.0",
+    "@types/node": "^26.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/write-file-atomic": "^4.0.3",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "esbuild": "^0.25.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.3.2",
@@ -88,18 +67,19 @@
   "dependencies": {
     "@protontech/crypto": "^2.0.0",
     "@protontech/drive-sdk": "portal:./submodules/sdk/client/js",
-    "@protontech/openpgp": "^6.2.2",
-    "bcryptjs": "^3.0.3",
     "boxen": "^7.1.1",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.2",
+    "core-js": "^3.49.0",
     "fs-extra": "^11.3.2",
     "inquirer": "^8.2.7",
-    "jwt-decode": "^4.0.0",
     "mime-types": "^3.0.2",
-    "openpgp": "npm:@protontech/openpgp@^6.2.2",
-    "ora": "^9.0.0"
+    "openpgp": "npm:@protontech/openpgp@^6.3.1",
+    "ora": "^9.0.0",
+    "p-retry": "^9.0.0",
+    "proper-lockfile": "^4.1.2",
+    "write-file-atomic": "^6.0.0"
   },
   "resolutions": {
     "lodash": "^4.18.1"

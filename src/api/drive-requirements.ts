@@ -16,8 +16,8 @@ export enum RequirementScope {
   Docs = 'docs',
 }
 
-// For now only the test feature is defined upstream. Extend together with the
-// vendored SDK when it implements more features.
+// Feature bits this client implements; upstream defines only the test bit at
+// js/v0.23.0. Extend together with the vendored SDK.
 enum KnownFeatures {
   TestFeature = 1 << 0,
 }

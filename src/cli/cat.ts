@@ -23,19 +23,19 @@ import { handleError } from '../errors/handler';
  *
  * **View text file**: Displays file content in terminal
  * ```bash
- * proton-drive cat /Documents/readme.txt
+ * proton-drive-cli cat /Documents/readme.txt
  * ```
  *
  * **Pipe to other commands**: Integrates with Unix pipelines
  * ```bash
- * proton-drive cat /Logs/app.log | grep ERROR
- * proton-drive cat /Data/config.json | jq .
- * proton-drive cat /Archives/backup.tar.gz | tar xzf -
+ * proton-drive-cli cat /Logs/app.log | grep ERROR
+ * proton-drive-cli cat /Data/config.json | jq .
+ * proton-drive-cli cat /Archives/backup.tar.gz | tar xzf -
  * ```
  *
  * **Redirect to file**: Save to local filesystem
  * ```bash
- * proton-drive cat /Documents/file.pdf > local-copy.pdf
+ * proton-drive-cli cat /Documents/file.pdf > local-copy.pdf
  * ```
  *
  * # Security Features
@@ -61,23 +61,23 @@ import { handleError } from '../errors/handler';
  * @example
  * ```bash
  * # View text file
- * proton-drive cat /Documents/readme.txt
+ * proton-drive-cli cat /Documents/readme.txt
  *
  * # Pipe to grep (search logs)
- * proton-drive cat /Logs/app.log | grep ERROR
+ * proton-drive-cli cat /Logs/app.log | grep ERROR
  *
  * # Pipe to jq (parse JSON)
- * proton-drive cat /Config/settings.json | jq .database
+ * proton-drive-cli cat /Config/settings.json | jq .database
  *
  * # Extract tar archive directly from Drive
- * proton-drive cat /Archives/backup.tar.gz | tar xzf -
+ * proton-drive-cli cat /Archives/backup.tar.gz | tar xzf -
  *
  * # Save to local file
- * proton-drive cat /Documents/report.pdf > local-report.pdf
+ * proton-drive-cli cat /Documents/report.pdf > local-report.pdf
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive cat /file.txt
+ * proton-drive-cli login
+ * proton-drive-cli cat /file.txt
  * ```
  *
  * @example

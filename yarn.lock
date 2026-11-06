@@ -721,6 +721,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@jest/create-cache-key-function@npm:^30.0.0":
+  version: 30.5.1
+  resolution: "@jest/create-cache-key-function@npm:30.5.1"
+  dependencies:
+    "@jest/types": "npm:30.5.1"
+  checksum: 10c0/cc95463fe96d52acf4efdc3c1d0e33a9f901a26e4f326072dcde2a103d5aad9aae89e2254f3a511799f2c7a364de9c5d401713e27a3ba43dc3a1d3b7a2ecdae8
+  languageName: node
+  linkType: hard
+
 "@jest/environment@npm:^29.7.0":
   version: 29.7.0
   resolution: "@jest/environment@npm:29.7.0"
@@ -778,6 +787,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@jest/pattern@npm:30.5.0":
+  version: 30.5.0
+  resolution: "@jest/pattern@npm:30.5.0"
+  dependencies:
+    "@types/node": "npm:*"
+    jest-regex-util: "npm:30.5.0"
+  checksum: 10c0/3e960b25c7a32fee97a2cdf9ea810ada41f676c84db3c1afab138ee089e0e1cf4849372dd576acb18ac5219309695991c38e23ddacd9b95802ee3f76b4caaea4
+  languageName: node
+  linkType: hard
+
 "@jest/reporters@npm:^29.7.0":
   version: 29.7.0
   resolution: "@jest/reporters@npm:29.7.0"
@@ -812,6 +831,15 @@ __metadata:
     node-notifier:
       optional: true
   checksum: 10c0/a754402a799541c6e5aff2c8160562525e2a47e7d568f01ebfc4da66522de39cbb809bbb0a841c7052e4270d79214e70aec3c169e4eae42a03bc1a8a20cb9fa2
+  languageName: node
+  linkType: hard
+
+"@jest/schemas@npm:30.5.0":
+  version: 30.5.0
+  resolution: "@jest/schemas@npm:30.5.0"
+  dependencies:
+    "@sinclair/typebox": "npm:^0.34.0"
+  checksum: 10c0/632c45a06a0984051c908fa9b3c9445bac7be8b7a6d1cc7ce2ecae7d4e44c612509ad41fca16449607c4ea49a333e0d3f10bb1510bafb4b6d9051ca15d9b4b14
   languageName: node
   linkType: hard
 
@@ -879,6 +907,21 @@ __metadata:
     slash: "npm:^3.0.0"
     write-file-atomic: "npm:^4.0.2"
   checksum: 10c0/7f4a7f73dcf45dfdf280c7aa283cbac7b6e5a904813c3a93ead7e55873761fc20d5c4f0191d2019004fac6f55f061c82eb3249c2901164ad80e362e7a7ede5a6
+  languageName: node
+  linkType: hard
+
+"@jest/types@npm:30.5.1":
+  version: 30.5.1
+  resolution: "@jest/types@npm:30.5.1"
+  dependencies:
+    "@jest/pattern": "npm:30.5.0"
+    "@jest/schemas": "npm:30.5.0"
+    "@types/istanbul-lib-coverage": "npm:^2.0.6"
+    "@types/istanbul-reports": "npm:^3.0.4"
+    "@types/node": "npm:*"
+    "@types/yargs": "npm:^17.0.33"
+    chalk: "npm:^4.1.2"
+  checksum: 10c0/da9e46449371ddd43b89627c93fb7088fdad01e9f57dce376c65914a6f4617a558f54ec51a917ca10c9b9794a1e76c3cb450308eca303f830bb21e9529b1719a
   languageName: node
   linkType: hard
 
@@ -1215,44 +1258,43 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@protontech/openpgp@npm:^6.2.2, openpgp@npm:@protontech/openpgp@^6.2.2":
-  version: 6.2.2
-  resolution: "@protontech/openpgp@npm:6.2.2"
-  checksum: 10c0/1bd113aee0c16434b31206d1a1a5c0531b29b3f87c59c07534b74f700ebcd370548c904043339b216eb303332c1c2f2bbe7998cd73500849e8eb75fcdb30d42c
-  languageName: node
-  linkType: hard
-
 "@sevenofnine-ai/proton-drive-cli@workspace:.":
   version: 0.0.0-use.local
   resolution: "@sevenofnine-ai/proton-drive-cli@workspace:."
   dependencies:
     "@protontech/crypto": "npm:^2.0.0"
     "@protontech/drive-sdk": "portal:./submodules/sdk/client/js"
-    "@protontech/openpgp": "npm:^6.2.2"
     "@swc/cli": "npm:^0.8.0"
     "@swc/core": "npm:^1.15.3"
+    "@swc/jest": "npm:^0.2.39"
     "@types/fs-extra": "npm:^11.0.4"
     "@types/inquirer": "npm:^9.0.9"
     "@types/jest": "npm:^29.5.14"
     "@types/mime-types": "npm:^3.0.1"
-    "@types/node": "npm:^25.0.0"
-    bcryptjs: "npm:^3.0.3"
+    "@types/node": "npm:^26.0.0"
+    "@types/proper-lockfile": "npm:^4.1.4"
+    "@types/write-file-atomic": "npm:^4.0.3"
+    ajv: "npm:^8.20.0"
+    ajv-formats: "npm:^3.0.1"
     boxen: "npm:^7.1.1"
     chalk: "npm:^5.6.2"
     cli-table3: "npm:^0.6.5"
     commander: "npm:^14.0.2"
+    core-js: "npm:^3.49.0"
     esbuild: "npm:^0.25.0"
     fs-extra: "npm:^11.3.2"
     inquirer: "npm:^8.2.7"
     jest: "npm:^29.7.0"
-    jwt-decode: "npm:^4.0.0"
     mime-types: "npm:^3.0.2"
-    openpgp: "npm:@protontech/openpgp@^6.2.2"
+    openpgp: "npm:@protontech/openpgp@^6.3.1"
     ora: "npm:^9.0.0"
+    p-retry: "npm:^9.0.0"
+    proper-lockfile: "npm:^4.1.2"
     ts-jest: "npm:^29.3.2"
     ts-node: "npm:^10.9.2"
     typedoc: "npm:^0.28.17"
     typescript: "npm:^5.9.3"
+    write-file-atomic: "npm:^6.0.0"
   bin:
     proton-drive-cli: ./dist/index.js
   languageName: unknown
@@ -1307,6 +1349,13 @@ __metadata:
   version: 0.27.10
   resolution: "@sinclair/typebox@npm:0.27.10"
   checksum: 10c0/ca42a02817656dbdae464ed4bb8aca6ad4718d7618e270760fea84a834ad0ecc1a22eba51421f09e5047174571131356ff3b5d80d609ced775d631df7b404b0d
+  languageName: node
+  linkType: hard
+
+"@sinclair/typebox@npm:^0.34.0":
+  version: 0.34.52
+  resolution: "@sinclair/typebox@npm:0.34.52"
+  checksum: 10c0/03e9be17ffb536ddd6dc35b6131c88eb113b2ce6cbec4fa60b1d5219de99e59b2649fc40ad70a85db561104395faa3406608971dc7b0abef529b80fb001dc821
   languageName: node
   linkType: hard
 
@@ -1485,6 +1534,19 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@swc/jest@npm:^0.2.39":
+  version: 0.2.39
+  resolution: "@swc/jest@npm:0.2.39"
+  dependencies:
+    "@jest/create-cache-key-function": "npm:^30.0.0"
+    "@swc/counter": "npm:^0.1.3"
+    jsonc-parser: "npm:^3.2.0"
+  peerDependencies:
+    "@swc/core": "*"
+  checksum: 10c0/2df5f215bb7a3f31e1db606e3ac01c4e67900e8db004b38dbfaa09f87bcc2b054070211086e095eddcd174ee561b696fcf679ea38263fa6daf69fee37dacbdc9
+  languageName: node
+  linkType: hard
+
 "@swc/types@npm:^0.1.25":
   version: 0.1.25
   resolution: "@swc/types@npm:0.1.25"
@@ -1635,7 +1697,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/istanbul-lib-coverage@npm:*, @types/istanbul-lib-coverage@npm:^2.0.0, @types/istanbul-lib-coverage@npm:^2.0.1":
+"@types/istanbul-lib-coverage@npm:*, @types/istanbul-lib-coverage@npm:^2.0.0, @types/istanbul-lib-coverage@npm:^2.0.1, @types/istanbul-lib-coverage@npm:^2.0.6":
   version: 2.0.6
   resolution: "@types/istanbul-lib-coverage@npm:2.0.6"
   checksum: 10c0/3948088654f3eeb45363f1db158354fb013b362dba2a5c2c18c559484d5eb9f6fd85b23d66c0a7c2fcfab7308d0a585b14dadaca6cc8bf89ebfdc7f8f5102fb7
@@ -1651,7 +1713,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/istanbul-reports@npm:^3.0.0":
+"@types/istanbul-reports@npm:^3.0.0, @types/istanbul-reports@npm:^3.0.4":
   version: 3.0.4
   resolution: "@types/istanbul-reports@npm:3.0.4"
   dependencies:
@@ -1686,12 +1748,37 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:*, @types/node@npm:^25.0.0":
+"@types/node@npm:*":
   version: 25.2.3
   resolution: "@types/node@npm:25.2.3"
   dependencies:
     undici-types: "npm:~7.16.0"
   checksum: 10c0/925833029ce0bb4a72c36f90b93287184d3511aeb0fa60a994ae94b5430c22f9be6693d67d210df79267cb54c6f6978caaefb149d99ab5f83af5827ba7cb9822
+  languageName: node
+  linkType: hard
+
+"@types/node@npm:^26.0.0":
+  version: 26.6.6
+  resolution: "@types/node@npm:26.6.6"
+  dependencies:
+    undici-types: "npm:~8.9.0"
+  checksum: 10c0/5cb63f644f6e85a257a9cd2403cbcbe196760e2a35fd3ec9fb8b5cff663e14cc832b198cc17b53f870a2e30900ed45a1fb3f53e6589aba26b8e8c484aa672053
+  languageName: node
+  linkType: hard
+
+"@types/proper-lockfile@npm:^4.1.4":
+  version: 4.1.4
+  resolution: "@types/proper-lockfile@npm:4.1.4"
+  dependencies:
+    "@types/retry": "npm:*"
+  checksum: 10c0/d597846d6f7860da2470623d3f11b6e5b39864719c3c18b5a5e55f783c5e432fe49dcdcf6341b3903428fdf103f2bdc68eba263ce1ce3cbe8070cbcb54bbf230
+  languageName: node
+  linkType: hard
+
+"@types/retry@npm:*":
+  version: 0.12.5
+  resolution: "@types/retry@npm:0.12.5"
+  checksum: 10c0/eaaca483cc62f2f02c0b8486847ee70986ca7f97afd7363037247dbe3e98df8bd56a5b50d58b1e96768a5a1be0307010d86e9991bd458d72e8df88be471bd720
   languageName: node
   linkType: hard
 
@@ -1718,6 +1805,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/write-file-atomic@npm:^4.0.3":
+  version: 4.0.3
+  resolution: "@types/write-file-atomic@npm:4.0.3"
+  dependencies:
+    "@types/node": "npm:*"
+  checksum: 10c0/deb7e861b6ef42c72cb2330cbd26ecd888b31206a8d11939ab3ecfddad901a989a74ff1f7e4a87882799bd69f736b9f6becda3d5cdb0585ebff8d88d9eef9969
+  languageName: node
+  linkType: hard
+
 "@types/yargs-parser@npm:*":
   version: 21.0.3
   resolution: "@types/yargs-parser@npm:21.0.3"
@@ -1725,7 +1821,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/yargs@npm:^17.0.8":
+"@types/yargs@npm:^17.0.33, @types/yargs@npm:^17.0.8":
   version: 17.0.35
   resolution: "@types/yargs@npm:17.0.35"
   dependencies:
@@ -1887,6 +1983,32 @@ __metadata:
   version: 7.1.4
   resolution: "agent-base@npm:7.1.4"
   checksum: 10c0/c2c9ab7599692d594b6a161559ada307b7a624fa4c7b03e3afdb5a5e31cd0e53269115b620fcab024c5ac6a6f37fa5eb2e004f076ad30f5f7e6b8b671f7b35fe
+  languageName: node
+  linkType: hard
+
+"ajv-formats@npm:^3.0.1":
+  version: 3.0.1
+  resolution: "ajv-formats@npm:3.0.1"
+  dependencies:
+    ajv: "npm:^8.0.0"
+  peerDependencies:
+    ajv: ^8.0.0
+  peerDependenciesMeta:
+    ajv:
+      optional: true
+  checksum: 10c0/168d6bca1ea9f163b41c8147bae537e67bd963357a5488a1eaf3abe8baa8eec806d4e45f15b10767e6020679315c7e1e5e6803088dfb84efa2b4e9353b83dd0a
+  languageName: node
+  linkType: hard
+
+"ajv@npm:^8.0.0, ajv@npm:^8.20.0":
+  version: 8.20.0
+  resolution: "ajv@npm:8.20.0"
+  dependencies:
+    fast-deep-equal: "npm:^3.1.3"
+    fast-uri: "npm:^3.0.1"
+    json-schema-traverse: "npm:^1.0.0"
+    require-from-string: "npm:^2.0.2"
+  checksum: 10c0/5df9a1c8f83863cde1bd3a9ddb426f599718f88e3dc9153616c79fb28e0be455335830d7f21d745576519f057b371352daa31047b6a33d7036fe08777d60cf2a
   languageName: node
   linkType: hard
 
@@ -2329,7 +2451,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"chalk@npm:^4.0.0, chalk@npm:^4.1.0, chalk@npm:^4.1.1":
+"chalk@npm:^4.0.0, chalk@npm:^4.1.0, chalk@npm:^4.1.1, chalk@npm:^4.1.2":
   version: 4.1.2
   resolution: "chalk@npm:4.1.2"
   dependencies:
@@ -2957,6 +3079,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"fast-deep-equal@npm:^3.1.3":
+  version: 3.1.3
+  resolution: "fast-deep-equal@npm:3.1.3"
+  checksum: 10c0/40dedc862eb8992c54579c66d914635afbec43350afbbe991235fdcb4e3a8d5af1b23ae7e79bef7d4882d0ecee06c3197488026998fb19f72dc95acff1d1b1d0
+  languageName: node
+  linkType: hard
+
 "fast-fifo@npm:^1.2.0, fast-fifo@npm:^1.3.2":
   version: 1.3.2
   resolution: "fast-fifo@npm:1.3.2"
@@ -2968,6 +3097,13 @@ __metadata:
   version: 2.1.0
   resolution: "fast-json-stable-stringify@npm:2.1.0"
   checksum: 10c0/7f081eb0b8a64e0057b3bb03f974b3ef00135fbf36c1c710895cd9300f13c94ba809bb3a81cf4e1b03f6e5285610a61abbd7602d0652de423144dfee5a389c9b
+  languageName: node
+  linkType: hard
+
+"fast-uri@npm:^3.0.1":
+  version: 3.1.9
+  resolution: "fast-uri@npm:3.1.9"
+  checksum: 10c0/052757540d8c0bbc16bb124a45b8f5cb5d0932f9b89f019221ee41cdb3cafc1db44b2e809d6b888b87922af3e5560a863124454e9d9193e1fc955887357b5add
   languageName: node
   linkType: hard
 
@@ -3203,7 +3339,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"graceful-fs@npm:^4.1.6, graceful-fs@npm:^4.2.0, graceful-fs@npm:^4.2.11, graceful-fs@npm:^4.2.6, graceful-fs@npm:^4.2.9":
+"graceful-fs@npm:^4.1.6, graceful-fs@npm:^4.2.0, graceful-fs@npm:^4.2.11, graceful-fs@npm:^4.2.4, graceful-fs@npm:^4.2.6, graceful-fs@npm:^4.2.9":
   version: 4.2.11
   resolution: "graceful-fs@npm:4.2.11"
   checksum: 10c0/386d011a553e02bc594ac2ca0bd6d9e4c22d7fa8cfbfc448a6d148c59ea881b092db9dbe3547ae4b88e55f1b01f7c4a2ecc53b310c042793e63aa44cf6c257f2
@@ -3436,6 +3572,13 @@ __metadata:
   version: 2.0.0
   resolution: "is-interactive@npm:2.0.0"
   checksum: 10c0/801c8f6064f85199dc6bf99b5dd98db3282e930c3bc197b32f2c5b89313bb578a07d1b8a01365c4348c2927229234f3681eb861b9c2c92bee72ff397390fa600
+  languageName: node
+  linkType: hard
+
+"is-network-error@npm:^1.3.2":
+  version: 1.3.2
+  resolution: "is-network-error@npm:1.3.2"
+  checksum: 10c0/37edc576497b21d022754b49203358ee80fdac4a11a71a09687f38ad789ec437dd930c223301df39f1c920566692b31345e0108ae720996e592cab3879eca74f
   languageName: node
   linkType: hard
 
@@ -3796,6 +3939,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"jest-regex-util@npm:30.5.0":
+  version: 30.5.0
+  resolution: "jest-regex-util@npm:30.5.0"
+  checksum: 10c0/f0e5ef257b906862821e1fb58c1d3d7bb3c4fc1fb11915673f04d3693673e0656b8f502c9871900e13e58329039c73e5b5c59a2622cbd6ba5c7fc7463b60ce48
+  languageName: node
+  linkType: hard
+
 "jest-regex-util@npm:^29.6.3":
   version: 29.6.3
   resolution: "jest-regex-util@npm:29.6.3"
@@ -4041,12 +4191,26 @@ __metadata:
   languageName: node
   linkType: hard
 
+"json-schema-traverse@npm:^1.0.0":
+  version: 1.0.0
+  resolution: "json-schema-traverse@npm:1.0.0"
+  checksum: 10c0/71e30015d7f3d6dc1c316d6298047c8ef98a06d31ad064919976583eb61e1018a60a0067338f0f79cabc00d84af3fcc489bd48ce8a46ea165d9541ba17fb30c6
+  languageName: node
+  linkType: hard
+
 "json5@npm:^2.2.3":
   version: 2.2.3
   resolution: "json5@npm:2.2.3"
   bin:
     json5: lib/cli.js
   checksum: 10c0/5a04eed94810fa55c5ea138b2f7a5c12b97c3750bc63d11e511dcecbfef758003861522a070c2272764ee0f4e3e323862f386945aeb5b85b87ee43f084ba586c
+  languageName: node
+  linkType: hard
+
+"jsonc-parser@npm:^3.2.0":
+  version: 3.3.1
+  resolution: "jsonc-parser@npm:3.3.1"
+  checksum: 10c0/269c3ae0a0e4f907a914bf334306c384aabb9929bd8c99f909275ebd5c2d3bc70b9bcd119ad794f339dec9f24b6a4ee9cd5a8ab2e6435e730ad4075388fc2ab6
   languageName: node
   linkType: hard
 
@@ -4060,13 +4224,6 @@ __metadata:
     graceful-fs:
       optional: true
   checksum: 10c0/7f4f43b08d1869ded8a6822213d13ae3b99d651151d77efd1557ced0889c466296a7d9684e397bd126acf5eb2cfcb605808c3e681d0fdccd2fe5a04b47e76c0d
-  languageName: node
-  linkType: hard
-
-"jwt-decode@npm:^4.0.0":
-  version: 4.0.0
-  resolution: "jwt-decode@npm:4.0.0"
-  checksum: 10c0/de75bbf89220746c388cf6a7b71e56080437b77d2edb29bae1c2155048b02c6b8c59a3e5e8d6ccdfd54f0b8bda25226e491a4f1b55ac5f8da04cfbadec4e546c
   languageName: node
   linkType: hard
 
@@ -4557,10 +4714,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"openpgp@npm:@protontech/openpgp@~6.3.1-0":
-  version: 6.3.1-0
-  resolution: "@protontech/openpgp@npm:6.3.1-0"
-  checksum: 10c0/679e081f0dd89bd6aa583df31b6646b24457c1093cb9fa9027b7b5a49feb28fcaae54fbde2bbe013b7609a1bc0150074e079e5c7e1dc6f55ce2afd651d92e32d
+"openpgp@npm:@protontech/openpgp@^6.3.1, openpgp@npm:@protontech/openpgp@~6.3.1-0":
+  version: 6.3.1
+  resolution: "@protontech/openpgp@npm:6.3.1"
+  peerDependencies:
+    "@openpgp/web-stream-tools": ~0.3.0
+  peerDependenciesMeta:
+    "@openpgp/web-stream-tools":
+      optional: true
+  checksum: 10c0/f6ed0767c1a88e0fb865b26c0f81ebba5e593ecb86292995c4141b15477d4e5283406814eae7ca64250b5b0f7c393a709dfe57ffc3778bb1c759c0ede59c2a3b
   languageName: node
   linkType: hard
 
@@ -4635,6 +4797,15 @@ __metadata:
   version: 7.0.4
   resolution: "p-map@npm:7.0.4"
   checksum: 10c0/a5030935d3cb2919d7e89454d1ce82141e6f9955413658b8c9403cfe379283770ed3048146b44cde168aa9e8c716505f196d5689db0ae3ce9a71521a2fef3abd
+  languageName: node
+  linkType: hard
+
+"p-retry@npm:^9.0.0":
+  version: 9.0.0
+  resolution: "p-retry@npm:9.0.0"
+  dependencies:
+    is-network-error: "npm:^1.3.2"
+  checksum: 10c0/69f80655ad6d08f6b1b15c007cca1586980a32d7a07ebe3e5a59a22cac4cf7d892a4700c6dbbe6dc6f0b1a6e90b289df586d76113c640f4ee35f2e23ad62c594
   languageName: node
   linkType: hard
 
@@ -4796,6 +4967,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"proper-lockfile@npm:^4.1.2":
+  version: 4.1.2
+  resolution: "proper-lockfile@npm:4.1.2"
+  dependencies:
+    graceful-fs: "npm:^4.2.4"
+    retry: "npm:^0.12.0"
+    signal-exit: "npm:^3.0.2"
+  checksum: 10c0/2f265dbad15897a43110a02dae55105c04d356ec4ed560723dcb9f0d34bc4fb2f13f79bb930e7561be10278e2314db5aca2527d5d3dcbbdee5e6b331d1571f6d
+  languageName: node
+  linkType: hard
+
 "punycode.js@npm:^2.3.1":
   version: 2.3.1
   resolution: "punycode.js@npm:2.3.1"
@@ -4839,6 +5021,13 @@ __metadata:
   version: 2.1.1
   resolution: "require-directory@npm:2.1.1"
   checksum: 10c0/83aa76a7bc1531f68d92c75a2ca2f54f1b01463cb566cf3fbc787d0de8be30c9dbc211d1d46be3497dac5785fe296f2dd11d531945ac29730643357978966e99
+  languageName: node
+  linkType: hard
+
+"require-from-string@npm:^2.0.2":
+  version: 2.0.2
+  resolution: "require-from-string@npm:2.0.2"
+  checksum: 10c0/aaa267e0c5b022fc5fd4eef49d8285086b15f2a1c54b28240fdf03599cbd9c26049fee3eab894f2e1f6ca65e513b030a7c264201e3f005601e80c49fb2937ce2
   languageName: node
   linkType: hard
 
@@ -5033,7 +5222,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"signal-exit@npm:^4.1.0":
+"signal-exit@npm:^4.0.1, signal-exit@npm:^4.1.0":
   version: 4.1.0
   resolution: "signal-exit@npm:4.1.0"
   checksum: 10c0/41602dce540e46d599edba9d9860193398d135f7ff72cab629db5171516cfae628d21e7bfccde1bbfdf11c48726bc2a6d1a8fb8701125852fbfda7cf19c6aa83
@@ -5589,6 +5778,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"undici-types@npm:~8.9.0":
+  version: 8.9.0
+  resolution: "undici-types@npm:8.9.0"
+  checksum: 10c0/51c712c20c087368f62c6fc0f2bc49fa76bfe5dec28ff01584bb677ff29b0622569783c02d43e151143808c48c0503f804093bd2c491b10f2a830138034cb451
+  languageName: node
+  linkType: hard
+
 "unique-filename@npm:^5.0.0":
   version: 5.0.0
   resolution: "unique-filename@npm:5.0.0"
@@ -5756,6 +5952,16 @@ __metadata:
     imurmurhash: "npm:^0.1.4"
     signal-exit: "npm:^3.0.7"
   checksum: 10c0/a2c282c95ef5d8e1c27b335ae897b5eca00e85590d92a3fd69a437919b7b93ff36a69ea04145da55829d2164e724bc62202cdb5f4b208b425aba0807889375c7
+  languageName: node
+  linkType: hard
+
+"write-file-atomic@npm:^6.0.0":
+  version: 6.0.0
+  resolution: "write-file-atomic@npm:6.0.0"
+  dependencies:
+    imurmurhash: "npm:^0.1.4"
+    signal-exit: "npm:^4.0.1"
+  checksum: 10c0/ae2f1c27474758a9aca92037df6c1dd9cb94c4e4983451210bd686bfe341f142662f6aa5913095e572ab037df66b1bfe661ed4ce4c0369ed0e8219e28e141786
   languageName: node
   linkType: hard
 

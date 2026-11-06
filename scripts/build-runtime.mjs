@@ -8,9 +8,11 @@ await esbuild.build({
   outfile: 'dist/index.js',
   format: 'cjs',
   sourcemap: true,
+  // @protontech/crypto imports openpgp/lightweight, an "exports" entry that
+  // only exists for the browser condition; Node loads the full package.
+  alias: { 'openpgp/lightweight': 'openpgp' },
   external: [
     'readline/promises',
-    '@protontech/openpgp',
     'openpgp',
   ],
 });

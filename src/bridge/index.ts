@@ -15,6 +15,7 @@ export {
   OID_PATTERN,
 
   // Validators
+  invalidRequest,
   validateOid,
   validateLocalPath,
   validateBridgeRequestForCommand,

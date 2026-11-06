@@ -105,13 +105,13 @@ describe('AuthApiClient', () => {
     );
   });
 
-  it('revokes the active session on logout', async () => {
+  it('revokes the active session on logout with both session headers', async () => {
     mockDelete.mockResolvedValue({ data: {} });
 
-    await client.logout('access-token');
+    await client.logout('uid-123', 'access-token');
 
     expect(mockDelete).toHaveBeenCalledWith('/auth/v4', {
-      headers: { Authorization: 'Bearer access-token' },
+      headers: { 'x-pm-uid': 'uid-123', Authorization: 'Bearer access-token' },
     });
   });
 

@@ -24,6 +24,10 @@ jest.mock('./srpAdapter', () => ({
   SRPModuleAdapter: jest.fn().mockImplementation(() => ({})),
 }));
 
+jest.mock('./telemetry', () => ({
+  createSdkTelemetry: jest.fn(() => ({ getLogger: jest.fn(), recordMetric: jest.fn() })),
+}));
+
 jest.mock('../crypto/drive-crypto', () => ({
   DriveCryptoService: jest.fn().mockImplementation(() => ({
     initialize: mockDriveCryptoInitialize,
@@ -201,5 +205,20 @@ describe('createSDKClient', () => {
     );
     expect(MockedDriveCryptoService).toHaveBeenCalledWith('external-drive-root@9.9.9');
     expect(MockedHTTPClientAdapter).toHaveBeenCalledWith('external-drive-root@9.9.9');
+  });
+
+  it('hands the SDK a telemetry adapter so it never logs to stdout', async () => {
+    mockedSessionManager.loadSession.mockResolvedValue(browserForkSession as any);
+    mockedSessionManager.hasValidSession.mockResolvedValue(true);
+    mockKeyPasswordLoad.mockResolvedValue('key-password');
+    const { ProtonDriveClient } = jest.requireMock('@protontech/drive-sdk');
+    const { createSdkTelemetry } = jest.requireMock('./telemetry');
+
+    await createSDKClient({});
+
+    expect(createSdkTelemetry).toHaveBeenCalledTimes(1);
+    expect(ProtonDriveClient).toHaveBeenCalledWith(expect.objectContaining({
+      telemetry: expect.objectContaining({ getLogger: expect.any(Function), recordMetric: expect.any(Function) }),
+    }));
   });
 });
