@@ -18,6 +18,7 @@ import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { AccountAdapter } from './accountAdapter';
 import { SRPModuleAdapter } from './srpAdapter';
+import { createSdkTelemetry } from './telemetry';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import { SessionManager } from '../auth/session';
 import { createKeyPasswordStore } from '../auth/key-password-store';
@@ -37,20 +38,12 @@ interface NormalizedCreateSDKClientOptions {
 }
 
 function normalizeCreateSDKClientOptions(
-  passwordOrOptions: string | CreateSDKClientOptions = {},
+  options: CreateSDKClientOptions,
 ): NormalizedCreateSDKClientOptions {
-  if (typeof passwordOrOptions === 'string') {
-    return {
-      dataPassword: passwordOrOptions,
-      dataPasswordExplicit: true,
-      appVersion: undefined,
-    };
-  }
-
   return {
-    dataPassword: passwordOrOptions.dataPassword,
-    dataPasswordExplicit: Boolean(passwordOrOptions.dataPassword),
-    appVersion: passwordOrOptions.appVersion,
+    dataPassword: options.dataPassword,
+    dataPasswordExplicit: Boolean(options.dataPassword),
+    appVersion: options.appVersion,
   };
 }
 
@@ -126,19 +119,13 @@ async function initializeCryptoForSession(
  * Crypto initialization is expensive (3 API calls: keySalts, user, addresses).
  * When a crypto cache exists on disk, those calls are skipped entirely.
  *
- * @param password - Optional explicit mailbox/data password for crypto unlock
+ * @param clientOptions - Optional explicit mailbox/data password for crypto unlock and app version
  * @returns Initialized ProtonDriveClient ready for operations
  */
 export async function createSDKClient(
-  dataPassword: string,
-): Promise<ProtonDriveClient>;
-export async function createSDKClient(
-  options?: CreateSDKClientOptions,
-): Promise<ProtonDriveClient>;
-export async function createSDKClient(
-  passwordOrOptions: string | CreateSDKClientOptions = {},
+  clientOptions: CreateSDKClientOptions = {},
 ): Promise<ProtonDriveClient> {
-  const options = normalizeCreateSDKClientOptions(passwordOrOptions);
+  const options = normalizeCreateSDKClientOptions(clientOptions);
   const driveCrypto = new DriveCryptoService(options.appVersion);
 
   let sessionReady = false;
@@ -188,7 +175,7 @@ export async function createSDKClient(
 
   if (!sessionReady) {
     throw new AppError(
-      'No browser-fork session found. Run proton-drive login before transfers.',
+      'No browser-fork session found. Run proton-drive-cli login before transfers.',
       ErrorCode.SESSION_EXPIRED,
       { authMode: 'browser-fork' },
       true,
@@ -202,7 +189,8 @@ export async function createSDKClient(
   const account = new AccountAdapter(driveCrypto);
   const srpModule = new SRPModuleAdapter();
 
-  // Construct ProtonDriveClient with all required adapters
+  // Construct ProtonDriveClient with all required adapters. The telemetry
+  // adapter keeps SDK logs and metrics off stdout (see sdk/telemetry.ts).
   const client = new ProtonDriveClient({
     httpClient,
     entitiesCache: new MemoryCache(),
@@ -210,6 +198,7 @@ export async function createSDKClient(
     account,
     openPGPCryptoModule: openPGPCrypto,
     srpModule,
+    telemetry: createSdkTelemetry(),
   });
 
   return client;

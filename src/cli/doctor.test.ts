@@ -9,6 +9,7 @@ const mockNormalizeProviderName = jest.fn((name: string) => {
 });
 
 jest.mock('../credentials', () => ({
+  DEFAULT_KEY_PASSWORD_PROVIDER: 'pass-cli',
   createProvider: mockCreateProvider,
   normalizeProviderName: mockNormalizeProviderName,
 }));
@@ -48,6 +49,7 @@ import {
   runDoctor,
 } from './doctor';
 import { SessionManager } from '../auth/session';
+import { assertValidAgainstSchema } from '../test/schema-validator';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockedSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
@@ -105,6 +107,37 @@ describe('createDoctorCommand', () => {
     ]));
     expect(optionNames).not.toContain('--credential-provider');
   });
+
+  it('defaults the key-password provider to pass-cli and ignores PROTON_CREDENTIAL_PROVIDER', () => {
+    const originalEnv = { ...process.env };
+    delete process.env.PROTON_KEY_PASSWORD_PROVIDER;
+    process.env.PROTON_CREDENTIAL_PROVIDER = 'git-credential';
+    try {
+      const option = createDoctorCommand().options.find((o: any) => o.long === '--key-password-provider');
+      expect(option?.defaultValue).toBe('pass-cli');
+      expect(option?.description).toContain('pass-cli');
+    } finally {
+      process.env = originalEnv;
+    }
+  });
+
+  it('sets exitCode 1 instead of exiting when the report is not ok', async () => {
+    const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env.PROTON_DATA_PASSWORD = 'secret';
+    try {
+      await createDoctorCommand().parseAsync(['--json', '--drive-cli-bin', '/nonexistent/cli.js', '--session-file', '/nonexistent/session.json'], { from: 'user' });
+      expect(exit).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      const report = JSON.parse(log.mock.calls.map((call) => call.join(' ')).join('\n'));
+      expect(report.ok).toBe(false);
+      assertValidAgainstSchema('doctor/v1/report.schema.json', report);
+    } finally {
+      delete process.env.PROTON_DATA_PASSWORD;
+      process.exitCode = undefined;
+      jest.restoreAllMocks();
+    }
+  });
 });
 
 describe('doctor report contract', () => {
@@ -156,6 +189,19 @@ describe('runDoctor', () => {
     expect(report.canAttemptTransfer).toBe(true);
     expect(report.canAttemptLiveCanary).toBe(true);
     expect(mockCreateProvider).not.toHaveBeenCalledWith('git-credential', { host: 'proton.me' });
+    assertValidAgainstSchema('doctor/v1/report.schema.json', report);
+  });
+
+  it('uses pass-cli as the key-password provider when nothing selects one', async () => {
+    delete process.env.PROTON_KEY_PASSWORD_PROVIDER;
+    process.env.PROTON_CREDENTIAL_PROVIDER = 'git-credential';
+    mockedSessionManager.loadSession.mockResolvedValue({ ...mockSession(), keyPasswordProvider: undefined } as any);
+    mockFs.readJson.mockResolvedValue({ ...mockSession(), keyPasswordProvider: undefined });
+    const { createKeyPasswordStore } = jest.requireMock('../auth/key-password-store');
+
+    await runDoctor({ driveCliBin, sessionFile });
+
+    expect(createKeyPasswordStore).toHaveBeenCalledWith(expect.objectContaining({ provider: 'pass-cli' }));
   });
 
   it('passes two-password browser-fork sessions when key password is stored', async () => {
@@ -201,7 +247,7 @@ describe('runDoctor', () => {
     ]));
   });
 
-  it('rejects legacy non-browser-fork sessions', async () => {
+  it('rejects non-browser-fork sessions', async () => {
     mockFs.readJson.mockResolvedValue({
       ...mockSession(),
       authMode: undefined,
@@ -236,15 +282,22 @@ describe('runDoctor', () => {
     expect(report.canAttemptLiveCanary).toBe(true);
   });
 
-  it('fails when legacy secret environment variables are set', async () => {
+  it('fails when secrets are passed through the environment', async () => {
     process.env.PROTON_DATA_PASSWORD = 'secret';
 
     const report = await runDoctor({ driveCliBin, sessionFile });
 
     expect(report.ok).toBe(false);
     expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'secret-env', status: 'fail' }),
+      expect.objectContaining({
+        id: 'secret-env',
+        status: 'fail',
+        message: 'Secret environment variable(s) set: PROTON_DATA_PASSWORD',
+        remediation: expect.stringContaining('Secrets must not be passed through the environment'),
+      }),
     ]));
+    expect(JSON.stringify(report)).not.toMatch(/legacy/i);
+    assertValidAgainstSchema('doctor/v1/report.schema.json', report);
   });
 });
 

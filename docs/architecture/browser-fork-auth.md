@@ -28,9 +28,9 @@ session. The secret is never written to `~/.proton-drive-cli/session.json`.
 
 Key-password provider selection is explicit:
 
-- `--key-password-provider <git-credential|pass-cli>` wins.
-- `PROTON_KEY_PASSWORD_PROVIDER` and then `PROTON_CREDENTIAL_PROVIDER` are used
-  when command flags are absent.
+- `--key-password-provider <pass-cli|git-credential>` wins.
+- `PROTON_KEY_PASSWORD_PROVIDER` is used when the flag is absent; otherwise
+  the default is `pass-cli`.
 - `--key-password-host` or `PROTON_KEY_PASSWORD_HOST` can override the default
   `proton-drive-key.proton-lfs-cli.local` credential host.
 
@@ -40,7 +40,7 @@ Browser-fork sessions are persisted with:
 {
   "authMode": "browser-fork",
   "keyPasswordPersisted": true,
-  "keyPasswordProvider": "git-credential",
+  "keyPasswordProvider": "pass-cli",
   "keyPasswordHost": "proton-drive-key.proton-lfs-cli.local"
 }
 ```

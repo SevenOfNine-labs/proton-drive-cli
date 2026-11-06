@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/auth-state.schema.json",
+  "title": "proton-drive-cli bridge auth-state payload",
+  "description": "Success payload of `bridge auth-state`; the full definition lives in ../auth-state-payload.schema.json, which the Go adapter contract test reads directly.",
+  "$ref": "../auth-state-payload.schema.json"
+}

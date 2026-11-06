@@ -7,8 +7,15 @@
  * ahead produces keys and signatures "from the future" that the API rejects
  * as invalid, and a clock that runs behind rejects material other clients
  * just created. The offset is learned from the `x-pm-date` or `date` header
- * of every API response and applied by the OpenPGP proxy.
+ * of every API response and applied by the OpenPGP operations of this
+ * package and, through `@protontech/crypto`'s own clock, by every operation
+ * of the Proton crypto endpoint (its pmcrypto layer defaults `date` to that
+ * clock, including the signature-verification tolerance it adds). That clock
+ * is the newest server date observed, not an offset: it advances with each
+ * later response and ignores earlier dates.
  */
+
+import { updateServerTime as updateProtonCryptoServerTime } from '@protontech/crypto/serverTime';
 
 let serverTimeOffsetMs = 0;
 let synced = false;
@@ -21,6 +28,7 @@ export function updateServerTime(serverDate: Date): void {
   }
   serverTimeOffsetMs = timestamp - Date.now();
   synced = true;
+  updateProtonCryptoServerTime(serverDate);
 }
 
 /** Record the server clock from response headers (`x-pm-date` wins over `date`). */
@@ -40,10 +48,11 @@ export function isServerTimeSynced(): boolean {
   return synced;
 }
 
-/** Test helper: forget the learned offset. */
+/** Test helper: forget the learned offset; the crypto clock advances to the device time. */
 export function resetServerTime(): void {
   serverTimeOffsetMs = 0;
   synced = false;
+  updateProtonCryptoServerTime(new Date());
 }
 
 function getHeader(headers: Headers | Record<string, string> | undefined, name: string): string | null {

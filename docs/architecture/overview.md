@@ -16,7 +16,7 @@ proton-drive-cli
 
 The only account authentication path is Proton browser session-fork:
 
-1. `proton-drive login` starts `GET /auth/v4/sessions/forks`.
+1. `proton-drive-cli login` starts `GET /auth/v4/sessions/forks`.
 2. The user signs in on `account.proton.me`.
 3. The CLI polls the fork selector.
 4. The encrypted fork payload is decrypted locally.
@@ -51,10 +51,12 @@ The bridge writes a strict `{ ok, payload, error, code, details }` envelope.
 Requests are validated against `schemas/bridge/v1/request-field-rules.json`
 before credential lookup, network access, or local file operations.
 
-Supported commands: `auth-state`, `upload`, `download`, `list`, `exists`,
-`delete`, `refresh`, `init`, `batch-exists`, and `batch-delete`.
+Supported commands: `auth-state`, `init`, `upload`, `download`, `exists`,
+`batch-exists`, `delete`, `batch-delete`, and `list`. Each success payload is
+described by `schemas/bridge/v1/payloads/<command>.schema.json`; every error
+envelope carries `details.errorCode` from `schemas/bridge/v1/error-code-map.json`.
 
-Legacy login-shaped request fields are rejected.
+Account-login request fields are rejected.
 
 ## Non-Negotiables
 

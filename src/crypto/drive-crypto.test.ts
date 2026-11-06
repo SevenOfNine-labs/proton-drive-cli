@@ -1,9 +1,13 @@
 import { DriveCryptoService } from './drive-crypto';
+import { UserApiClient } from '../api/user';
+
+jest.mock('../api/user');
 
 describe('DriveCryptoService', () => {
   let svc: DriveCryptoService;
 
   beforeEach(() => {
+    jest.clearAllMocks();
     svc = new DriveCryptoService();
   });
 
@@ -15,9 +19,9 @@ describe('DriveCryptoService', () => {
     test('returns address with lowest Order value', () => {
       // Inject internal state to test ordering
       const internal = svc as any;
-      const fakeKey = {} as any;
-      internal.addressKeys.set('addr-2', [fakeKey]);
-      internal.addressKeys.set('addr-1', [fakeKey]);
+      const fakeEntry = { id: 'k', key: {} } as any;
+      internal.addressKeyEntries.set('addr-2', [fakeEntry]);
+      internal.addressKeyEntries.set('addr-1', [fakeEntry]);
       internal.addresses.set('addr-2', { ID: 'addr-2', Email: 'b@test.com', Order: 2, Keys: [] });
       internal.addresses.set('addr-1', { ID: 'addr-1', Email: 'a@test.com', Order: 1, Keys: [] });
       expect(svc.getPrimaryAddressId()).toBe('addr-1');
@@ -25,99 +29,36 @@ describe('DriveCryptoService', () => {
 
     test('ignores addresses without decrypted keys', () => {
       const internal = svc as any;
-      const fakeKey = {} as any;
+      const fakeEntry = { id: 'k', key: {} } as any;
       // addr-1 has Order 1 but no decrypted keys
       internal.addresses.set('addr-1', { ID: 'addr-1', Email: 'a@test.com', Order: 1, Keys: [] });
       // addr-2 has Order 2 and has decrypted keys
-      internal.addressKeys.set('addr-2', [fakeKey]);
+      internal.addressKeyEntries.set('addr-2', [fakeEntry]);
       internal.addresses.set('addr-2', { ID: 'addr-2', Email: 'b@test.com', Order: 2, Keys: [] });
       expect(svc.getPrimaryAddressId()).toBe('addr-2');
     });
   });
 
-  describe('getPrimaryAddressEmail', () => {
-    test('returns null when no address keys loaded', () => {
-      expect(svc.getPrimaryAddressEmail()).toBeNull();
-    });
-
-    test('returns email of address with lowest Order', () => {
-      const internal = svc as any;
-      const fakeKey = {} as any;
-      internal.addressKeys.set('addr-2', [fakeKey]);
-      internal.addressKeys.set('addr-1', [fakeKey]);
-      internal.addresses.set('addr-2', { ID: 'addr-2', Email: 'secondary@test.com', Order: 2, Keys: [] });
-      internal.addresses.set('addr-1', { ID: 'addr-1', Email: 'primary@test.com', Order: 1, Keys: [] });
-      expect(svc.getPrimaryAddressEmail()).toBe('primary@test.com');
+  describe('getAddressKeyEntries', () => {
+    test('returns an empty list for an unknown address', () => {
+      expect(svc.getAddressKeyEntries('unknown')).toEqual([]);
     });
   });
 
-  describe('getAddressEmail', () => {
-    test('returns null for unknown address ID', () => {
-      expect(svc.getAddressEmail('unknown-id')).toBeNull();
-    });
-  });
-
-  describe('getAllAddressVerificationKeys', () => {
-    test('returns empty map when no address keys loaded', () => {
-      const keys = svc.getAllAddressVerificationKeys();
-      expect(keys.size).toBe(0);
-    });
-
-    test('returns lowercase email to public key mapping', () => {
-      const internal = svc as any;
-      const fakeKey = { toPublic: () => ({ type: 'public' }) } as any;
-      internal.addressKeys.set('addr-1', [fakeKey]);
-      internal.addresses.set('addr-1', { ID: 'addr-1', Email: 'User@Proton.ME', Order: 1, Keys: [] });
-      const keys = svc.getAllAddressVerificationKeys();
-      expect(keys.size).toBe(1);
-      expect(keys.has('user@proton.me')).toBe(true);
-      expect(keys.get('user@proton.me')).toEqual({ type: 'public' });
-    });
-
-    test('returns keys for all addresses', () => {
-      const internal = svc as any;
-      const fakeKey1 = { toPublic: () => ({ id: 'pub1' }) } as any;
-      const fakeKey2 = { toPublic: () => ({ id: 'pub2' }) } as any;
-      internal.addressKeys.set('addr-1', [fakeKey1]);
-      internal.addressKeys.set('addr-2', [fakeKey2]);
-      internal.addresses.set('addr-1', { ID: 'addr-1', Email: 'a@proton.me', Order: 1, Keys: [] });
-      internal.addresses.set('addr-2', { ID: 'addr-2', Email: 'b@pm.me', Order: 2, Keys: [] });
-      const keys = svc.getAllAddressVerificationKeys();
-      expect(keys.size).toBe(2);
-      expect(keys.has('a@proton.me')).toBe(true);
-      expect(keys.has('b@pm.me')).toBe(true);
-    });
-  });
-
-  describe('getSigningKey', () => {
-    test('throws when no keys available', () => {
-      expect(() => svc.getSigningKey()).toThrow('No decrypted keys available');
-    });
-
-    test('throws for unknown address ID', () => {
-      expect(() => svc.getSigningKey('unknown')).toThrow(/No decrypted key found/);
-    });
-  });
-
-  describe('getUserPrivateKey', () => {
-    test('throws when no keys available', () => {
-      expect(() => svc.getUserPrivateKey()).toThrow('No decrypted keys available');
-    });
-  });
-
-  describe('clearCache', () => {
-    test('does not throw on empty cache', () => {
-      expect(() => svc.clearCache()).not.toThrow();
-    });
-
-    test('returns undefined (void)', () => {
-      expect(svc.clearCache()).toBeUndefined();
+  describe('getUserApi', () => {
+    test('exposes the client created with the configured app version', () => {
+      new DriveCryptoService('external-drive-test@1.2.3');
+      expect(UserApiClient).toHaveBeenLastCalledWith(undefined, 'external-drive-test@1.2.3');
+      expect(svc.getUserApi()).toBeInstanceOf(UserApiClient);
     });
   });
 
   describe('initialize', () => {
     test('throws when API calls fail (no real API)', async () => {
-      await expect(svc.initialize('password')).rejects.toThrow();
+      (UserApiClient as jest.Mock).mockImplementation(() => ({
+        getKeySalts: jest.fn().mockRejectedValue(new Error('No valid session')),
+      }));
+      await expect(new DriveCryptoService().initialize('password')).rejects.toThrow();
     });
   });
 });

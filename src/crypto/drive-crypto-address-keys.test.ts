@@ -7,7 +7,7 @@
  * signature verifies against the user keys, like Proton's official clients.
  */
 import { randomBytes } from 'crypto';
-import * as openpgp from '@protontech/openpgp';
+import * as openpgp from 'openpgp';
 import { DriveCryptoService } from './drive-crypto';
 import { UserApiClient } from '../api/user';
 import { logger } from '../utils/logger';
@@ -89,9 +89,11 @@ async function buildAddressKey(
 async function buildFixture(options: {
   signer?: TokenSigner;
   leadingRejectedKey?: boolean;
+  userKeyPassphrase?: string;
 } = {}): Promise<Fixture> {
-  const userArmored = await generateArmoredKey('user', USER_KEY_PASSWORD);
-  const userKey = await unlock(userArmored, USER_KEY_PASSWORD);
+  const userKeyPassphrase = options.userKeyPassphrase ?? USER_KEY_PASSWORD;
+  const userArmored = await generateArmoredKey('user', userKeyPassphrase);
+  const userKey = await unlock(userArmored, userKeyPassphrase);
 
   const keys: Address['Keys'] = [];
   if (options.leadingRejectedKey) {
@@ -129,6 +131,30 @@ function mockUserApi(fixture: Fixture): void {
   }));
 }
 
+describe('DriveCryptoService mailbox-password unlock', () => {
+  test('derives the key password from the key salt with @protontech/crypto when the raw password fails', async () => {
+    const { computeKeyPassword } = await import('@protontech/crypto/srp');
+    const mailboxPassword = 'correct horse battery staple';
+    const keySalt = 'AQEBAQEBAQEBAQEBAQEBAQ==';
+    const derived = await computeKeyPassword(mailboxPassword, keySalt);
+    const fixture = await buildFixture({ userKeyPassphrase: derived });
+    (UserApiClient as jest.Mock).mockImplementation(() => ({
+      getKeySalts: jest.fn().mockResolvedValue([{ ID: 'ukey-1', KeySalt: keySalt }]),
+      getUser: jest.fn().mockResolvedValue(fixture.user),
+      getAddresses: jest.fn().mockResolvedValue([fixture.address]),
+      saveCryptoCache: jest.fn().mockResolvedValue(undefined),
+    }));
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const svc = new DriveCryptoService();
+
+    await svc.initialize(mailboxPassword);
+
+    expect(svc.getAddressKeyEntries('addr-1').map((entry) => entry.id)).toEqual(['akey-1']);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('DriveCryptoService address-key token verification', () => {
   let warnSpy: jest.SpyInstance;
 
@@ -147,10 +173,10 @@ describe('DriveCryptoService address-key token verification', () => {
 
     await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
 
-    expect(svc.getAddressKeysMap().get('addr-1')).toHaveLength(1);
+    expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(1);
     expect(svc.getAddressKeyEntries('addr-1').map((entry) => entry.id)).toEqual(['akey-1']);
     expect(svc.getPrimaryAddressId()).toBe('addr-1');
-    expect(svc.getPrimaryAddressEmail()).toBe('user@example.test');
+    expect(svc.getAddressesMap().get('addr-1')?.Email).toBe('user@example.test');
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
@@ -172,7 +198,7 @@ describe('DriveCryptoService address-key token verification', () => {
 
     await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
 
-    expect(svc.getAddressKeysMap().size).toBe(0);
+    expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
     expect(svc.getPrimaryAddressId()).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to decrypt address key'),
@@ -185,7 +211,7 @@ describe('DriveCryptoService address-key token verification', () => {
 
     await svc.initializeWithUserKeyPassword(USER_KEY_PASSWORD);
 
-    expect(svc.getAddressKeysMap().size).toBe(0);
+    expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Address key token has no signature'),
     );

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/exists.schema.json",
+  "title": "proton-drive-cli bridge exists payload",
+  "description": "Success payload of `bridge exists`. The Go adapter parses this object strictly: no other field may appear.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["oid", "exists"],
+  "properties": {
+    "oid": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "exists": { "type": "boolean" }
+  }
+}

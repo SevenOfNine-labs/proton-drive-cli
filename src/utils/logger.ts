@@ -1,3 +1,11 @@
+/**
+ * CLI logger.
+ *
+ * All levels write to stderr: stdout is reserved for command results (the
+ * bridge's single JSON envelope, `--json` reports, file listings), so that
+ * diagnostics never corrupt machine-readable output.
+ */
+
 import chalk from 'chalk';
 
 export enum LogLevel {
@@ -19,33 +27,33 @@ class Logger {
     return this.level;
   }
 
-  debug(...args: any[]): void {
+  debug(...args: unknown[]): void {
     if (this.level <= LogLevel.DEBUG) {
-      console.log(chalk.dim('[DEBUG]'), ...args);
+      console.error(chalk.dim('[DEBUG]'), ...args);
     }
   }
 
-  info(...args: any[]): void {
+  info(...args: unknown[]): void {
     if (this.level <= LogLevel.INFO) {
-      console.log(chalk.blue('[INFO]'), ...args);
+      console.error(chalk.blue('[INFO]'), ...args);
     }
   }
 
-  warn(...args: any[]): void {
+  warn(...args: unknown[]): void {
     if (this.level <= LogLevel.WARN) {
       console.warn(chalk.yellow('[WARN]'), ...args);
     }
   }
 
-  error(...args: any[]): void {
+  error(...args: unknown[]): void {
     if (this.level <= LogLevel.ERROR) {
       console.error(chalk.red('[ERROR]'), ...args);
     }
   }
 
-  success(...args: any[]): void {
+  success(...args: unknown[]): void {
     if (this.level <= LogLevel.INFO) {
-      console.log(chalk.green('[SUCCESS]'), ...args);
+      console.error(chalk.green('[SUCCESS]'), ...args);
     }
   }
 }

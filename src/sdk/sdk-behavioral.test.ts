@@ -398,6 +398,9 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
   let privateKey: any;
   let publicKey: any;
 
+  const publicKeyOf = async (key: any) =>
+    proxy.importPublicKey({ binaryKey: await proxy.exportPublicKey({ key, format: 'binary' }) });
+
   beforeAll(async () => {
     proxy = new ProtonOpenPGPCryptoProxy();
     privateKey = await proxy.generateKey({
@@ -405,13 +408,14 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
       type: 'ecc',
       curve: 'ed25519Legacy',
     });
-    publicKey = privateKey.toPublic();
+    publicKey = await publicKeyOf(privateKey);
   });
 
-  test('generateKey returns a key with armor()', async () => {
+  test('generateKey returns a private key reference', async () => {
     expect(privateKey).toBeDefined();
-    expect(typeof privateKey.armor).toBe('function');
-    const armored = privateKey.armor();
+    expect(privateKey.isPrivate()).toBe(true);
+    expect(typeof privateKey.getFingerprint()).toBe('string');
+    const armored = await proxy.exportPrivateKey({ privateKey, passphrase: null });
     expect(armored).toContain('-----BEGIN PGP PRIVATE KEY BLOCK-----');
   });
 
@@ -421,7 +425,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
 
     const imported = await proxy.importPrivateKey({ armoredKey: armored, passphrase: null });
     expect(imported).toBeDefined();
-    expect(typeof imported.armor).toBe('function');
+    expect(imported.getFingerprint()).toBe(privateKey.getFingerprint());
   });
 
   test('exportPrivateKey → importPrivateKey roundtrip (with passphrase)', async () => {
@@ -449,7 +453,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
   test('encryptSessionKey → decryptSessionKey roundtrip', async () => {
     const sk = await proxy.generateSessionKey({ recipientKeys: [publicKey] });
     const encrypted = await proxy.encryptSessionKey({
-      data: sk.data,
+      ...sk,
       format: 'binary',
       encryptionKeys: [publicKey],
     });
@@ -503,7 +507,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
       type: 'ecc',
       curve: 'ed25519Legacy',
     });
-    const otherSK = await proxy.generateSessionKey({ recipientKeys: [otherKey.toPublic()] });
+    const otherSK = await proxy.generateSessionKey({ recipientKeys: [await publicKeyOf(otherKey)] });
 
     await expect(
       proxy.decryptMessage({
@@ -552,7 +556,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
     const verified = await proxy.verifyMessage({
       binaryData: data,
       binarySignature: sig,
-      verificationKeys: [otherKey.toPublic()],
+      verificationKeys: [await publicKeyOf(otherKey)],
     });
     expect(verified.verificationStatus).toBe(2); // SIGNED_AND_INVALID
     expect(verified.errors).toBeDefined();
@@ -583,9 +587,12 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
 // ---------------------------------------------------------------------------
 describe('OpenPGPCryptoWithCryptoProxy wrapping behavior', () => {
   let crypto: any;
+  let proxy: ProtonOpenPGPCryptoProxy;
+  const publicKeyOf = async (key: any) =>
+    proxy.importPublicKey({ binaryKey: await proxy.exportPublicKey({ key, format: 'binary' }) });
 
   beforeAll(() => {
-    const proxy = new ProtonOpenPGPCryptoProxy();
+    proxy = new ProtonOpenPGPCryptoProxy();
     crypto = new OpenPGPCryptoWithCryptoProxy(proxy);
   });
 
@@ -628,7 +635,7 @@ describe('OpenPGPCryptoWithCryptoProxy wrapping behavior', () => {
     const passphrase = await crypto.generatePassphrase();
     const { armoredKey } = await crypto.generateKey(passphrase, { enableAead: false });
     const decryptedKey = await crypto.decryptKey(armoredKey, passphrase);
-    const publicKey = decryptedKey.toPublic();
+    const publicKey = await publicKeyOf(decryptedKey);
 
     const sk = await crypto.generateSessionKey([publicKey], {
       enableAeadWithEncryptionKeys: false,
@@ -641,7 +648,7 @@ describe('OpenPGPCryptoWithCryptoProxy wrapping behavior', () => {
     const passphrase = await crypto.generatePassphrase();
     const { armoredKey } = await crypto.generateKey(passphrase, { enableAead: false });
     const decryptedKey = await crypto.decryptKey(armoredKey, passphrase);
-    const publicKey = decryptedKey.toPublic();
+    const publicKey = await publicKeyOf(decryptedKey);
 
     const plaintext = new TextEncoder().encode('roundtrip test');
     const sk = await crypto.generateSessionKey([publicKey], {
@@ -833,8 +840,12 @@ describe('SRPModuleAdapter behavior', () => {
     expect(srp.getSrp.length).toBe(5); // (version, modulus, serverEphemeral, salt, password)
   });
 
-  test('getSrpVerifier throws (not implemented)', async () => {
-    await expect(srp.getSrpVerifier('test')).rejects.toThrow('not implemented');
+  test('getSrpVerifier fetches the signed modulus through the user API', async () => {
+    const getAuthModulus = jest.fn().mockRejectedValue(new Error('No valid session. Please login first.'));
+    const adapter = new SRPModuleAdapter({ getAuthModulus } as any);
+
+    await expect(adapter.getSrpVerifier('test')).rejects.toThrow('No valid session');
+    expect(getAuthModulus).toHaveBeenCalledTimes(1);
   });
 });
 

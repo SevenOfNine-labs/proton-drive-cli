@@ -76,7 +76,7 @@ export class AppError extends Error {
         return 'Authentication failed. Please check your credentials and try again.';
 
       case ErrorCode.SESSION_EXPIRED:
-        return 'Your session has expired. Please login again with: proton-drive login';
+        return 'Your session has expired. Please login again with: proton-drive-cli login';
 
       case ErrorCode.INVALID_CREDENTIALS:
         return 'Invalid email or password. Please check your credentials.';
@@ -168,10 +168,10 @@ export class AppError extends Error {
     switch (this.code) {
       case ErrorCode.AUTH_FAILED:
       case ErrorCode.SESSION_EXPIRED:
-        return 'Run: proton-drive login';
+        return 'Run: proton-drive-cli login';
 
       case ErrorCode.TWO_FACTOR_REQUIRED:
-        return 'Run: proton-drive login interactively, or provide a TOTP code through the bridge request';
+        return 'Run: proton-drive-cli login interactively, or provide a TOTP code through the bridge request';
 
       case ErrorCode.DATA_PASSWORD_REQUIRED:
         return 'Provide the mailbox/data password for key decryption';
@@ -206,7 +206,7 @@ export class AppError extends Error {
         return 'Free up disk space on your local machine';
 
       case ErrorCode.CAPTCHA_REQUIRED:
-        return 'Run: proton-drive login (interactive CAPTCHA flow will guide you)';
+        return 'Run: proton-drive-cli login (interactive CAPTCHA flow will guide you)';
 
       default:
         return null;
@@ -263,12 +263,31 @@ export class RateLimitError extends AppError {
 }
 
 /**
+ * A Drive path component does not exist.
+ *
+ * Thrown by the SDK path resolver so callers can distinguish "not there"
+ * from transport or permission failures without matching on messages.
+ */
+export class PathNotFoundError extends AppError {
+  public readonly path: string;
+  public readonly missingSegment: string;
+
+  constructor(path: string, missingSegment: string) {
+    super(`Not found: "${missingSegment}" in path "${path}"`, ErrorCode.PATH_NOT_FOUND, { path, missingSegment }, false);
+    this.name = 'PathNotFoundError';
+    this.path = path;
+    this.missingSegment = missingSegment;
+  }
+}
+
+/**
  * Detect if an error is a rate-limit error from Proton API
  * @param error - Error object to check
  * @returns True if rate-limit error (code 2028, 85131, or HTTP 429)
  */
 export function isRateLimitError(error: any): error is RateLimitError {
   if (error instanceof RateLimitError) return true;
+  if (error instanceof AppError && error.code === ErrorCode.RATE_LIMITED) return true;
 
   // Check Proton-specific error codes
   const protonCode = error?.response?.data?.Code;
@@ -287,6 +306,7 @@ export function isRateLimitError(error: any): error is RateLimitError {
  */
 export function isCaptchaError(error: any): error is CaptchaError {
   if (error instanceof CaptchaError) return true;
+  if (error instanceof AppError && error.code === ErrorCode.CAPTCHA_REQUIRED) return true;
 
   // Check Proton CAPTCHA codes
   const protonCode = error?.response?.data?.Code;
@@ -356,10 +376,10 @@ export function categorizeError(error: any): CategorizedError {
       category: ErrorCategory.CAPTCHA,
       message: error.message || 'CAPTCHA verification required',
       retryable: false,
-      userMessage: 'CAPTCHA verification required. Run: proton-drive login',
+      userMessage: 'CAPTCHA verification required. Run: proton-drive-cli login',
       protonCode,
       httpStatus: status,
-      recoverySuggestion: 'Run: proton-drive login (interactive CAPTCHA flow will guide you)',
+      recoverySuggestion: 'Run: proton-drive-cli login (interactive CAPTCHA flow will guide you)',
     };
   }
 
@@ -385,7 +405,7 @@ export function categorizeError(error: any): CategorizedError {
       userMessage: 'Authentication failed. Please login again.',
       httpStatus: status,
       protonCode,
-      recoverySuggestion: 'Run: proton-drive login',
+      recoverySuggestion: 'Run: proton-drive-cli login',
     };
   }
 

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/error-code-map.schema.json",
+  "title": "proton-drive-cli bridge error-code map (schema for error-code-map.json)",
+  "description": "Shape of the data file error-code-map.json: every ErrorCode with the HTTP-like status the bridge emits and the root (Go adapter) error code it maps to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$id", "title", "contractVersion", "errorCodes"],
+  "properties": {
+    "$id": { "type": "string", "format": "uri" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "contractVersion": { "type": "integer", "const": 1 },
+    "errorCodes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["httpStatus", "rootCode"],
+        "properties": {
+          "httpStatus": { "type": "integer", "minimum": 100, "maximum": 599 },
+          "rootCode": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        }
+      }
+    }
+  }
+}

@@ -64,11 +64,13 @@ describe('resolveBrowserForkKeyPasswordOptions', () => {
     });
   });
 
-  it('keeps legacy PROTON_CREDENTIAL_PROVIDER only as key-password fallback', () => {
+  it('defaults to pass-cli and ignores PROTON_CREDENTIAL_PROVIDER', () => {
+    delete process.env.PROTON_KEY_PASSWORD_PROVIDER;
+    delete process.env.PROTON_KEY_PASSWORD_HOST;
     process.env.PROTON_CREDENTIAL_PROVIDER = 'git-credential';
 
     expect(resolveBrowserForkKeyPasswordOptions()).toEqual({
-      keyPasswordProvider: 'git-credential',
+      keyPasswordProvider: 'pass-cli',
     });
   });
 });
@@ -138,6 +140,11 @@ describe('createSessionRefreshCommand', () => {
   afterEach(() => {
     process.exit = originalExit;
     console.log = originalLog;
+    process.exitCode = undefined;
+  });
+
+  afterAll(() => {
+    process.exitCode = undefined;
   });
 
   it('emits JSON success without token values', async () => {
@@ -167,6 +174,21 @@ describe('createSessionRefreshCommand', () => {
     for (const secret of ['old-access-token', 'old-refresh-token', 'new-access-token', 'new-refresh-token', 'uid-123']) {
       expect(output).not.toContain(secret);
     }
+    const parsed = JSON.parse(output);
+    expect(parsed.uidFingerprint).toMatch(/^[0-9a-f]{8}$/);
+    // first 8 hex chars of sha256("uid-123")
+    expect(parsed.uidFingerprint).toBe('23481502');
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it('exits 0 without output when there is no session', async () => {
+    mockSessionManager.loadSession.mockResolvedValue(null);
+
+    await createSessionRefreshCommand().parseAsync(['refresh'], { from: 'user' });
+
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+    expect(console.log).not.toHaveBeenCalled();
   });
 
   it('emits JSON terminal failure with redacted API details', async () => {
@@ -194,9 +216,12 @@ describe('createSessionRefreshCommand', () => {
       },
     ));
 
-    await expect(createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' }))
-      .rejects.toThrow('process.exit:1');
+    await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
 
+    // The JSON line is written before the exit status is set; process.exit is
+    // never called so a pending stdout write cannot be lost.
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
     const output = (console.log as jest.Mock).mock.calls.flat().join('\n');
     const parsed = JSON.parse(output);
     expect(parsed).toMatchObject({

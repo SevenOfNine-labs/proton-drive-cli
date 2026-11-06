@@ -2,8 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/error-details.schema.json",
   "title": "proton-drive-cli bridge error details",
+  "description": "Object JSON-encoded into the `details` string of a failure envelope. errorCode is always present and is a key of error-code-map.json; the remaining properties are present when the failure carries them. Further AppError details (statusCode, apiError, sdkError, ...) may appear.",
   "type": "object",
   "additionalProperties": true,
+  "required": [
+    "errorCode"
+  ],
   "properties": {
     "errorCode": {
       "type": "string",
@@ -40,14 +44,39 @@
         "OPERATION_CANCELLED"
       ]
     },
-    "twoFactorType": { "type": "string", "enum": ["totp", "fido2"] },
-    "totpAllowed": { "type": "boolean" },
-    "fido2Available": { "type": "boolean" },
-    "captchaUrl": { "type": "string" },
-    "captchaToken": { "type": "string" },
-    "verificationMethods": { "type": "array", "items": { "type": "string" } },
-    "action": { "type": "string" },
-    "retryAfter": { "type": "number" },
-    "protonCode": { "type": "number" }
+    "twoFactorType": {
+      "type": "string",
+      "enum": [
+        "totp",
+        "fido2"
+      ]
+    },
+    "totpAllowed": {
+      "type": "boolean"
+    },
+    "fido2Available": {
+      "type": "boolean"
+    },
+    "captchaUrl": {
+      "type": "string"
+    },
+    "captchaToken": {
+      "type": "string"
+    },
+    "verificationMethods": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "action": {
+      "type": "string"
+    },
+    "retryAfter": {
+      "type": "number"
+    },
+    "protonCode": {
+      "type": "number"
+    }
   }
 }

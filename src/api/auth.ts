@@ -92,11 +92,17 @@ export class AuthApiClient {
   }
 
   /**
-   * Logout and revoke current session.
+   * Revoke the session on the server (DELETE /auth/v4).
+   *
+   * Authenticated Proton calls identify the session with both headers
+   * (official account module, apiClient.ts: `x-pm-uid` and
+   * `Authorization: Bearer`); without the UID the API cannot match the token
+   * to a session.
    */
-  async logout(accessToken: string): Promise<void> {
+  async logout(uid: string, accessToken: string): Promise<void> {
     await this.client.delete('/auth/v4', {
       headers: {
+        'x-pm-uid': uid,
         'Authorization': `Bearer ${accessToken}`,
       },
     });

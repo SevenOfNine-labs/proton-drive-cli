@@ -1,12 +1,11 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request-field-rules.json",
   "title": "proton-drive-cli bridge request field rules",
+  "description": "Data file (validated against request-field-rules.schema.json), not a JSON Schema: required and allowed request fields per bridge command. Mirrors BRIDGE_COMMAND_REQUEST_FIELDS in src/bridge/protocol.ts.",
   "commands": {
     "auth-state": {
       "required": [],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -14,9 +13,11 @@
       ]
     },
     "upload": {
-      "required": ["oid", "path"],
+      "required": [
+        "oid",
+        "path"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -26,9 +27,11 @@
       ]
     },
     "download": {
-      "required": ["oid", "outputPath"],
+      "required": [
+        "oid",
+        "outputPath"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -40,7 +43,6 @@
     "list": {
       "required": [],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -49,9 +51,10 @@
       ]
     },
     "exists": {
-      "required": ["oid"],
+      "required": [
+        "oid"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -60,9 +63,10 @@
       ]
     },
     "delete": {
-      "required": ["oid"],
+      "required": [
+        "oid"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -70,14 +74,9 @@
         "oid"
       ]
     },
-    "refresh": {
-      "required": [],
-      "allowed": ["appVersion"]
-    },
     "init": {
       "required": [],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -85,9 +84,10 @@
       ]
     },
     "batch-exists": {
-      "required": ["oids"],
+      "required": [
+        "oids"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",
@@ -96,9 +96,10 @@
       ]
     },
     "batch-delete": {
-      "required": ["oids"],
+      "required": [
+        "oids"
+      ],
       "allowed": [
-        "dataPassword",
         "dataCredentialProvider",
         "dataCredentialHost",
         "appVersion",

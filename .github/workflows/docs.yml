@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   docs-quality:
@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Markdown lint
-        uses: DavidAnson/markdownlint-cli2-action@v22
+        uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
         with:
           config: .markdownlint.json
           globs: |
@@ -52,16 +52,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout SDK submodule (non-recursive)
         run: |
           git submodule update --init --depth 1 submodules/sdk
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "25"
+          node-version-file: .node-version
 
       - name: Enable Corepack
         run: corepack enable
@@ -79,139 +79,30 @@ jobs:
         run: yarn docs
 
       - name: Install honkit
-        run: npm install -g honkit@6
+        run: npm install -g honkit@6.2.5
 
       - name: Build markdown docs with honkit
         run: honkit build
 
+      # Landing page is tracked at docs/site/index.html. The JSON schemas are
+      # published too: every schema $id is under
+      # https://sevenofnine-labs.github.io/proton-drive-cli/schemas/.
       - name: Create unified documentation structure
         run: |
           mkdir -p docs-build/unified
-
-          # Copy honkit markdown docs to guides/
           cp -r _book docs-build/unified/guides
-
-          # Copy TypeDoc API docs to typescript/
           cp -r docs/api docs-build/unified/typescript
-
-          # Create landing page
-          cat > docs-build/unified/index.html << 'EOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Proton Drive CLI Documentation</title>
-            <style>
-              body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                max-width: 800px;
-                margin: 50px auto;
-                padding: 20px;
-                line-height: 1.6;
-                color: #333;
-              }
-              h1 {
-                border-bottom: 3px solid #6d4aff;
-                padding-bottom: 10px;
-                color: #1a1a1a;
-              }
-              .section {
-                margin: 30px 0;
-                padding: 25px;
-                background: #f8f9fa;
-                border-radius: 8px;
-                border-left: 4px solid #6d4aff;
-              }
-              .section h2 {
-                margin-top: 0;
-                color: #6d4aff;
-              }
-              a {
-                color: #6d4aff;
-                text-decoration: none;
-                font-weight: 500;
-              }
-              a:hover {
-                text-decoration: underline;
-              }
-              .badge {
-                display: inline-block;
-                padding: 4px 10px;
-                background: #6d4aff;
-                color: white;
-                border-radius: 4px;
-                font-size: 0.85em;
-                margin-left: 10px;
-                font-weight: 600;
-              }
-              ul {
-                margin: 15px 0;
-                padding-left: 20px;
-              }
-              li {
-                margin: 8px 0;
-              }
-              footer {
-                margin-top: 60px;
-                padding-top: 20px;
-                border-top: 1px solid #ddd;
-                text-align: center;
-                color: #666;
-                font-size: 0.9em;
-              }
-            </style>
-          </head>
-          <body>
-            <h1>📚 Proton Drive CLI Documentation</h1>
-            <p>Comprehensive documentation for the Proton Drive CLI and TypeScript bridge.</p>
-
-            <div class="section">
-              <h2>📘 API Reference <span class="badge">TypeScript</span></h2>
-              <p>Complete TypeScript API documentation generated from TSDoc comments.</p>
-              <ul>
-                <li><a href="typescript/index.html">API Documentation Home</a></li>
-                <li><a href="typescript/modules.html">All Modules</a></li>
-                <li>Coverage: CLI Commands, Authentication, Drive Operations, Bridge Protocol, Utilities</li>
-              </ul>
-            </div>
-
-            <div class="section">
-              <h2>📗 Architecture & Guides <span class="badge">Markdown</span></h2>
-              <p>High-level architecture, setup guides, and operational documentation.</p>
-              <ul>
-                <li><a href="guides/index.html">Documentation Home</a></li>
-                <li><a href="guides/docs/architecture/overview.html">Architecture Overview</a></li>
-                <li><a href="guides/docs/security/credentials.html">Credential Security</a></li>
-                <li><a href="guides/docs/operations/configuration.html">Configuration Guide</a></li>
-              </ul>
-            </div>
-
-            <div class="section">
-              <h2>🔗 Quick Links</h2>
-              <ul>
-                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli">GitHub Repository</a></li>
-                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli/blob/main/README.md">README</a></li>
-                <li><a href="https://github.com/SevenOfNine-ai/proton-drive-cli/blob/main/docs/DOCUMENTATION_GUIDE.md">Documentation Guide</a></li>
-                <li><a href="https://github.com/SevenOfNine-ai/proton-git-lfs">Main Project: proton-git-lfs</a></li>
-              </ul>
-            </div>
-
-            <footer>
-              <p>Generated with TypeDoc and Honkit | <a href="https://github.com/SevenOfNine-ai/proton-drive-cli">proton-drive-cli on GitHub</a></p>
-            </footer>
-          </body>
-          </html>
-          EOF
+          cp -r schemas docs-build/unified/schemas
+          cp docs/site/index.html docs-build/unified/index.html
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs-build/unified
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

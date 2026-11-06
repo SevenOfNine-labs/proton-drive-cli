@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/list.schema.json",
+  "title": "proton-drive-cli bridge list payload",
+  "description": "Success payload of `bridge list`: the direct children of the requested folder. `modifiedTime` is Unix seconds (0 when unknown).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["files"],
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "size", "modifiedTime"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["file", "folder"] },
+          "size": { "type": "integer", "minimum": 0 },
+          "modifiedTime": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

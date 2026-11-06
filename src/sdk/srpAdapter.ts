@@ -1,17 +1,27 @@
 /**
  * SRP module adapter for the Proton Drive SDK.
  *
- * Wraps the existing SRPClient.computeHandshake() and deriveKeyPassphrase()
- * to implement the SDK's 3-method SRPModule interface.
+ * Implements the SDK's SRPModule shape (src/crypto/interface.ts upstream, not
+ * re-exported from the package root) with the SRP primitives of
+ * `@protontech/crypto/srp`, as the official account module does (srp.ts).
+ * The SDK needs it for password-derived keys; account login itself is
+ * browser-fork only and never passes through here.
  */
 
-import { SRPClient } from '../auth/srp';
-import { deriveKeyPassphrase } from '../crypto/key-password';
-import { randomBytes } from 'crypto';
+import '../crypto/polyfill';
+import { CryptoProxy } from '@protontech/crypto';
+import { computeKeyPassword, generateKeySalt, getRandomSrpVerifier, getSrp } from '@protontech/crypto/srp';
+import { UserApiClient } from '../api/user';
+import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
 
-// SRPModule interface is defined in the SDK's crypto internals but not
-// re-exported from the top-level package. We implement the shape directly.
+// The SRP helpers verify Proton's signed modulus through the package's
+// CryptoProxy singleton (srp/utils/modulus.ts), which the application points
+// at its endpoint once per process.
+CryptoProxy.setEndpoint(new ProtonOpenPGPCryptoProxy());
+
 export class SRPModuleAdapter {
+  constructor(private readonly userApi: UserApiClient = new UserApiClient()) {}
+
   async getSrp(
     version: number,
     modulus: string,
@@ -23,41 +33,34 @@ export class SRPModuleAdapter {
     clientProof: string;
     clientEphemeral: string;
   }> {
-    // SRPClient.computeHandshake has different param ordering (username first)
-    // but the SDK's SRPModule doesn't pass username — use empty string
-    const result = await SRPClient.computeHandshake(
-      '', // username (not used in SRP v4 computation itself)
-      password,
-      salt,
-      modulus,
-      serverEphemeral,
-      version,
+    const { expectedServerProof, clientProof, clientEphemeral } = await getSrp(
+      {
+        Version: version,
+        Modulus: modulus,
+        ServerEphemeral: serverEphemeral,
+        Salt: salt,
+      },
+      { password },
     );
-    return {
-      expectedServerProof: result.expectedServerProof,
-      clientProof: result.clientProof,
-      clientEphemeral: result.clientEphemeral,
-    };
+    return { expectedServerProof, clientProof, clientEphemeral };
   }
 
-  async getSrpVerifier(
-    _password: string,
-  ): Promise<{
+  async getSrpVerifier(password: string): Promise<{
     modulusId: string;
     version: number;
     salt: string;
     verifier: string;
   }> {
-    // SRP verifier generation is used for password changes, not currently needed
-    // for the Git LFS bridge. Throw a clear error if the SDK ever calls this.
-    throw new Error('getSrpVerifier is not implemented — password change is not supported in this bridge');
+    const { Modulus, ModulusID } = await this.userApi.getAuthModulus();
+    const { version, salt, verifier } = await getRandomSrpVerifier({ Modulus }, { password });
+    return { modulusId: ModulusID, version, salt, verifier };
   }
 
   async computeKeyPassword(password: string, salt: string): Promise<string> {
-    return deriveKeyPassphrase(password, salt);
+    return computeKeyPassword(password, salt);
   }
 
   generateKeySalt(): string {
-    return randomBytes(16).toString('base64');
+    return generateKeySalt();
   }
 }

@@ -234,7 +234,7 @@ describe('BrowserForkAuthService', () => {
     expect(mockSaveSession).not.toHaveBeenCalled();
   });
 
-  it('backs off polling after the fast browser-fork window', async () => {
+  it('polls the session fork at a fixed interval until the time budget ends', async () => {
     const encryptionKey = Buffer.alloc(32, 12);
     let now = 0;
     const sleepMs = jest.fn(async (ms: number) => {
@@ -258,15 +258,13 @@ describe('BrowserForkAuthService', () => {
 
     await expect(service.login({
       initialDelayMs: 0,
-      pollIntervalMs: 100,
-      fastPollTimeMs: 150,
-      backoffPollIntervalMs: 500,
+      pollIntervalMs: 250,
       maxPollTimeMs: 700,
     })).rejects.toMatchObject({
       code: ErrorCode.TIMEOUT,
     });
 
-    expect(sleepMs.mock.calls.map(([ms]) => ms)).toEqual([0, 100, 100, 500, 500]);
+    expect(sleepMs.mock.calls.map(([ms]) => ms)).toEqual([0, 250, 250, 250]);
   });
 
   it('refuses to persist a fork session without a refresh token', async () => {

@@ -4,8 +4,8 @@ Document the browser-fork/session-only contract.
 
 Do:
 
-- Show `proton-drive login` as browser sign-in.
-- Show `proton-drive doctor` and `proton-drive bridge auth-state` as offline
+- Show `proton-drive-cli login` as browser sign-in.
+- Show `proton-drive-cli doctor` and `proton-drive-cli bridge auth-state` as offline
   readiness checks.
 - Describe key-password and data-password providers as storage/unlock plumbing.
 - Keep bridge examples free of account-login fields.

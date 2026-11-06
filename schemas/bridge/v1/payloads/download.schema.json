@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/payloads/download.schema.json",
+  "title": "proton-drive-cli bridge download payload",
+  "description": "Success payload of `bridge download`. `size` is the flushed size in bytes of the file written to `outputPath`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["oid", "outputPath", "size", "downloaded"],
+  "properties": {
+    "oid": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "outputPath": { "type": "string", "minLength": 1 },
+    "size": { "type": "integer", "minimum": 0 },
+    "downloaded": { "const": true }
+  }
+}

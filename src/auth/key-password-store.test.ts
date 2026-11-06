@@ -14,6 +14,7 @@ const mockProvider = {
 };
 
 jest.mock('../credentials', () => ({
+  DEFAULT_KEY_PASSWORD_PROVIDER: 'pass-cli',
   createProvider: jest.fn(() => mockProvider),
   normalizeProviderName: jest.fn((provider?: string) => provider || 'git-credential'),
 }));
@@ -28,14 +29,14 @@ describe('key-password-store', () => {
     mockProvider.remove.mockResolvedValue(undefined);
   });
 
-  it('defaults to git-credential and the browser-fork key-password host', async () => {
+  it('defaults to the project default provider (pass-cli) and the browser-fork key-password host', async () => {
     const store = createKeyPasswordStore();
 
     await store.store('uid-123', 'key-password');
 
-    expect(store.provider).toBe('git-credential');
+    expect(store.provider).toBe('pass-cli');
     expect(store.host).toBe(PROTON_KEY_PASSWORD_CREDENTIAL_HOST);
-    expect(mockCreateProvider).toHaveBeenCalledWith('git-credential', {
+    expect(mockCreateProvider).toHaveBeenCalledWith('pass-cli', {
       host: PROTON_KEY_PASSWORD_CREDENTIAL_HOST,
     });
     expect(mockProvider.store).toHaveBeenCalledWith('uid-123', 'key-password', {
@@ -54,7 +55,7 @@ describe('key-password-store', () => {
     expect(mockCreateProvider).toHaveBeenCalledWith('pass-cli', {
       host: 'custom-key-host.local',
     });
-    expect(mockProvider.resolve).toHaveBeenCalledWith({ username: 'uid-123' });
+    expect(mockProvider.resolve).toHaveBeenCalledWith({ username: 'uid-123', exhaustiveLookup: false });
   });
 
   it('returns undefined when loading fails', async () => {
@@ -79,7 +80,7 @@ describe('key-password-store', () => {
 
     await store.remove('uid-123');
 
-    expect(mockProvider.remove).toHaveBeenCalledWith('uid-123');
+    expect(mockProvider.remove).toHaveBeenCalledWith('uid-123', { exhaustiveLookup: false });
   });
 
   it('rejects unsupported providers', () => {

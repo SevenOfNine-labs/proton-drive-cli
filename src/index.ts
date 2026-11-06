@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import './auth/srp/uint8array-extensions';
+import './crypto/polyfill';
 import { program } from 'commander';
 import chalk from 'chalk';
 import { version as pkgVersion } from '../package.json';
@@ -47,7 +47,7 @@ process.on('uncaughtException', (error: unknown) => {
 });
 
 program
-  .name('proton-drive')
+  .name('proton-drive-cli')
   .description(
     chalk.blue.bold('Proton Drive CLI') +
     '\n\nUpload and manage files in Proton Drive from the command line.'
@@ -111,18 +111,23 @@ program.on('--help', () => {
   console.log(`  ${chalk.cyan('Git LFS')}        bridge`);
   console.log('');
   console.log(chalk.bold('Key Password Providers:'));
+  console.log(`  ${chalk.dim('--key-password-provider pass-cli')}        Proton Pass CLI (default)`);
   console.log(`  ${chalk.dim('--key-password-provider git-credential')}  macOS Keychain / Windows Credential Manager`);
-  console.log(`  ${chalk.dim('--key-password-provider pass-cli')}        Proton Pass CLI`);
   console.log('');
   console.log(chalk.bold('Examples:'));
-  console.log('  $ proton-drive login');
-  console.log('  $ proton-drive login --key-password-provider pass-cli');
-  console.log('  $ proton-drive doctor');
-  console.log('  $ proton-drive upload ./file.pdf /Documents');
-  console.log('  $ proton-drive ls /Documents');
+  console.log('  $ proton-drive-cli login');
+  console.log('  $ proton-drive-cli login --key-password-provider git-credential');
+  console.log('  $ proton-drive-cli doctor');
+  console.log('  $ proton-drive-cli upload ./file.pdf /Documents');
+  console.log('  $ proton-drive-cli ls /Documents');
   console.log('');
   console.log(chalk.dim('For more information on a specific command:'));
-  console.log('  $ proton-drive <command> --help');
+  console.log('  $ proton-drive-cli <command> --help');
 });
 
-program.parse();
+// Action handlers are async: parseAsync awaits them so their rejections reach
+// the handlers above instead of being dropped by a synchronous parse().
+program.parseAsync().catch((error: unknown) => {
+  handleError(error, process.env.DEBUG === 'true');
+  process.exitCode = 1;
+});

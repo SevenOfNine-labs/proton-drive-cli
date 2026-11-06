@@ -1,5 +1,5 @@
 import { PROTON_KEY_PASSWORD_CREDENTIAL_HOST } from '../constants';
-import { createProvider, normalizeProviderName } from '../credentials';
+import { createProvider, DEFAULT_KEY_PASSWORD_PROVIDER, normalizeProviderName } from '../credentials';
 import type { ProviderName } from '../credentials';
 
 export type KeyPasswordProviderName = Extract<ProviderName, 'git-credential' | 'pass-cli'>;
@@ -19,7 +19,7 @@ export interface KeyPasswordStore {
 }
 
 export function normalizeKeyPasswordProvider(provider?: string): KeyPasswordProviderName {
-  const normalized = normalizeProviderName(provider || 'git-credential');
+  const normalized = normalizeProviderName(provider || DEFAULT_KEY_PASSWORD_PROVIDER);
   if (normalized !== 'git-credential' && normalized !== 'pass-cli') {
     throw new Error(`Unsupported key password provider: ${provider}`);
   }
@@ -55,7 +55,9 @@ class ProviderBackedKeyPasswordStore implements KeyPasswordStore {
     this.assertUid(uid);
     try {
       const provider = createProvider(this.provider, { host: this.host });
-      const credentials = await provider.resolve({ username: uid });
+      // Entries are created by this CLI with a deterministic title, so the
+      // title-based lookup finds them; the exhaustive scan cannot add hits.
+      const credentials = await provider.resolve({ username: uid, exhaustiveLookup: false });
       return credentials.password || undefined;
     } catch {
       return undefined;
@@ -68,7 +70,7 @@ class ProviderBackedKeyPasswordStore implements KeyPasswordStore {
     if (!provider.remove) {
       throw new Error(`Provider ${this.provider} cannot remove key passwords`);
     }
-    await provider.remove(uid);
+    await provider.remove(uid, { exhaustiveLookup: false });
   }
 
   async verify(uid: string): Promise<boolean> {

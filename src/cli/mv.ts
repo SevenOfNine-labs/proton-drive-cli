@@ -17,13 +17,13 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  *
  * **Rename** (same parent): Changes only the node name
  * ```bash
- * proton-drive mv /Documents/old.pdf /Documents/new.pdf
+ * proton-drive-cli mv /Documents/old.pdf /Documents/new.pdf
  * ```
  *
  * **Move** (different parent): Changes parent folder, optionally rename
  * ```bash
- * proton-drive mv /Documents/file.pdf /Archive/file.pdf
- * proton-drive mv /Documents/file.pdf /Archive/renamed.pdf
+ * proton-drive-cli mv /Documents/file.pdf /Archive/file.pdf
+ * proton-drive-cli mv /Documents/file.pdf /Archive/renamed.pdf
  * ```
  *
  * # Move Process
@@ -57,20 +57,20 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * @example
  * ```bash
  * # Rename file in same folder
- * proton-drive mv /Documents/report.pdf /Documents/final-report.pdf
+ * proton-drive-cli mv /Documents/report.pdf /Documents/final-report.pdf
  *
  * # Move file to different folder (keep name)
- * proton-drive mv /Documents/photo.jpg /Photos/photo.jpg
+ * proton-drive-cli mv /Documents/photo.jpg /Photos/photo.jpg
  *
  * # Move and rename simultaneously
- * proton-drive mv /Downloads/file.bin /Archive/backup.bin
+ * proton-drive-cli mv /Downloads/file.bin /Archive/backup.bin
  *
  * # Rename folder
- * proton-drive mv /Old-Folder /New-Folder
+ * proton-drive-cli mv /Old-Folder /New-Folder
  *
  * # Requires prior browser sign-in
- * proton-drive login
- * proton-drive mv /Documents/file.pdf /Archive/file.pdf
+ * proton-drive-cli login
+ * proton-drive-cli mv /Documents/file.pdf /Archive/file.pdf
  * ```
  *
  * @example

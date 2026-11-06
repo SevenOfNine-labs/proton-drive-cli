@@ -7,8 +7,9 @@
 
 import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { NodeType } from '@protontech/drive-sdk';
+import { PathNotFoundError } from '../errors/types';
 import { logger } from '../utils/logger';
-import { resolvePathToNodeUid, ensureFolderPath, findFileInFolder } from '../sdk/pathResolver';
+import { resolvePathToNodeUid, findFileInFolder } from '../sdk/pathResolver';
 import { describeNodeErrors, getNodeName } from '../sdk/nodeEntity';
 
 /** Node types we recognize. SDK 0.9.8+ added album/photo — skip them. */
@@ -29,25 +30,23 @@ export interface ListItem {
 }
 
 /**
- * Ensure OID prefix folder exists in Proton Drive
- * Creates the 2-character prefix directory if it doesn't exist
- *
- * @param client - Initialized ProtonDriveClient
- * @param parentPath - Parent directory path (e.g., "/LFS")
- * @param prefix - 2-character prefix (e.g., "ab")
- * @returns UID of the prefix folder
+ * Where an OID lives in Proton Drive: its full path, the folder holding it
+ * and its file name (the lowercase OID).
  */
-export async function ensureOidFolder(
-  client: ProtonDriveClient,
-  parentPath: string,
-  prefix: string,
-): Promise<string> {
-  if (prefix.length !== 2) {
-    throw new Error(`Invalid prefix: must be 2 characters, got: ${prefix}`);
-  }
+export interface OidFileLocation {
+  fullPath: string;
+  folderPath: string;
+  fileName: string;
+}
 
-  const folderPath = `${parentPath}/${prefix}`;
-  return ensureFolderPath(client, folderPath);
+export function oidFileLocation(storageBase: string, oid: string): OidFileLocation {
+  const fullPath = oidToPath(storageBase, oid);
+  const pathParts = fullPath.split('/').filter((p) => p.length > 0);
+  return {
+    fullPath,
+    folderPath: '/' + pathParts.slice(0, -1).join('/'),
+    fileName: pathParts[pathParts.length - 1],
+  };
 }
 
 /**
@@ -64,10 +63,7 @@ export async function findFileByOid(
   storageBase: string,
   oid: string,
 ): Promise<string | null> {
-  const fullPath = oidToPath(storageBase, oid);
-  const pathParts = fullPath.split('/').filter((p) => p.length > 0);
-  const fileName = pathParts[pathParts.length - 1]; // The OID filename
-  const folderPath = '/' + pathParts.slice(0, -1).join('/'); // /base/prefix/second
+  const { fullPath, folderPath, fileName } = oidFileLocation(storageBase, oid);
 
   try {
     const folderUid = await resolvePathToNodeUid(client, folderPath);
@@ -78,8 +74,8 @@ export async function findFileByOid(
       logger.debug(`File not found by OID: ${fullPath}`);
     }
     return fileUid;
-  } catch (error: any) {
-    if (error?.message?.includes('Not found')) {
+  } catch (error) {
+    if (error instanceof PathNotFoundError) {
       logger.debug(`Prefix folder not found for OID: ${fullPath}`);
       return null;
     }
@@ -93,6 +89,7 @@ export async function findFileByOid(
  * @param client - Initialized ProtonDriveClient
  * @param folderPath - Path to list (e.g., "/LFS")
  * @returns Array of ListItem
+ * @throws PathNotFoundError when the folder does not exist
  */
 export async function listFolder(
   client: ProtonDriveClient,
@@ -160,88 +157,4 @@ export async function deleteByOid(
 
   logger.debug(`Deleted file by OID: ${oid}`);
   return true;
-}
-
-/**
- * List all OIDs in a specific prefix folder or all prefix folders
- *
- * @param client - Initialized ProtonDriveClient
- * @param storageBase - Base directory (e.g., "LFS")
- * @param prefix - 2-character prefix (e.g., "ab") or null for all
- * @returns Array of OIDs
- */
-export async function listOids(
-  client: ProtonDriveClient,
-  storageBase: string,
-  prefix: string | null = null,
-): Promise<string[]> {
-  const normalizedBase = storageBase.replace(/^\/+|\/+$/g, '');
-  const basePath = `/${normalizedBase}`;
-
-  if (prefix) {
-    if (prefix.length !== 2) {
-      throw new Error(`Invalid prefix: must be 2 characters, got: ${prefix}`);
-    }
-
-    const prefixPath = `${basePath}/${prefix}`;
-    const oids: string[] = [];
-    try {
-      const secondFolders = await listFolder(client, prefixPath);
-      for (const secondFolder of secondFolders) {
-        if (secondFolder.type !== 'folder' || secondFolder.name.length !== 2) {
-          continue;
-        }
-        const secondPath = `${prefixPath}/${secondFolder.name}`;
-        const items = await listFolder(client, secondPath);
-        for (const item of items) {
-          if (item.type === 'file') {
-            oids.push(item.name.toLowerCase());
-          }
-        }
-      }
-      return oids;
-    } catch (error: any) {
-      if (error?.message?.includes('Not found') || error?.message?.includes('not found')) {
-        return [];
-      }
-      throw error;
-    }
-  }
-
-  // List all prefix folders → second-level folders → files
-  const allOids: string[] = [];
-  try {
-    const prefixFolders = await listFolder(client, basePath);
-
-    for (const folder of prefixFolders) {
-      if (folder.type !== 'folder' || folder.name.length !== 2) {
-        continue;
-      }
-
-      const prefixPath = `${basePath}/${folder.name}`;
-      const secondFolders = await listFolder(client, prefixPath);
-
-      for (const secondFolder of secondFolders) {
-        if (secondFolder.type !== 'folder' || secondFolder.name.length !== 2) {
-          continue;
-        }
-
-        const secondPath = `${prefixPath}/${secondFolder.name}`;
-        const items = await listFolder(client, secondPath);
-
-        for (const item of items) {
-          if (item.type === 'file') {
-            allOids.push(item.name.toLowerCase());
-          }
-        }
-      }
-    }
-  } catch (error: any) {
-    if (error?.message?.includes('Not found') || error?.message?.includes('not found')) {
-      return [];
-    }
-    throw error;
-  }
-
-  return allOids;
 }

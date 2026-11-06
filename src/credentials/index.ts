@@ -4,9 +4,10 @@
  * Barrel export for all credential types, providers, and helpers.
  */
 
-export type { Credentials, CredentialProvider, ProviderName } from './types';
+export type { Credentials, CredentialProvider, LookupOptions, ProviderName } from './types';
+export { DEFAULT_KEY_PASSWORD_PROVIDER } from './types';
 
-export { GitCredentialProvider, gitCredentialFill, gitCredentialApprove, gitCredentialReject } from './git-credential';
+export { GitCredentialProvider, gitCredentialFill, gitCredentialApprove, gitCredentialReject, assertCredentialValue } from './git-credential';
 export type { GitCredential } from './git-credential';
 
 export { PassCliProvider } from './pass-cli';

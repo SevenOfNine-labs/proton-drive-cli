@@ -1,6 +1,7 @@
 import { AuthApiClient } from '../api/auth';
 import { SessionManager } from './session';
 import { createKeyPasswordStore } from './key-password-store';
+import { isAccessTokenExpiringSoon } from './token-expiry';
 import { SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
 
@@ -24,28 +25,14 @@ export class AuthService {
   async getSession(): Promise<SessionCredentials> {
     const existingSession = await SessionManager.loadSession();
     if (!existingSession) {
-      throw new Error('No valid session found. Please login first using browser sign-in: proton-drive login');
+      throw new Error('No valid session found. Please login first using browser sign-in: proton-drive-cli login');
     }
 
-    if (this.isTokenExpiringSoon(existingSession.accessToken)) {
+    if (isAccessTokenExpiringSoon(existingSession)) {
       return await this.refreshSession();
     }
 
     return existingSession;
-  }
-
-  /**
-   * Check if a JWT token is expiring soon (within 5 minutes).
-   */
-  private isTokenExpiringSoon(token: string): boolean {
-    try {
-      const { exp } = JSON.parse(Buffer.from(token.split('.')[1] || '', 'base64url').toString('utf8')) as { exp?: number };
-      if (!exp) return false;
-      const now = Math.floor(Date.now() / 1000);
-      return (exp - now) < 5 * 60;
-    } catch {
-      return false;
-    }
   }
 
   /**
@@ -73,17 +60,17 @@ export class AuthService {
 
   /**
    * Logout and clear the current session.
+   *
+   * Order matters: the key-password entry is removed first, while
+   * session.json still names its provider and host; then the server session
+   * is revoked; then the local session and crypto cache are deleted. A
+   * failed revocation (network, token already invalid) is logged and local
+   * cleanup still completes, so a logout never leaves tokens on disk.
    */
   async logout(): Promise<void> {
     try {
       const session = await SessionManager.loadSession();
       if (session) {
-        try {
-          await this.authApi.logout(session.accessToken);
-        } catch {
-          logger.warn('Could not revoke session on server (this is normal if token is expired)');
-        }
-
         if (session.authMode === 'browser-fork' && session.keyPasswordPersisted) {
           const keyPasswordStore = createKeyPasswordStore({
             provider: session.keyPasswordProvider,
@@ -92,6 +79,12 @@ export class AuthService {
           await keyPasswordStore.remove(session.uid).catch((error) => {
             logger.warn(`Could not remove browser-fork key password: ${error instanceof Error ? error.message : error}`);
           });
+        }
+
+        try {
+          await this.authApi.logout(session.uid, session.accessToken);
+        } catch (error) {
+          logger.warn(`Could not revoke session on server: ${error instanceof Error ? error.message : error}`);
         }
       }
 
