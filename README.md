@@ -27,16 +27,18 @@ runs side by side with this CLI; the deliberate deviations are listed in
 
 ```bash
 proton-drive-cli login
-proton-drive-cli login --key-password-provider git-credential
+proton-drive-cli login --credential-store git-credential
 proton-drive-cli status
 proton-drive-cli logout
 ```
 
-The login command opens Proton's browser sign-in flow and stores only session
-tokens in `~/.proton-drive-cli/session.json`. The browser-derived key password
-is stored under a UID-scoped entry in the configured key-password provider
-(`pass-cli` by default, `git-credential` on request); it unlocks the account
-keys of every account type.
+The login command opens Proton's browser sign-in flow and saves the session
+tokens and the browser-derived key password, which unlocks the account keys of
+every account type, as one entry per session in the credential store:
+`pass-cli` by default, or `git-credential` through a git credential helper
+that encrypts secrets at rest (osxkeychain, wincred, libsecret or Git
+Credential Manager). `~/.proton-drive-cli/session.json` holds no secret, only
+where the entry lives. See [Credential Security](docs/security/credentials.md).
 
 ## Offline Readiness
 
@@ -48,8 +50,8 @@ proton-drive-cli doctor --json
 ```
 
 `doctor` and `bridge auth-state` are local checks: they never refresh tokens or
-send a request to the Proton API. The key-password check runs the session's
-credential provider, and `pass-cli` can contact Proton Pass to read the entry.
+send a request to the Proton API. The credentials check reads the session's
+entry from its credential store, and `pass-cli` can contact Proton Pass to do so.
 
 ## File Operations
 

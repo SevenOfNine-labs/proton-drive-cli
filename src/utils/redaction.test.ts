@@ -69,13 +69,15 @@ describe('redactSensitive', () => {
     expect(redacted.nested.privateKey).toBe(REDACTED_VALUE);
   });
 
-  it('keeps the provider and host that locate the key password', () => {
+  it('keeps the credential store and host that locate the session entry, and masks the store error', () => {
     expect(redactSensitive({
-      keyPasswordProvider: 'pass-cli',
-      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+      credentialStore: 'pass-cli',
+      credentialHost: 'proton-drive-cli.invalid',
+      storeError: 'helper said password=hunter2',
     })).toEqual({
-      keyPasswordProvider: 'pass-cli',
-      keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+      credentialStore: 'pass-cli',
+      credentialHost: 'proton-drive-cli.invalid',
+      storeError: `helper said password=${REDACTED_VALUE}`,
     });
   });
 
@@ -92,9 +94,9 @@ describe('redactSensitive', () => {
   });
 
   it('masks the userinfo of a URL (RFC 3986, 3.2.1), as in git credential prompts', () => {
-    expect(redactSensitive("could not read Password for 'https://uid-123@proton-drive-key.proton-lfs-cli.local': terminal prompts disabled"))
-      .toBe(`could not read Password for 'https://${REDACTED_VALUE}@proton-drive-key.proton-lfs-cli.local': terminal prompts disabled`);
-    expect(redactSensitive('https://proton-drive-key.proton-lfs-cli.local/path?q=a@b')).toBe('https://proton-drive-key.proton-lfs-cli.local/path?q=a@b');
+    expect(redactSensitive("could not read Password for 'https://uid-123@proton-drive-cli.invalid': terminal prompts disabled"))
+      .toBe(`could not read Password for 'https://${REDACTED_VALUE}@proton-drive-cli.invalid': terminal prompts disabled`);
+    expect(redactSensitive('https://proton-drive-cli.invalid/path?q=a@b')).toBe('https://proton-drive-cli.invalid/path?q=a@b');
   });
 
   it('fingerprints a session UID without revealing it', () => {

@@ -1,4 +1,4 @@
-// Offline preflight: the local session and key-password entry, checked
+// Offline preflight: the local session and its credential-store entry, checked
 // without logging in, refreshing tokens or sending a request to the Proton API.
 
 import { Command } from 'commander';
@@ -7,7 +7,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 
 import { SessionManager } from '../auth/session';
-import { createKeyPasswordStore } from '../auth/key-password-store';
+import { createSessionSecretStore } from '../auth/session-secrets';
 import { getBridgeAuthState } from './bridge';
 import type { BridgeAuthStatePayload } from './bridge';
 
@@ -23,10 +23,10 @@ export interface DoctorCheck {
 }
 
 export interface DoctorOptions {
-  /** Provider to verify in place of the one the saved session records. */
-  keyPasswordProvider?: string;
+  /** Credential store to verify in place of the one the saved session records. */
+  credentialStore?: string;
   /** Credential host to verify in place of the one the saved session records. */
-  keyPasswordHost?: string;
+  credentialHost?: string;
   driveCliBin?: string;
   sessionFile?: string;
   strict?: boolean;
@@ -112,50 +112,40 @@ async function checkDriveCliBin(options: DoctorOptions): Promise<DoctorCheck> {
   );
 }
 
-async function checkKeyPasswordCredential(options: DoctorOptions): Promise<DoctorCheck> {
+async function checkSessionCredentials(options: DoctorOptions): Promise<DoctorCheck> {
+  const id = 'session-credentials';
+  const title = 'session credentials';
   const stored = await SessionManager.readStoredSession(sessionFileOf(options));
   if (stored.kind !== 'valid') {
-    return makeCheck(
-      'key-password-credential',
-      'browser-fork key password',
-      'skip',
-      'No saved login session to verify a key-password entry for.',
-      { remediation: 'Run proton-drive-cli login, then rerun doctor.' },
-    );
-  }
-  const { session } = stored;
-
-  try {
-    const store = createKeyPasswordStore({
-      provider: options.keyPasswordProvider || session.keyPasswordProvider,
-      host: options.keyPasswordHost || session.keyPasswordHost,
+    return makeCheck(id, title, 'skip', 'No saved login session to verify a credential-store entry for.', {
+      remediation: 'Run proton-drive-cli login, then rerun doctor.',
     });
-    try {
-      await store.load(session.uid);
-    } catch (error) {
-      return makeCheck(
-        'key-password-credential',
-        'browser-fork key password',
-        'fail',
-        `No readable ${store.provider} key-password entry for session UID at ${store.host}: ${error instanceof Error ? error.message : String(error)}`,
-        { remediation: 'Fix the credential provider, or run proton-drive-cli login again to store the key password.' },
-      );
-    }
-    return makeCheck(
-      'key-password-credential',
-      'browser-fork key password',
-      'pass',
-      `Verified ${store.provider} key-password entry for session UID at ${store.host}.`,
-    );
+  }
+  const { record } = stored;
+
+  let store;
+  try {
+    store = createSessionSecretStore({
+      store: options.credentialStore || record.credentialStore,
+      host: options.credentialHost || record.credentialHost,
+    });
+  } catch (error) {
+    return makeCheck(id, title, 'fail', error instanceof Error ? error.message : 'Credential store check failed.', {
+      remediation: 'Pass a supported --credential-store (pass-cli or git-credential) or run proton-drive-cli login.',
+    });
+  }
+  try {
+    await store.load(record.uid);
   } catch (error) {
     return makeCheck(
-      'key-password-credential',
-      'browser-fork key password',
+      id,
+      title,
       'fail',
-      error instanceof Error ? error.message : 'Key-password provider check failed.',
-      { remediation: 'Pass a supported --key-password-provider (pass-cli or git-credential) or run proton-drive-cli login.' },
+      `No readable ${store.name} entry for the session UID at ${store.host}: ${error instanceof Error ? error.message : String(error)}`,
+      { remediation: 'Fix the credential store, or run proton-drive-cli login again to store the session.' },
     );
   }
+  return makeCheck(id, title, 'pass', `Verified the ${store.name} entry for the session UID at ${store.host}.`);
 }
 
 async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
@@ -197,7 +187,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
       'session-file',
       'session file hygiene',
       'fail',
-      'Session file is not a proton-drive-cli login session (uid, accessToken, refreshToken, keyPasswordProvider and keyPasswordHost are required).',
+      'Session file is not a proton-drive-cli login session (uid, credentialStore, credentialHost and revision are required).',
       { remediation: 'Run proton-drive-cli login to replace it.' },
     );
   }
@@ -212,7 +202,7 @@ async function checkSessionFile(options: DoctorOptions): Promise<DoctorCheck> {
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [
     await checkDriveCliBin(options),
-    await checkKeyPasswordCredential(options),
+    await checkSessionCredentials(options),
     await checkSessionFile(options),
   ];
 
@@ -261,8 +251,8 @@ export function formatDoctorReport(report: DoctorReport): string {
 export function createDoctorCommand(): Command {
   return new Command('doctor')
     .description('Run offline auth/session preflight checks without logging in')
-    .option('--key-password-provider <type>', "Key-password provider to verify instead of the saved session's: pass-cli or git-credential")
-    .option('--key-password-host <host>', "Key-password credential host to verify instead of the saved session's")
+    .option('--credential-store <store>', "Credential store to verify instead of the saved session's: pass-cli or git-credential")
+    .option('--credential-host <host>', "Credential host to verify instead of the saved session's")
     .option('--drive-cli-bin <path>', 'proton-drive-cli entry point to check', defaultDriveCliBin())
     .option('--session-file <path>', 'Session file path to inspect', SessionManager.getSessionFilePath())
     .option('--json', 'Print machine-readable JSON')

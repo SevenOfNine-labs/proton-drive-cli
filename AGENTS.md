@@ -3,12 +3,12 @@
 ## Project Structure & Module Organization
 
 - `src/cli/`: User-facing commands (`login`, `logout`, `status`, `session refresh`, `doctor`, `ls`, `upload`, `download`, `mkdir`, `rm`, `mv`, `cat`, `info`, `bridge`).
-- `src/auth/`: Browser-fork login, session persistence and token refresh, key-password store.
+- `src/auth/`: Browser-fork login, session persistence and token refresh, session secrets in the credential store.
 - `src/bridge/`: Bridge protocol constants, request validators, OID path mapping.
 - `src/api/`: HTTP client for the Proton API.
 - `src/crypto/`: OpenPGP and encryption/decryption helpers.
 - `src/sdk/`: Wrapper layer around `@protontech/drive-sdk`.
-- `src/credentials/`: Credential providers (`pass-cli`, `git-credential`) that store the browser-fork key password.
+- `src/credentials/`: Credential stores (`pass-cli`, `git-credential`) that hold each session's tokens and key password.
 - `schemas/`: JSON Schemas of the bridge and doctor contracts.
 - `docs/`: Architecture, security, operations, and reference docs for this CLI.
 - `dist/`: Built output from TypeScript compilation (generated).

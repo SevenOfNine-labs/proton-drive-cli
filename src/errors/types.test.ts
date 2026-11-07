@@ -361,9 +361,9 @@ describe('error types', () => {
       expect(error.toUserMessage()).toContain('CAPTCHA verification required');
     });
 
-    it('should return user-friendly message for KEY_PASSWORD_REQUIRED', () => {
-      const error = new AppError('Missing key password', ErrorCode.KEY_PASSWORD_REQUIRED);
-      expect(error.toUserMessage()).toContain('Stored browser-fork key password');
+    it('should return user-friendly message for CREDENTIALS_UNAVAILABLE', () => {
+      const error = new AppError('No entry', ErrorCode.CREDENTIALS_UNAVAILABLE);
+      expect(error.toUserMessage()).toContain('The session credentials are missing from the credential store');
     });
 
     it('should return user-friendly message for ENCRYPTION_FAILED', () => {
@@ -393,9 +393,9 @@ describe('error types', () => {
       expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
     });
 
-    it('should return recovery suggestion for KEY_PASSWORD_REQUIRED', () => {
-      const error = new AppError('Missing key password', ErrorCode.KEY_PASSWORD_REQUIRED);
-      expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
+    it('should return recovery suggestion for CREDENTIALS_UNAVAILABLE', () => {
+      const error = new AppError('No entry', ErrorCode.CREDENTIALS_UNAVAILABLE);
+      expect(error.getRecoverySuggestion()).toBe('Fix the credential store, or run: proton-drive-cli login');
     });
 
     it('should return recovery suggestion for NETWORK_ERROR', () => {

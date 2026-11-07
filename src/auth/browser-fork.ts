@@ -1,17 +1,13 @@
 import { createDecipheriv, randomBytes } from 'crypto';
 import { AuthApiClient } from '../api/auth';
 import { isHttpClientError } from '../api/http-client';
-import { getProtonAppVersion } from '../constants';
+import { getProtonAppVersion, PROTON_CREDENTIAL_HOST } from '../constants';
 import { AppError, ErrorCode } from '../errors/types';
-import { SessionForkStatusResponse, SessionCredentials } from '../types/auth';
+import type { SessionCredentials, SessionForkStatusResponse, SessionSecrets } from '../types/auth';
 import { logger } from '../utils/logger';
 import { uidFingerprint } from '../utils/redaction';
-import type { ProviderName } from '../credentials/types';
-import {
-  createKeyPasswordStore,
-  KeyPasswordStore,
-  normalizeKeyPasswordProvider,
-} from './key-password-store';
+import type { CredentialStoreName } from '../credentials/types';
+import { createSessionSecretStore, normalizeCredentialStore } from './session-secrets';
 import { SessionManager } from './session';
 import { resolveTokenExpiresAt } from './token-expiry';
 
@@ -41,9 +37,8 @@ export interface BrowserForkAuthServiceOptions {
   apiBaseUrl?: string;
   appVersion?: string;
   authApi?: BrowserForkAuthApi;
-  keyPasswordProvider?: string;
-  keyPasswordHost?: string;
-  keyPasswordStore?: KeyPasswordStore;
+  credentialStore?: string;
+  credentialHost?: string;
   sleepMs?: SleepFn;
   now?: () => number;
   encryptionKeyFactory?: () => Buffer;
@@ -59,7 +54,6 @@ export interface BrowserForkLoginOptions {
 
 export interface BrowserForkLoginResult {
   session: SessionCredentials;
-  keyPasswordAvailable: true;
 }
 
 function defaultSleepMs(ms: number): Promise<void> {
@@ -131,9 +125,8 @@ export function parseBrowserForkUserKeyPassword(
 export class BrowserForkAuthService {
   private readonly authApi: BrowserForkAuthApi;
   private readonly appVersion?: string;
-  private readonly keyPasswordProvider: ProviderName;
-  private readonly keyPasswordHost?: string;
-  private readonly keyPasswordStore?: KeyPasswordStore;
+  private readonly credentialStore: CredentialStoreName;
+  private readonly credentialHost: string;
   private readonly sleepMs: SleepFn;
   private readonly now: () => number;
   private readonly encryptionKeyFactory: () => Buffer;
@@ -141,9 +134,8 @@ export class BrowserForkAuthService {
   constructor(options: BrowserForkAuthServiceOptions = {}) {
     this.appVersion = options.appVersion;
     this.authApi = options.authApi ?? new AuthApiClient(options.apiBaseUrl, options.appVersion);
-    this.keyPasswordProvider = normalizeKeyPasswordProvider(options.keyPasswordProvider);
-    this.keyPasswordHost = options.keyPasswordHost;
-    this.keyPasswordStore = options.keyPasswordStore;
+    this.credentialStore = normalizeCredentialStore(options.credentialStore);
+    this.credentialHost = options.credentialHost || PROTON_CREDENTIAL_HOST;
     this.sleepMs = options.sleepMs ?? defaultSleepMs;
     this.now = options.now ?? Date.now;
     this.encryptionKeyFactory = options.encryptionKeyFactory ?? (() => randomBytes(32));
@@ -215,49 +207,44 @@ export class BrowserForkAuthService {
       );
     }
 
-    const keyPasswordStore = this.keyPasswordStore ?? createKeyPasswordStore({
-      provider: this.keyPasswordProvider,
-      host: this.keyPasswordHost,
-    });
     const forked = {
       uid: status.UID,
       accessToken: status.AccessToken,
       refreshToken: status.RefreshToken,
     };
+    let saved: Awaited<ReturnType<typeof SessionManager.replaceSession>>;
     try {
-      await this.persistKeyPassword(keyPasswordStore, status.UID, userKeyPassword);
+      saved = await SessionManager.replaceSession({
+        ...forked,
+        keyPassword: userKeyPassword,
+        scopes: status.Scopes ?? [],
+        credentialStore: this.credentialStore,
+        credentialHost: this.credentialHost,
+        tokenExpiresAt: resolveTokenExpiresAt(status.ExpiresIn),
+      });
     } catch (error) {
+      await createSessionSecretStore({ store: this.credentialStore, host: this.credentialHost })
+        .remove(status.UID)
+        .catch(() => {});
       await this.revokeBestEffort(forked);
       throw error;
     }
-
-    const session: SessionCredentials = {
-      uid: status.UID,
-      accessToken: status.AccessToken,
-      refreshToken: status.RefreshToken,
-      scopes: status.Scopes ?? [],
-      keyPasswordProvider: keyPasswordStore.provider,
-      keyPasswordHost: keyPasswordStore.host,
-      tokenExpiresAt: resolveTokenExpiresAt(status.ExpiresIn),
-    };
-
-    let previous: SessionCredentials | null;
-    try {
-      previous = await SessionManager.replaceSession(session);
-    } catch (error) {
-      await keyPasswordStore.remove(status.UID).catch(() => {});
-      await this.revokeBestEffort(forked);
-      throw error;
-    }
+    const { session, previous } = saved;
     logger.info('Browser fork authentication successful');
-    logger.debug(`Session saved (tokens only) to: ${SessionManager.getSessionFilePath()}`);
+    logger.debug(`Session saved to ${SessionManager.getSessionFilePath()} and ${session.credentialStore}`);
 
     if (previous && previous.uid !== session.uid) {
-      await SessionManager.removeKeyPassword(previous);
-      await this.revokeBestEffort(previous);
+      const previousSecrets: SessionSecrets | null = await createSessionSecretStore({
+        store: previous.credentialStore,
+        host: previous.credentialHost,
+      }).load(previous.uid).then((stored) => stored.secrets, () => null);
+      await SessionManager.removeSecrets(previous);
+      if (previousSecrets) {
+        await this.revokeBestEffort({ uid: previous.uid, ...previousSecrets });
+      }
     }
 
-    return { session, keyPasswordAvailable: true };
+    return { session };
   }
 
   /**
@@ -277,30 +264,6 @@ export class BrowserForkAuthService {
       } catch (revokeError) {
         logger.warn(`Could not revoke the discarded session ${uidFingerprint(session.uid)}: ${revokeError instanceof Error ? revokeError.message : String(revokeError)}`);
       }
-    }
-  }
-
-  private async persistKeyPassword(
-    store: KeyPasswordStore,
-    uid: string,
-    keyPassword: string
-  ): Promise<void> {
-    try {
-      await store.store(uid, keyPassword);
-      if (await store.load(uid).catch(() => undefined) !== keyPassword) {
-        await store.remove(uid).catch(() => {});
-        throw new Error('key password readback verification failed');
-      }
-    } catch (error: unknown) {
-      throw new AppError(
-        `Could not persist browser fork key password: ${error instanceof Error ? error.message : 'unknown error'}`,
-        ErrorCode.AUTH_FAILED,
-        {
-          keyPasswordProvider: store.provider,
-          keyPasswordHost: store.host,
-        },
-        true
-      );
     }
   }
 }

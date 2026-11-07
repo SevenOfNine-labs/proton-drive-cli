@@ -1,48 +1,38 @@
-import { normalizeProviderName, createProvider } from './factory';
-import { GitCredentialProvider } from './git-credential';
-import { PassCliProvider } from './pass-cli';
+import { normalizeCredentialStoreName, createCredentialStore } from './factory';
+import { GitCredentialStore } from './git-credential';
+import { PassCliStore } from './pass-cli';
 
-describe('normalizeProviderName', () => {
-  it('normalizes "git" to "git-credential"', () => {
-    expect(normalizeProviderName('git')).toBe('git-credential');
+describe('normalizeCredentialStoreName', () => {
+  it.each([
+    ['git', 'git-credential'],
+    ['git-credential', 'git-credential'],
+    ['pass', 'pass-cli'],
+    ['pass-cli', 'pass-cli'],
+    ['  GIT  ', 'git-credential'],
+    ['PASS-CLI', 'pass-cli'],
+  ])('normalizes %j to %s', (name, expected) => {
+    expect(normalizeCredentialStoreName(name)).toBe(expected);
   });
 
-  it('normalizes "git-credential" to "git-credential"', () => {
-    expect(normalizeProviderName('git-credential')).toBe('git-credential');
-  });
-
-  it('normalizes "pass" to "pass-cli"', () => {
-    expect(normalizeProviderName('pass')).toBe('pass-cli');
-  });
-
-  it('normalizes "pass-cli" to "pass-cli"', () => {
-    expect(normalizeProviderName('pass-cli')).toBe('pass-cli');
-  });
-
-  it('normalizes with whitespace and case', () => {
-    expect(normalizeProviderName('  GIT  ')).toBe('git-credential');
-    expect(normalizeProviderName('PASS-CLI')).toBe('pass-cli');
-  });
-
-  it.each(['unknown', 'stdin', 'interactive'])('throws on unknown provider %s', (name) => {
-    expect(() => normalizeProviderName(name)).toThrow(`Unknown credential provider: ${name}`);
+  it.each(['unknown', 'stdin', 'interactive', 'keychain'])('throws on unknown store %s', (name) => {
+    expect(() => normalizeCredentialStoreName(name)).toThrow(`Unknown credential store: ${name}`);
   });
 });
 
-describe('createProvider', () => {
-  it('creates GitCredentialProvider', () => {
-    const provider = createProvider('git-credential', 'custom.host');
-    expect(provider).toBeInstanceOf(GitCredentialProvider);
-    expect(provider.name).toBe('git-credential');
+describe('createCredentialStore', () => {
+  it('creates GitCredentialStore', () => {
+    const store = createCredentialStore('git-credential', 'custom.host');
+    expect(store).toBeInstanceOf(GitCredentialStore);
+    expect(store.name).toBe('git-credential');
   });
 
-  it('creates PassCliProvider', () => {
-    const provider = createProvider('pass-cli', 'custom.host');
-    expect(provider).toBeInstanceOf(PassCliProvider);
-    expect(provider.name).toBe('pass-cli');
+  it('creates PassCliStore', () => {
+    const store = createCredentialStore('pass-cli', 'custom.host');
+    expect(store).toBeInstanceOf(PassCliStore);
+    expect(store.name).toBe('pass-cli');
   });
 
   it.each(['git-credential', 'pass-cli'] as const)('requires a credential host for %s', (name) => {
-    expect(() => createProvider(name, ' ')).toThrow('requires a credential host');
+    expect(() => createCredentialStore(name, ' ')).toThrow('requires a credential host');
   });
 });

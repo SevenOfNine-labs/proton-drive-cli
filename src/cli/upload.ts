@@ -57,7 +57,7 @@ import { isVerbose, isQuiet, verboseLog, normalLog, outputResult } from '../util
  * # Security Features
  *
  * - End-to-end encryption using OpenPGP before upload
- * - Password resolved via credential provider (never logged)
+ * - Session tokens and key password read from the credential store (never logged)
  * - Temporary files (stdin) cleaned up on both success and failure
  * - Graceful shutdown handling (SIGINT, SIGTERM) cleans up temp files
  *

@@ -158,12 +158,12 @@ describe('DriveCryptoService key-password unlock', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  test('fails with KEY_PASSWORD_REQUIRED when the key password opens no user key', async () => {
+  test('fails with CREDENTIALS_UNAVAILABLE when the key password opens no user key', async () => {
     mockUserApi(await buildFixture());
     const svc = new DriveCryptoService();
 
     await expect(svc.initialize('wrong-key-password')).rejects.toMatchObject({
-      code: ErrorCode.KEY_PASSWORD_REQUIRED,
+      code: ErrorCode.CREDENTIALS_UNAVAILABLE,
     });
     expect(svc.getAddressKeyEntries('addr-1')).toHaveLength(0);
   });

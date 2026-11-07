@@ -1,14 +1,16 @@
+import { randomUUID } from 'crypto';
 import * as fs from 'fs-extra';
+import pRetry from 'p-retry';
 import { lock } from 'proper-lockfile';
 import { AuthApiClient } from '../api/auth';
 import { isHttpClientError } from '../api/http-client';
 import { toAppError } from '../errors/classify';
 import { AppError, ErrorCode } from '../errors/types';
-import { SessionCredentials } from '../types/auth';
+import type { SessionCredentials, SessionRecord, SessionSecrets } from '../types/auth';
 import type { Address, User } from '../types/crypto';
-import { normalizeProviderName } from '../credentials';
+import { normalizeCredentialStoreName } from '../credentials';
 import { logger } from '../utils/logger';
-import { createKeyPasswordStore } from './key-password-store';
+import { createSessionSecretStore, type StoredSessionSecrets } from './session-secrets';
 import { writePrivateJsonFile } from './private-json-file';
 import { CRYPTO_CACHE_FILE, SESSION_FILE, SESSION_LOCK_PATH, STATE_DIR } from './state-dir';
 import { isAccessTokenExpired, resolveTokenExpiresAt } from './token-expiry';
@@ -25,32 +27,69 @@ export interface CryptoCache {
 export type StoredSession =
   | { kind: 'none' }
   | { kind: 'invalid' }
-  | { kind: 'valid'; session: SessionCredentials };
+  | { kind: 'valid'; record: SessionRecord };
 
-/** The session a request was sent with: its UID and access token. */
-export type SessionTokens = Pick<SessionCredentials, 'uid' | 'accessToken'>;
+/**
+ * The session a request was sent with: its UID and access token, and the
+ * revision those came from when the caller knows it.
+ */
+export type SessionTokens = Pick<SessionCredentials, 'uid' | 'accessToken'> & { revision?: string };
 
-function isCanonicalProviderName(value: string): boolean {
+function isCanonicalStoreName(value: string): boolean {
   try {
-    return normalizeProviderName(value) === value;
+    return normalizeCredentialStoreName(value) === value;
   } catch {
     return false;
   }
 }
 
 /**
- * True for an object carrying every field `proton-drive-cli login` writes,
- * each a non-blank string: uid, accessToken, refreshToken, keyPasswordProvider
- * (`git-credential` or `pass-cli`) and keyPasswordHost.
+ * True for an object carrying every field `proton-drive-cli login` writes to
+ * session.json, each a non-blank string: uid, credentialStore
+ * (`git-credential` or `pass-cli`), credentialHost and revision.
  */
-export function isSessionCredentials(value: unknown): value is SessionCredentials {
+export function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  return ['uid', 'accessToken', 'refreshToken', 'keyPasswordProvider', 'keyPasswordHost'].every(
+  return ['uid', 'credentialStore', 'credentialHost', 'revision'].every(
     (field) => typeof candidate[field] === 'string' && candidate[field].trim() !== '',
-  ) && isCanonicalProviderName(candidate.keyPasswordProvider as string);
+  ) && isCanonicalStoreName(candidate.credentialStore as string);
+}
+
+/** The fields of {@link SessionRecord} in a value that {@link isSessionRecord} accepts. */
+function toSessionRecord(value: SessionRecord): SessionRecord {
+  const scopes = Array.isArray(value.scopes) && value.scopes.every((scope) => typeof scope === 'string')
+    ? value.scopes
+    : undefined;
+  return {
+    uid: value.uid,
+    ...(scopes ? { scopes } : {}),
+    credentialStore: value.credentialStore,
+    credentialHost: value.credentialHost,
+    revision: value.revision,
+    ...(typeof value.tokenExpiresAt === 'number' ? { tokenExpiresAt: value.tokenExpiresAt } : {}),
+  };
+}
+
+function secretStoreOf(record: SessionRecord) {
+  return createSessionSecretStore({ store: record.credentialStore, host: record.credentialHost });
+}
+
+function credentialsUnavailableError(
+  record: SessionRecord,
+  message: string,
+  cause: unknown,
+  remedy = 'Fix the credential store, or run: proton-drive-cli login',
+): AppError {
+  const storeError = cause instanceof Error ? cause.message : String(cause);
+  return new AppError(
+    `${message} (${storeError}). ${remedy}`,
+    ErrorCode.CREDENTIALS_UNAVAILABLE,
+    { credentialStore: record.credentialStore, credentialHost: record.credentialHost, storeError },
+    true,
+  );
 }
 
 /**
@@ -67,13 +106,13 @@ function isRefreshRejection(error: unknown): boolean {
     typeof error.response?.data?.Code === 'number';
 }
 
-/** Error reported after a refresh signed the session out. */
-function signedOutError(cause: unknown, reason: string): AppError {
+/** Error reported after a refresh signed the session out; `credentialsRemoved` tells whether its entry is gone. */
+function signedOutError(cause: unknown, reason: string, credentialsRemoved: boolean): AppError {
   const classified = toAppError(cause);
   return new AppError(
     `${reason}; the session was signed out. Run: proton-drive-cli login`,
     ErrorCode.SESSION_EXPIRED,
-    { ...classified.details, signedOut: true },
+    { ...classified.details, signedOut: true, credentialsRemoved },
     false,
   );
 }
@@ -104,18 +143,26 @@ export const CRYPTO_CACHE_TTL_MS = 60 * 60 * 1000;
 
 /**
  * proper-lockfile: the holder renews the lock's mtime every `stale / 2` ms and
- * a holder silent for `stale` ms is evicted; waiters retry for about 30 s.
+ * a holder silent for `stale` ms is evicted; waiters retry for about two
+ * minutes, the length of a refresh that saves to a remote credential store.
  */
 const SESSION_LOCK_OPTIONS = {
   lockfilePath: SESSION_LOCK_PATH,
   realpath: false,
   stale: 30_000,
-  retries: { retries: 20, factor: 1.5, minTimeout: 100, maxTimeout: 2_000 },
+  retries: { retries: 30, factor: 1.5, minTimeout: 100, maxTimeout: 5_000 },
 };
 
 /** A held session lock; `compromised` once proper-lockfile reported it lost. */
 interface HeldSessionLock {
   readonly compromised: boolean;
+}
+
+/** Secrets of one session revision as this process read or wrote them. */
+interface LoadedSecrets {
+  uid: string;
+  revision: string;
+  secrets: SessionSecrets;
 }
 
 /** In-process refresh of one rejected access token, shared by concurrent callers. */
@@ -130,17 +177,101 @@ interface PendingRefresh {
  */
 const REFRESH_FAILURE_HOLD_MS = 30_000;
 
+/** Retries of a credential-store save (p-retry), at most 30 s: the store is remote for pass-cli. */
+const STORE_SAVE_RETRY = { retries: 3, minTimeout: 1_000, factor: 2, maxRetryTime: 30_000 };
+
 function holdsRefreshFailure(error: unknown): boolean {
   const code = toAppError(error).code;
   return code === ErrorCode.RATE_LIMITED || code === ErrorCode.SESSION_EXPIRED;
 }
 
 /**
- * Persistence of the browser-fork session (session.json) and of the
- * crypto-init cache (crypto-cache.json: the user and address records with
- * their armored, passphrase-protected keys, shared by bridge subprocesses).
+ * Persistence of the browser-fork session and of the crypto-init cache
+ * (crypto-cache.json: the user and address records with their armored,
+ * passphrase-protected keys, shared by bridge subprocesses). A session is
+ * session.json (owner-only, no secret) plus the credential-store entry of its
+ * UID; every write stores the entry first, then session.json with a new
+ * revision, both under the session lock.
  */
 export class SessionManager {
+  /** Secrets this process read or wrote last, by session UID and the revision stored with them. */
+  private static loaded: LoadedSecrets | null = null;
+
+  /** A store read in flight for one session.json revision, shared by concurrent callers. */
+  private static loading: { key: string; secrets: Promise<SessionSecrets> } | null = null;
+
+  /** Secrets of `record`, read from the credential store unless this process holds its revision. */
+  private static secretsOf(record: SessionRecord): Promise<SessionSecrets> {
+    const current = this.loaded;
+    if (current?.uid === record.uid && current.revision === record.revision) {
+      return Promise.resolve(current.secrets);
+    }
+    const key = `${record.uid}\n${record.revision}`;
+    if (this.loading?.key === key) {
+      return this.loading.secrets;
+    }
+    const secrets = this.readEntry(record).then((stored) => stored.secrets);
+    const loading = { key, secrets };
+    this.loading = loading;
+    secrets.then(
+      () => this.clearLoading(loading),
+      () => this.clearLoading(loading),
+    );
+    return secrets;
+  }
+
+  /** The entry of `record`, remembered as this process's secrets of the revision stored in it. */
+  private static async readEntry(record: SessionRecord): Promise<StoredSessionSecrets> {
+    let stored: StoredSessionSecrets;
+    try {
+      stored = await secretStoreOf(record).load(record.uid);
+    } catch (error) {
+      throw credentialsUnavailableError(record, `The credentials of the session could not be read from ${record.credentialStore}`, error);
+    }
+    this.loaded = { uid: record.uid, revision: stored.revision, secrets: stored.secrets };
+    return stored;
+  }
+
+  /**
+   * Under the session lock: `record` with the secrets of an entry that carries
+   * its revision. An entry that replaces it completes a write interrupted
+   * before session.json; any other entry is refused, so its token is never spent.
+   */
+  private static async verifiedSession(record: SessionRecord): Promise<SessionCredentials> {
+    const stored = await this.readEntry(record);
+    if (stored.revision === record.revision) {
+      return { ...record, ...stored.secrets };
+    }
+    if (stored.previous !== record.revision) {
+      throw credentialsUnavailableError(
+        record,
+        `The ${record.credentialStore} entry does not belong to session.json`,
+        new Error(`entry revision ${stored.revision}, session.json revision ${record.revision}`),
+      );
+    }
+    const completed = toSessionRecord({ ...record, revision: stored.revision, tokenExpiresAt: undefined });
+    await writePrivateJsonFile(SESSION_FILE, completed);
+    logger.warn('Completed a session write that saved the credentials but not session.json');
+    return { ...completed, ...stored.secrets };
+  }
+
+  private static clearLoading(loading: { key: string; secrets: Promise<SessionSecrets> }): void {
+    if (this.loading === loading) {
+      this.loading = null;
+    }
+  }
+
+  /** The revision `stale` was loaded from: its own, or the one this process loaded with its access token. */
+  private static revisionOf(stale: SessionTokens): string | undefined {
+    if (stale.revision !== undefined) {
+      return stale.revision;
+    }
+    const current = this.loaded;
+    return current?.uid === stale.uid && current.secrets.accessToken === stale.accessToken
+      ? current.revision
+      : undefined;
+  }
+
   /**
    * Run `fn` while holding the cross-process session lock, which serialises
    * the rotation of the single-use refresh token across bridge subprocesses.
@@ -165,36 +296,67 @@ export class SessionManager {
   }
 
   /**
-   * Save `session` under the session lock and return the valid session it
-   * replaced, read under the same lock, or null.
+   * Save `session` under the session lock and return it with its revision,
+   * together with the valid session record it replaced, read under the same
+   * lock, or null.
+   *
+   * @throws AppError CREDENTIALS_UNAVAILABLE when the credential store does not save the secrets
    */
-  static async replaceSession(session: SessionCredentials): Promise<SessionCredentials | null> {
+  static async replaceSession(
+    session: Omit<SessionCredentials, 'revision'>,
+  ): Promise<{ session: SessionCredentials; previous: SessionRecord | null }> {
     try {
       return await this.withSessionLock(async () => {
         const previous = await this.readStoredSession();
-        await this.writeSessionFile(session);
-        return previous.kind === 'valid' ? previous.session : null;
+        const saved = await this.writeSession(session, undefined);
+        return { session: saved, previous: previous.kind === 'valid' ? previous.record : null };
       });
     } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
       throw new Error(`Failed to save session: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
-  private static async writeSessionFile(session: SessionCredentials): Promise<void> {
-    await writePrivateJsonFile(SESSION_FILE, session);
+  /**
+   * Under the session lock, store the secrets (read back, retried), then
+   * session.json; a store failure is CREDENTIALS_UNAVAILABLE.
+   */
+  private static async writeSession(
+    session: Omit<SessionCredentials, 'revision'>,
+    replaces: string | undefined,
+  ): Promise<SessionCredentials> {
+    const record = toSessionRecord({ ...session, revision: randomUUID() });
+    const secrets: SessionSecrets = {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      keyPassword: session.keyPassword,
+    };
+    try {
+      await pRetry(
+        () => secretStoreOf(record).save(record.uid, { revision: record.revision, previous: replaces, secrets }),
+        STORE_SAVE_RETRY,
+      );
+    } catch (error) {
+      throw credentialsUnavailableError(record, `The session could not be saved to ${record.credentialStore}`, error, 'Fix the credential store');
+    }
+    await writePrivateJsonFile(SESSION_FILE, record);
+    this.loaded = { uid: record.uid, revision: record.revision, secrets };
+    return { ...record, ...secrets };
   }
 
   /**
    * Read session.json and classify it. A file that cannot be parsed or lacks
-   * a field of {@link isSessionCredentials} is `invalid`.
+   * a field of {@link isSessionRecord} is `invalid`.
    */
   static async readStoredSession(sessionFile: string = SESSION_FILE): Promise<StoredSession> {
     if (!await fs.pathExists(sessionFile)) {
       return { kind: 'none' };
     }
     try {
-      const session: unknown = await fs.readJson(sessionFile);
-      return isSessionCredentials(session) ? { kind: 'valid', session } : { kind: 'invalid' };
+      const record: unknown = await fs.readJson(sessionFile);
+      return isSessionRecord(record) ? { kind: 'valid', record: toSessionRecord(record) } : { kind: 'invalid' };
     } catch (error) {
       logger.debug(`Session file unreadable: ${error instanceof Error ? error.message : String(error)}`);
       return { kind: 'invalid' };
@@ -202,22 +364,22 @@ export class SessionManager {
   }
 
   /**
-   * Load session credentials from disk
-   * @returns Session credentials, or null when there is no valid session
+   * The saved session with its secrets, or null when session.json holds no
+   * valid session. The secrets are read from the credential store once per
+   * revision and process.
+   *
+   * @throws AppError CREDENTIALS_UNAVAILABLE when the credential store does not return them
    */
   static async loadSession(): Promise<SessionCredentials | null> {
-    try {
-      const stored = await this.readStoredSession();
-      if (stored.kind === 'valid') {
-        return stored.session;
-      }
-      if (stored.kind === 'invalid') {
-        logger.warn('Session file is not a proton-drive-cli login session. Run: proton-drive-cli login');
-      }
-    } catch (error) {
-      logger.error('Failed to load session:', error instanceof Error ? error.message : 'Unknown error');
+    const stored = await this.readStoredSession();
+    if (stored.kind === 'invalid') {
+      logger.warn('Session file is not a proton-drive-cli login session. Run: proton-drive-cli login');
     }
-    return null;
+    if (stored.kind !== 'valid') {
+      return null;
+    }
+    const secrets = await this.secretsOf(stored.record);
+    return { ...stored.record, ...secrets };
   }
 
   /**
@@ -232,11 +394,10 @@ export class SessionManager {
     try {
       return await this.withSessionLock(async () => {
         const stored = await this.readStoredSession();
-        if (endedUid !== undefined && stored.kind === 'valid' && stored.session.uid !== endedUid) {
+        if (endedUid !== undefined && stored.kind === 'valid' && stored.record.uid !== endedUid) {
           return false;
         }
-        await fs.remove(SESSION_FILE);
-        await this.clearCryptoCache();
+        await this.removeSessionFiles();
         return true;
       });
     } catch (error) {
@@ -251,8 +412,7 @@ export class SessionManager {
         if ((await this.readStoredSession()).kind === 'valid') {
           return false;
         }
-        await fs.remove(SESSION_FILE);
-        await this.clearCryptoCache();
+        await this.removeSessionFiles();
         return true;
       });
     } catch (error) {
@@ -260,14 +420,21 @@ export class SessionManager {
     }
   }
 
+  /** Delete session.json and the crypto cache and forget the loaded secrets; called under the session lock. */
+  private static async removeSessionFiles(): Promise<void> {
+    await fs.remove(SESSION_FILE);
+    await this.clearCryptoCache();
+    this.loaded = null;
+  }
+
   /**
    * Check if a saved session exists whose access token has not expired locally.
    */
   static async hasValidSession(): Promise<boolean> {
-    const session = await this.loadSession();
-    if (!session) return false;
+    const stored = await this.readStoredSession();
+    if (stored.kind !== 'valid') return false;
 
-    if (isAccessTokenExpired(session)) {
+    if (isAccessTokenExpired(stored.record)) {
       logger.debug('Session access token has expired');
       return false;
     }
@@ -286,19 +453,22 @@ export class SessionManager {
   /**
    * Refresh session tokens using the refresh token.
    *
-   * Runs under the session lock on the session file as it is at that moment.
-   * When `stale` names another UID, the file holds a new login and nothing is
-   * refreshed. When the file's access token differs from `stale.accessToken`,
-   * another process already refreshed and that session is returned without
-   * spending the refresh token (official ApiClient.refreshSessionIfPossible).
-   * The new tokens are written only while the file still holds the refresh
-   * token that was spent, so a logout or a sign-out during the request is
-   * never undone; that check also holds when the lock was reported lost.
+   * Runs under the session lock on the session as it is at that moment. When
+   * `stale` names another UID, session.json holds a new login and nothing is
+   * refreshed. When session.json holds another revision than the one `stale`
+   * was loaded from, or the stored access token differs from
+   * `stale.accessToken`, another process already refreshed and that session
+   * is returned without spending the refresh token (official
+   * ApiClient.refreshSessionIfPossible); in the first case its secrets are
+   * read after the lock is released. The new tokens are written
+   * only while session.json still holds the revision whose refresh token was
+   * spent, so a logout or a sign-out during the request is never undone; that
+   * check also holds when the lock was reported lost.
    *
    * A refresh the API rejects (see {@link isRefreshRejection}), or answers
-   * with another UID, while the file still holds the spent refresh token signs
-   * the session out like the official SessionCredentials.signOut: session
-   * file, crypto cache and key-password entry are removed and SESSION_EXPIRED
+   * with another UID, while session.json still holds that revision signs the
+   * session out like the official SessionCredentials.signOut: session.json,
+   * crypto cache and credential-store entry are removed and SESSION_EXPIRED
    * is thrown. A lost lock keeps the session instead.
    *
    * @param stale - UID and access token the caller observed or had rejected
@@ -307,15 +477,22 @@ export class SessionManager {
   static async refreshSession(stale?: SessionTokens, appVersion?: string): Promise<SessionCredentials> {
     type Outcome =
       | { kind: 'session'; session: SessionCredentials }
+      | { kind: 'rotated'; stale: SessionTokens }
       | { kind: 'signed-out'; session: SessionCredentials; cause: unknown; reason: string };
     const outcome = await this.withSessionLock(async (held): Promise<Outcome> => {
-      const session = await this.loadSession();
-      if (!session) {
+      const stored = await this.readStoredSession();
+      if (stored.kind !== 'valid') {
         throw new AppError('No session to refresh. Run: proton-drive-cli login', ErrorCode.SESSION_EXPIRED, {}, false);
       }
-      if (stale !== undefined && session.uid !== stale.uid) {
+      const { record } = stored;
+      if (stale !== undefined && record.uid !== stale.uid) {
         throw sessionReplacedError();
       }
+      const staleRevision = stale === undefined ? undefined : this.revisionOf(stale);
+      if (stale !== undefined && staleRevision !== undefined && record.revision !== staleRevision && !isAccessTokenExpired(record)) {
+        return { kind: 'rotated', stale };
+      }
+      const session = await this.verifiedSession(record);
       if (stale !== undefined && session.accessToken !== stale.accessToken && !isAccessTokenExpired(session)) {
         logger.info('Session was already refreshed by another process');
         return { kind: 'session', session };
@@ -354,30 +531,44 @@ export class SessionManager {
         throw held.compromised ? lockLostError('the refresh response named another session UID') : cause;
       }
 
+      const removedError = new AppError(
+        'The session was removed during the refresh. Run: proton-drive-cli login',
+        ErrorCode.SESSION_EXPIRED,
+        {},
+        false,
+      );
       const current = await this.readStoredSession();
       if (current.kind !== 'valid') {
-        throw new AppError(
-          'The session was removed during the refresh. Run: proton-drive-cli login',
-          ErrorCode.SESSION_EXPIRED,
-          {},
-          false,
-        );
+        throw removedError;
       }
-      if (current.session.refreshToken !== session.refreshToken) {
-        if (current.session.uid !== session.uid) {
+      if (current.record.revision !== session.revision) {
+        if (current.record.uid !== session.uid) {
           throw sessionReplacedError();
         }
         logger.info('Session was rotated by another process during the refresh');
-        return { kind: 'session', session: current.session };
+        return { kind: 'session', session: await this.verifiedSession(current.record) };
       }
 
-      const updatedSession: SessionCredentials = {
-        ...session,
-        accessToken: result.AccessToken,
-        refreshToken: result.RefreshToken,
-        tokenExpiresAt: resolveTokenExpiresAt(result.ExpiresIn),
-      };
-      await this.writeSessionFile(updatedSession);
+      let updatedSession: SessionCredentials;
+      try {
+        updatedSession = await this.writeSession({
+          ...session,
+          accessToken: result.AccessToken,
+          refreshToken: result.RefreshToken,
+          tokenExpiresAt: resolveTokenExpiresAt(result.ExpiresIn),
+        }, session.revision);
+      } catch (error) {
+        if (!(error instanceof AppError) || error.code !== ErrorCode.CREDENTIALS_UNAVAILABLE) {
+          throw error;
+        }
+        const storeError = typeof error.details?.storeError === 'string' ? error.details.storeError : error.message;
+        throw new AppError(
+          `The refreshed tokens could not be saved to ${session.credentialStore} (${storeError}); the refresh token it held is spent. Fix the credential store; if the next command fails, run: proton-drive-cli login`,
+          ErrorCode.CREDENTIALS_UNAVAILABLE,
+          { credentialStore: session.credentialStore, credentialHost: session.credentialHost, storeError },
+          false,
+        );
+      }
       logger.info('Token refreshed successfully');
       return { kind: 'session', session: updatedSession };
     });
@@ -385,38 +576,47 @@ export class SessionManager {
     if (outcome.kind === 'session') {
       return outcome.session;
     }
-    await this.removeKeyPassword(outcome.session);
-    throw signedOutError(outcome.cause, outcome.reason);
+    if (outcome.kind === 'rotated') {
+      const rotated = await this.loadSession();
+      if (!rotated || rotated.uid !== outcome.stale.uid) {
+        throw sessionReplacedError();
+      }
+      if (rotated.accessToken === outcome.stale.accessToken) {
+        return this.refreshSession({ ...outcome.stale, revision: rotated.revision }, appVersion);
+      }
+      logger.info('Session was already refreshed by another process');
+      return rotated;
+    }
+    const credentialsRemoved = await this.removeSecrets(outcome.session);
+    throw signedOutError(outcome.cause, outcome.reason, credentialsRemoved);
   }
 
   /**
    * Under the session lock: delete session.json and the crypto cache when the
-   * file still holds the refresh token of `session` and the lock was not
-   * reported lost; true when it did.
+   * file still holds the revision of `session` and the lock was not reported
+   * lost; true when it did.
    */
-  private static async signOutIfUnchanged(session: SessionCredentials, held: HeldSessionLock): Promise<boolean> {
+  private static async signOutIfUnchanged(session: SessionRecord, held: HeldSessionLock): Promise<boolean> {
     if (held.compromised) {
       return false;
     }
-    const current = await this.loadSession();
-    if (!current || current.refreshToken !== session.refreshToken) {
+    const current = await this.readStoredSession();
+    if (current.kind !== 'valid' || current.record.revision !== session.revision) {
       return false;
     }
     logger.warn('Signing out the session after a rejected refresh');
-    await fs.remove(SESSION_FILE);
-    await this.clearCryptoCache();
+    await this.removeSessionFiles();
     return true;
   }
 
-  /** Remove the key-password entry of `session`; failures are logged. */
-  static async removeKeyPassword(session: SessionCredentials): Promise<void> {
+  /** Remove the credential-store entry of `session`; false, with the failure logged, when that fails. */
+  static async removeSecrets(session: SessionRecord): Promise<boolean> {
     try {
-      await createKeyPasswordStore({
-        provider: session.keyPasswordProvider,
-        host: session.keyPasswordHost,
-      }).remove(session.uid);
+      await secretStoreOf(session).remove(session.uid);
+      return true;
     } catch (error) {
-      logger.warn(`Could not remove the key password of session ${uidFingerprint(session.uid)}: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn(`Could not remove the credentials of session ${uidFingerprint(session.uid)}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
@@ -463,7 +663,7 @@ export class SessionManager {
     try {
       return await this.refreshSession(rejected, appVersion);
     } catch (error) {
-      const latest = await this.loadSession();
+      const latest = await this.loadSession().catch(() => null);
       if (latest && latest.uid === rejected.uid && latest.accessToken !== rejected.accessToken) {
         logger.info('Session refreshed by another process, using updated tokens');
         return latest;
@@ -476,7 +676,7 @@ export class SessionManager {
    * Local validity check: the access token has not reached `tokenExpiresAt`.
    * The API's HTTP 401 is the remote verdict and drives the reactive refresh.
    */
-  static async validateSession(session: SessionCredentials): Promise<boolean> {
+  static async validateSession(session: Pick<SessionRecord, 'tokenExpiresAt'>): Promise<boolean> {
     if (isAccessTokenExpired(session)) {
       logger.debug('Session expired locally (tokenExpiresAt)');
       return false;
@@ -508,8 +708,8 @@ export class SessionManager {
         return null;
       }
 
-      const session = await this.loadSession();
-      if (!session || session.uid !== cache.sessionUid) {
+      const stored = await this.readStoredSession();
+      if (stored.kind !== 'valid' || stored.record.uid !== cache.sessionUid) {
         logger.debug('Crypto cache stale (session UID mismatch)');
         await this.clearCryptoCache();
         return null;
@@ -535,7 +735,7 @@ export class SessionManager {
     try {
       await this.withSessionLock(async () => {
         const stored = await this.readStoredSession();
-        if (stored.kind !== 'valid' || stored.session.uid !== sessionUid) {
+        if (stored.kind !== 'valid' || stored.record.uid !== sessionUid) {
           logger.debug('Crypto cache not saved: the session changed during the fetch');
           return;
         }

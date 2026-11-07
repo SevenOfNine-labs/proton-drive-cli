@@ -39,7 +39,7 @@ export class DriveCryptoService {
    * The user and address records come from the crypto-init cache when it
    * belongs to the current session.
    *
-   * @throws AppError KEY_PASSWORD_REQUIRED when the key password unlocks no user key
+   * @throws AppError CREDENTIALS_UNAVAILABLE when the key password unlocks no user key
    */
   async initialize(keyPassword: string): Promise<void> {
     if (!keyPassword) {
@@ -61,7 +61,7 @@ export class DriveCryptoService {
     if (this.userKeys.size === 0) {
       throw new AppError(
         'The stored key password unlocks no user key. Run: proton-drive-cli login',
-        ErrorCode.KEY_PASSWORD_REQUIRED,
+        ErrorCode.CREDENTIALS_UNAVAILABLE,
         {},
         false,
       );

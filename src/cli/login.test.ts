@@ -2,8 +2,9 @@ import {
   createLoginCommand,
   createLogoutCommand,
   createSessionRefreshCommand,
+  createStatusCommand,
   loginWithBrowserFork,
-  resolveBrowserForkKeyPasswordOptions,
+  resolveCredentialStoreOptions,
 } from './login';
 import { SessionManager } from '../auth/session';
 import { AuthService } from '../auth';
@@ -31,6 +32,7 @@ jest.mock('../auth/session', () => ({
     loadSession: jest.fn(),
     readStoredSession: jest.fn(),
     refreshSession: jest.fn(),
+    hasValidSession: jest.fn(),
   },
 }));
 
@@ -40,47 +42,59 @@ import { openBrowserUrl } from '../utils/open-browser';
 const mockOutputResult = outputResult as jest.MockedFunction<typeof outputResult>;
 const mockOpenBrowserUrl = openBrowserUrl as jest.MockedFunction<typeof openBrowserUrl>;
 const mockSessionManager = SessionManager as jest.Mocked<typeof SessionManager>;
-const sessionFields = {
+const record = {
   uid: 'uid-123',
   scopes: ['drive'],
-  keyPasswordProvider: 'pass-cli' as const,
-  keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+  credentialStore: 'pass-cli' as const,
+  credentialHost: 'proton-drive-cli.invalid',
+  revision: 'rev-1',
 };
+const sessionFields = { ...record, keyPassword: 'stored-key-password' };
 
-describe('resolveBrowserForkKeyPasswordOptions', () => {
+describe('resolveCredentialStoreOptions', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
     process.env = { ...originalEnv };
   });
 
-  it('prefers explicit key-password provider and host', () => {
-    expect(resolveBrowserForkKeyPasswordOptions({
-      keyPasswordProvider: ' pass-cli ',
-      keyPasswordHost: ' proton-drive-key.example.test ',
+  it('prefers the explicit credential store and host', () => {
+    process.env.PROTON_CREDENTIAL_STORE = 'pass-cli';
+    process.env.PROTON_CREDENTIAL_HOST = 'env.invalid';
+
+    expect(resolveCredentialStoreOptions({
+      credentialStore: ' git-credential ',
+      credentialHost: ' option.invalid ',
     })).toEqual({
-      keyPasswordProvider: 'pass-cli',
-      keyPasswordHost: 'proton-drive-key.example.test',
+      credentialStore: 'git-credential',
+      credentialHost: 'option.invalid',
     });
   });
 
-  it('uses environment defaults when command options are absent', () => {
-    process.env.PROTON_KEY_PASSWORD_PROVIDER = 'pass-cli';
-    process.env.PROTON_KEY_PASSWORD_HOST = 'proton-drive-key.env.test';
+  it('uses PROTON_CREDENTIAL_STORE and PROTON_CREDENTIAL_HOST when the options are absent', () => {
+    process.env.PROTON_CREDENTIAL_STORE = 'git-credential';
+    process.env.PROTON_CREDENTIAL_HOST = 'env.invalid';
 
-    expect(resolveBrowserForkKeyPasswordOptions()).toEqual({
-      keyPasswordProvider: 'pass-cli',
-      keyPasswordHost: 'proton-drive-key.env.test',
+    expect(resolveCredentialStoreOptions()).toEqual({
+      credentialStore: 'git-credential',
+      credentialHost: 'env.invalid',
     });
   });
 
-  it('defaults to pass-cli', () => {
-    delete process.env.PROTON_KEY_PASSWORD_PROVIDER;
-    delete process.env.PROTON_KEY_PASSWORD_HOST;
+  it('defaults to pass-cli and leaves the host to the store', () => {
+    delete process.env.PROTON_CREDENTIAL_STORE;
+    delete process.env.PROTON_CREDENTIAL_HOST;
 
-    expect(resolveBrowserForkKeyPasswordOptions()).toEqual({
-      keyPasswordProvider: 'pass-cli',
+    expect(resolveCredentialStoreOptions()).toEqual({
+      credentialStore: 'pass-cli',
     });
+  });
+
+  it('reads no key-password provider variable', () => {
+    delete process.env.PROTON_CREDENTIAL_STORE;
+    process.env.PROTON_KEY_PASSWORD_PROVIDER = 'git-credential';
+
+    expect(resolveCredentialStoreOptions()).toEqual({ credentialStore: 'pass-cli' });
   });
 });
 
@@ -99,7 +113,6 @@ describe('loginWithBrowserFork', () => {
         await onSignInUrl('https://account.proton.me/desktop/login?app=drive&pv=3#payload=test');
         return {
           session: { uid: 'uid-123' },
-          keyPasswordAvailable: true,
         };
       }),
     } as any;
@@ -118,19 +131,10 @@ describe('loginWithBrowserFork', () => {
 });
 
 describe('createLoginCommand', () => {
-  it('exposes browser-fork key-password options only', () => {
+  it('exposes the credential store options only', () => {
     const optionNames = createLoginCommand().options.map((option) => option.long);
 
-    expect(optionNames).toEqual(expect.arrayContaining([
-      '--key-password-provider',
-      '--key-password-host',
-    ]));
-    expect(optionNames).not.toEqual(expect.arrayContaining([
-      '--username',
-      '--password-stdin',
-      '--credential-provider',
-      '--auth-mode',
-    ]));
+    expect(optionNames).toEqual(['--credential-store', '--credential-host']);
   });
 });
 
@@ -179,7 +183,7 @@ describe('createSessionRefreshCommand', () => {
     const output = (console.log as jest.Mock).mock.calls.flat().join('\n');
     expect(output).toContain('"ok":true');
     expect(output).toContain('"refreshed":true');
-    for (const secret of ['old-access-token', 'old-refresh-token', 'new-access-token', 'new-refresh-token', 'uid-123']) {
+    for (const secret of ['old-access-token', 'old-refresh-token', 'new-access-token', 'new-refresh-token', 'stored-key-password', 'uid-123']) {
       expect(output).not.toContain(secret);
     }
     const parsed = JSON.parse(output);
@@ -263,6 +267,30 @@ describe('createSessionRefreshCommand', () => {
     expect(parsed).toMatchObject({ errorCode: 'TIMEOUT', recoverable: true, action: 'retry_after_backoff' });
   });
 
+  it('reports a credential store that cannot return the session entry as retryable', async () => {
+    mockSessionManager.loadSession.mockRejectedValue(new AppError(
+      'The credentials of the session could not be read from pass-cli (pass-cli is not logged in). ' +
+        'Fix the credential store, or run: proton-drive-cli login',
+      ErrorCode.CREDENTIALS_UNAVAILABLE,
+      { credentialStore: 'pass-cli', credentialHost: 'proton-drive-cli.invalid', storeError: 'pass-cli is not logged in' },
+      true,
+    ));
+
+    await createSessionRefreshCommand().parseAsync(['refresh', '--json'], { from: 'user' });
+
+    expect(process.exitCode).toBe(1);
+    expect(mockSessionManager.refreshSession).not.toHaveBeenCalled();
+    const parsed = JSON.parse((console.log as jest.Mock).mock.calls.flat().join('\n'));
+    expect(parsed).toMatchObject({
+      ok: false,
+      state: 'refresh_failed',
+      errorCode: 'CREDENTIALS_UNAVAILABLE',
+      recoverable: true,
+      action: 'retry_after_backoff',
+      details: { credentialStore: 'pass-cli', credentialHost: 'proton-drive-cli.invalid', storeError: 'pass-cli is not logged in' },
+    });
+  });
+
   it('reports the sign-out after a rejected refresh token as SESSION_EXPIRED', async () => {
     mockSessionManager.loadSession.mockResolvedValue({
       ...sessionFields,
@@ -301,7 +329,7 @@ describe('createLogoutCommand', () => {
     jest.clearAllMocks();
     console.log = jest.fn();
     console.error = jest.fn();
-    logout = jest.spyOn(AuthService.prototype, 'logout').mockResolvedValue({ revoked: true });
+    logout = jest.spyOn(AuthService.prototype, 'logout').mockResolvedValue({ revoked: true, credentialsRemoved: true });
   });
 
   afterEach(() => {
@@ -316,7 +344,7 @@ describe('createLogoutCommand', () => {
   it('logs out a session whose access token expired locally', async () => {
     mockSessionManager.readStoredSession.mockResolvedValue({
       kind: 'valid',
-      session: { ...sessionFields, accessToken: 'a', refreshToken: 'r', tokenExpiresAt: Date.now() - 60_000 },
+      record: { ...record, tokenExpiresAt: Date.now() - 60_000 },
     });
 
     await createLogoutCommand().parseAsync([], { from: 'user' });
@@ -328,11 +356,8 @@ describe('createLogoutCommand', () => {
   });
 
   it('warns when the server did not confirm the revocation, after the local cleanup', async () => {
-    mockSessionManager.readStoredSession.mockResolvedValue({
-      kind: 'valid',
-      session: { ...sessionFields, accessToken: 'a', refreshToken: 'r' },
-    });
-    logout.mockResolvedValue({ revoked: false });
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'valid', record });
+    logout.mockResolvedValue({ revoked: false, credentialsRemoved: true });
 
     await createLogoutCommand().parseAsync([], { from: 'user' });
 
@@ -341,9 +366,23 @@ describe('createLogoutCommand', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('warns when the credential store kept the session entry, after the local cleanup', async () => {
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'valid', record });
+    logout.mockResolvedValue({ revoked: true, credentialsRemoved: false });
+
+    await createLogoutCommand().parseAsync([], { from: 'user' });
+
+    expect(printed(console.error)).toContain(
+      `the session entry could not be removed from ${record.credentialStore}; delete it there.`,
+    );
+    expect(printed(console.error)).not.toContain('could not be revoked');
+    expect(printed(console.log)).toContain('Logged out successfully');
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it('deletes a session file that login did not write', async () => {
     mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'invalid' });
-    logout.mockResolvedValue({ revoked: false });
+    logout.mockResolvedValue({ revoked: false, credentialsRemoved: true });
 
     await createLogoutCommand().parseAsync([], { from: 'user' });
 
@@ -368,5 +407,55 @@ describe('createLogoutCommand', () => {
     await createLogoutCommand().parseAsync([], { from: 'user' });
 
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('createStatusCommand', () => {
+  const originalLog = console.log;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    console.log = jest.fn();
+  });
+
+  afterEach(() => {
+    console.log = originalLog;
+    process.exitCode = undefined;
+  });
+
+  const printed = () => (console.log as jest.Mock).mock.calls.flat().join('\n');
+
+  it('reports a readable session entry as stored, read from the credential store', async () => {
+    mockSessionManager.hasValidSession.mockResolvedValue(true);
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'valid', record });
+    mockSessionManager.loadSession.mockResolvedValue({ ...sessionFields, accessToken: 'access', refreshToken: 'refresh' });
+
+    await createStatusCommand().parseAsync([], { from: 'user' });
+
+    expect(mockSessionManager.loadSession).toHaveBeenCalledWith();
+    expect(printed()).toContain('Credentials: Stored (pass-cli)');
+    for (const secret of ['access', 'refresh', 'stored-key-password']) {
+      expect(printed()).not.toContain(`: ${secret}`);
+    }
+  });
+
+  it('reports an unreadable session entry as missing', async () => {
+    mockSessionManager.hasValidSession.mockResolvedValue(true);
+    mockSessionManager.readStoredSession.mockResolvedValue({ kind: 'valid', record });
+    mockSessionManager.loadSession.mockRejectedValue(new AppError('unreadable', ErrorCode.CREDENTIALS_UNAVAILABLE));
+
+    await createStatusCommand().parseAsync([], { from: 'user' });
+
+    expect(printed()).toContain('Credentials: Missing (pass-cli)');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports no authentication without reading the credential store', async () => {
+    mockSessionManager.hasValidSession.mockResolvedValue(false);
+
+    await createStatusCommand().parseAsync([], { from: 'user' });
+
+    expect(printed()).toContain('Not authenticated');
+    expect(mockSessionManager.loadSession).not.toHaveBeenCalled();
   });
 });

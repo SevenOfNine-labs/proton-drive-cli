@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/auth-state-payload.schema.json",
   "title": "proton-drive-cli bridge auth-state payload",
-  "description": "Success payload of `bridge auth-state`: readiness of the saved browser-fork session. session_invalid means session.json is not a session written by `proton-drive-cli login` (non-blank uid, accessToken, refreshToken and keyPasswordHost, keyPasswordProvider git-credential or pass-cli). session_expired means the access token expired locally; bridge init refreshes it before use. willAttemptNetwork is always false: proton-drive-cli sends no request to the Proton API and refreshes no token for auth-state. keyPasswordAvailable comes from reading the entry through the session's credential provider; pass-cli can contact Proton Pass to do so. errors carries the provider's reason when the key password could not be read.",
+  "description": "Success payload of `bridge auth-state`: readiness of the saved browser-fork session. session_invalid means session.json is not a session written by `proton-drive-cli login` (non-blank uid, credentialHost and revision, credentialStore git-credential or pass-cli). session_expired means the access token expired locally; bridge init refreshes it before use. willAttemptNetwork is always false: proton-drive-cli sends no request to the Proton API and refreshes no token for auth-state. credentialsAvailable comes from reading the session's entry (tokens and key password) from its credential store; pass-cli can contact Proton Pass to do so. errors carries the store's reason when the entry could not be read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
     "sessionValid",
     "sessionExpired",
     "sessionUidPresent",
-    "keyPasswordAvailable",
+    "credentialsAvailable",
     "willAttemptNetwork",
     "errors",
     "actions"
@@ -22,7 +22,7 @@
       "enum": [
         "ready",
         "needs_login",
-        "needs_key_password",
+        "credentials_unavailable",
         "session_expired",
         "session_invalid"
       ]
@@ -39,17 +39,17 @@
     "sessionUidPresent": {
       "type": "boolean"
     },
-    "keyPasswordAvailable": {
+    "credentialsAvailable": {
       "type": "boolean"
     },
-    "keyPasswordProvider": {
+    "credentialStore": {
       "type": "string",
       "enum": [
         "git-credential",
         "pass-cli"
       ]
     },
-    "keyPasswordHost": {
+    "credentialHost": {
       "type": "string"
     },
     "willAttemptNetwork": {

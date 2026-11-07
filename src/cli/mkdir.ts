@@ -31,7 +31,7 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  * - Folder name encrypted with parent's encryption key
  * - New folder receives its own encryption key
  * - All metadata encrypted before transmission
- * - Password resolved via credential provider (never logged)
+ * - Session tokens and key password read from the credential store (never logged)
  *
  * # Exit Codes
  *

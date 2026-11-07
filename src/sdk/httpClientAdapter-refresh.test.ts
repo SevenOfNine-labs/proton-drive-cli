@@ -7,6 +7,8 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import { SessionManager } from '../auth/session';
 import { clearRateLimitCooldown } from '../auth/rate-limit';
+import { SESSION_FILE, STATE_DIR } from '../auth/state-dir';
+import { memorySessionSecrets } from '../test/memory-session-secrets';
 import { HTTPClientAdapter } from './httpClientAdapter';
 
 jest.mock('os', () => {
@@ -17,14 +19,16 @@ jest.mock('os', () => {
   return { ...actual, homedir: () => home };
 });
 jest.mock('../utils/logger');
+jest.mock('../auth/session-secrets', () => jest.requireActual('../test/memory-session-secrets').mockSessionSecretsModule());
 
 const nearExpiry = {
   uid: 'uid-A',
   accessToken: 'access-1',
   refreshToken: 'refresh-1',
+  keyPassword: 'key-password',
   scopes: [],
-  keyPasswordProvider: 'pass-cli' as const,
-  keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+  credentialStore: 'pass-cli' as const,
+  credentialHost: 'proton-drive-cli.invalid',
   tokenExpiresAt: Date.now() + 60_000,
 };
 
@@ -42,6 +46,7 @@ function parallelRequests(adapter: HTTPClientAdapter, count: number): Promise<Re
 }
 
 beforeEach(async () => {
+  memorySessionSecrets.reset();
   await clearRateLimitCooldown();
 });
 
@@ -84,4 +89,21 @@ it('sends one refresh for parallel requests rejected with the same token while t
 
   expect(results.every((result) => result.status === 'rejected' && result.reason.code === 'API_ERROR' && result.reason.isRecoverable)).toBe(true);
   expect(refreshes).toBe(1);
+});
+
+it('reads the credential-store entry of a session another process wrote once for parallel requests', async () => {
+  const { keyPassword, accessToken, refreshToken, ...rest } = { ...nearExpiry, accessToken: 'access-3' };
+  memorySessionSecrets.put(rest.credentialStore, rest.credentialHost, rest.uid, { accessToken, refreshToken, keyPassword }, 'written-by-another-process');
+  await fs.ensureDir(STATE_DIR);
+  await fs.writeJson(SESSION_FILE, { ...rest, revision: 'written-by-another-process' });
+  const authorizations: (string | null)[] = [];
+  global.fetch = jest.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    authorizations.push(new Headers(init?.headers).get('Authorization'));
+    return json(200, { Code: 1000 });
+  }) as typeof fetch;
+
+  await parallelRequests(new HTTPClientAdapter(), 8);
+
+  expect(authorizations).toEqual(Array(8).fill('Bearer access-3'));
+  expect(memorySessionSecrets.loads).toHaveLength(1);
 });

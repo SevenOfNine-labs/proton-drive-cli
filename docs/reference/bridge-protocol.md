@@ -87,43 +87,43 @@ Object layout in Drive: `/<storageBase>/<oid[0:2]>/<oid[2:4]>/<oid>`
 ### auth-state
 
 Local readiness of the saved session: reads `session.json`, applies the local
-expiry check, and reads the key-password entry from the session's credential
-provider. proton-drive-cli sends no request to the Proton API for it and never
-refreshes tokens; `pass-cli` can contact Proton Pass to read the entry.
+expiry check, and reads the session's entry (tokens and key password) from its
+credential store. proton-drive-cli sends no request to the Proton API for it
+and never refreshes tokens; `pass-cli` can contact Proton Pass to read the entry.
 Payload (`auth-state-payload.schema.json`):
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `state` | enum | `ready`, `needs_login`, `needs_key_password`, `session_expired`, `session_invalid` |
+| `state` | enum | `ready`, `needs_login`, `credentials_unavailable`, `session_expired`, `session_invalid` |
 | `hasSession` | bool | `session.json` exists |
 | `sessionValid` | bool | The file is a login session and its access token has not expired locally |
 | `sessionExpired` | bool | The file is a login session whose access token has expired locally |
 | `sessionUidPresent` | bool | The file is a login session, which always carries a UID |
-| `keyPasswordAvailable` | bool | The key password was read back from the session's provider during this call |
-| `keyPasswordProvider`, `keyPasswordHost` | string | Provider and host recorded in the session |
+| `credentialsAvailable` | bool | The session's entry was read from its credential store during this call |
+| `credentialStore`, `credentialHost` | string | Credential store and host recorded in the session |
 | `willAttemptNetwork` | const false | Always false: proton-drive-cli sends no request to the Proton API; the adapter refuses a payload that says otherwise |
-| `errors` | string array | The credential provider's reason when the key password could not be read |
+| `errors` | string array | The credential store's reason when the entry could not be read |
 | `actions` | string array | Human-readable next steps |
 
 A login session is a `session.json` with every field `proton-drive-cli login`
-writes, each a non-blank string: `uid`, `accessToken`, `refreshToken`,
-`keyPasswordProvider` (`pass-cli` or `git-credential`) and `keyPasswordHost`
-(`isSessionCredentials` in `src/auth/session.ts`).
+writes, each a non-blank string: `uid`, `credentialStore` (`pass-cli` or
+`git-credential`), `credentialHost` and `revision` (`isSessionRecord` in
+`src/auth/session.ts`).
 How `state` is chosen, first match wins:
 
 | Condition | `state` |
 | --- | --- |
 | No session file | `needs_login` |
-| The file is not a login session (unreadable, a field is missing or blank, or another provider name) | `session_invalid` |
+| The file is not a login session (unreadable, a field is missing or blank, or another store name) | `session_invalid` |
+| The entry is not readable from the session's credential store | `credentials_unavailable` |
 | The access token has expired locally | `session_expired` |
-| The key password is not readable from the session's provider | `needs_key_password` |
 | otherwise | `ready` |
 
 Every state but `ready` is resolved by `proton-drive-cli login`;
 `session_expired` needs no action before a transfer, since `init` refreshes the
 access token first (`proton-drive-cli session refresh` does so at once), and
-`needs_key_password` is also resolved by fixing the provider named in `errors`
-(for example `pass-cli login`).
+`credentials_unavailable` is also resolved by fixing the store named in
+`errors` (for example `pass-cli login`).
 
 ### init
 
@@ -191,7 +191,7 @@ code the Go adapter writes to its status file.
 | `errorCode` | `code` | Adapter root code |
 | --- | --- | --- |
 | `AUTH_FAILED`, `SESSION_EXPIRED` | 401 | `auth_required` |
-| `KEY_PASSWORD_REQUIRED` | 401 | `key_password_required` |
+| `CREDENTIALS_UNAVAILABLE` | 401 | `credentials_unavailable` |
 | `INSUFFICIENT_SCOPE` | 403 | `insufficient_scope` |
 | `PERMISSION_DENIED` | 403 | `permission_denied` |
 | `NOT_FOUND`, `FILE_NOT_FOUND`, `PATH_NOT_FOUND` | 404 | `not_found` |
@@ -216,15 +216,17 @@ When another process already replaced the rejected access token of the same
 session UID, its tokens are used without a second refresh. When the refresh
 endpoint rejects the refresh token with a Proton error and HTTP 4xx other than
 408 and 429, or answers with another UID, the session is signed out:
-`session.json`, the crypto cache and the key-password entry are removed and
+`session.json`, the crypto cache and the credential-store entry are removed and
 the command fails with `SESSION_EXPIRED`; the next `auth-state` reports
 `needs_login`. A command whose `session.json` was removed or replaced by
 another login meanwhile also fails with `SESSION_EXPIRED`. Any other refresh
-failure keeps its own code (`NETWORK_ERROR`, `RATE_LIMITED`, `API_ERROR`).
+failure keeps its own code (`NETWORK_ERROR`, `RATE_LIMITED`, `API_ERROR`). A
+credential store that rejects the refreshed entry fails the command with
+`CREDENTIALS_UNAVAILABLE`.
 
-`KEY_PASSWORD_REQUIRED` details carry `keyPasswordProvider`,
-`keyPasswordHost` and `providerError`, the credential provider's reason why
-the key password could not be read.
+`CREDENTIALS_UNAVAILABLE` details carry `credentialStore`, `credentialHost`
+and `storeError`, the credential store's reason why the entry could not be
+read or saved; the same code reports a key password that unlocks no user key.
 
 ## Environment
 

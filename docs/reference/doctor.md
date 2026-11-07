@@ -1,9 +1,9 @@
 # Doctor Reference
 
 `proton-drive-cli doctor` is the offline preflight: it inspects the local
-session file, the key-password entry and the entry point without logging in,
-refreshing tokens or calling the Proton API (`pass-cli` can contact Proton
-Pass to read the key-password entry), and reports whether a transfer or a
+session file, the session's credential-store entry and the entry point
+without logging in, refreshing tokens or calling the Proton API (`pass-cli`
+can contact Proton Pass to read the entry), and reports whether a transfer or a
 live canary may be attempted. Source of truth: `src/cli/doctor.ts`;
 JSON output schema: `schemas/doctor/v1/report.schema.json`.
 
@@ -11,8 +11,8 @@ JSON output schema: `schemas/doctor/v1/report.schema.json`.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--key-password-provider <type>` | the provider recorded in the session | Key-password provider to verify instead: `pass-cli` or `git-credential` |
-| `--key-password-host <host>` | the host recorded in the session | Key-password credential host to verify instead |
+| `--credential-store <store>` | the store recorded in the session | Credential store to verify instead: `pass-cli` or `git-credential` |
+| `--credential-host <host>` | the host recorded in the session | Credential host to verify instead |
 | `--drive-cli-bin <path>` | `PROTON_DRIVE_CLI_BIN`, else the running entry point | Entry point whose existence is checked |
 | `--session-file <path>` | `~/.proton-drive-cli/session.json` | Session file to inspect |
 | `--json` | off | Print the report as JSON |
@@ -23,8 +23,8 @@ JSON output schema: `schemas/doctor/v1/report.schema.json`.
 | `id` | Title | Result |
 | --- | --- | --- |
 | `drive-cli-bin` | proton-drive-cli entry point | `pass` when the file exists, else `fail` |
-| `key-password-credential` | browser-fork key password | `skip` without a login session; `fail` when the session's UID-scoped entry cannot be read from the provider or the provider is unsupported; `pass` when it is readable |
-| `session-file` | session file hygiene | `warn` when no session file exists; `fail` when its mode allows group or other access, or it is not a login session (it lacks one of `uid`, `accessToken`, `refreshToken`, `keyPasswordProvider`, `keyPasswordHost`, or is unreadable); `pass` otherwise |
+| `session-credentials` | session credentials | `skip` without a login session; `fail` when the session's entry cannot be read from the credential store or the store is unsupported; `pass` when it is readable |
+| `session-file` | session file hygiene | `warn` when no session file exists; `fail` when its mode allows group or other access, or it is not a login session (it lacks one of `uid`, `credentialStore`, `credentialHost`, `revision`, or is unreadable); `pass` otherwise |
 
 Statuses are `pass`, `warn`, `fail`, `skip`. Each check carries `message`
 and, when something must be done, `remediation`.
@@ -66,8 +66,8 @@ The report is printed in both cases.
 
 ## Consumers
 
-- The `proton-lfs-cli` tray's "Run Doctor..." runs it without provider flags,
-  so it checks the provider and host recorded in the session.
+- The `proton-lfs-cli` tray's "Run Doctor..." runs it without store flags,
+  so it checks the store and host recorded in the session.
 - The parent repository's `internal/preflight` package and
   `scripts/check_doctor_readiness.go` parse `doctor --json` and require
   `canAttemptTransfer`, `canAttemptLiveCanary` or an exact

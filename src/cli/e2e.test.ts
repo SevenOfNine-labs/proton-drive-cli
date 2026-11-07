@@ -65,21 +65,22 @@ function helpOptions(stdout: string): string[] {
 }
 
 describe('CLI surface', () => {
-  it('--help lists the command groups and the key-password providers', async () => {
+  it('--help lists the command groups and the credential stores', async () => {
     const r = await runCli(['--help']);
 
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('login');
     expect(r.stdout).toContain('doctor');
     expect(r.stdout).toContain('bridge');
-    expect(r.stdout).toContain('--key-password-provider');
+    expect(r.stdout).toContain('--credential-store pass-cli');
+    expect(r.stdout).toContain('--credential-store git-credential');
   });
 
-  it('login --help offers exactly the key-password options', async () => {
+  it('login --help offers exactly the credential store options', async () => {
     const r = await runCli(['login', '--help']);
 
     expect(r.code).toBe(0);
-    expect(helpOptions(r.stdout)).toEqual(['--help', '--key-password-host', '--key-password-provider']);
+    expect(helpOptions(r.stdout)).toEqual(['--credential-host', '--credential-store', '--help']);
   });
 
   it('doctor --help offers exactly the offline preflight options', async () => {
@@ -87,11 +88,11 @@ describe('CLI surface', () => {
 
     expect(r.code).toBe(0);
     expect(helpOptions(r.stdout)).toEqual([
+      '--credential-host',
+      '--credential-store',
       '--drive-cli-bin',
       '--help',
       '--json',
-      '--key-password-host',
-      '--key-password-provider',
       '--session-file',
       '--strict',
     ]);

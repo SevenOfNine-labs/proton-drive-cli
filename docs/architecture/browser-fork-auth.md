@@ -18,56 +18,72 @@ official Proton account module
 4. Treat HTTP 422 as "not approved yet".
 5. Decrypt the returned payload with AES-256-GCM (NIST SP 800-38D) using AAD
    `fork`; it carries the user key password.
-6. Persist the tokens in `session.json` and the key password in the
-   key-password provider.
+6. Save the tokens and the key password in the credential store and the
+   non-secret session record in `session.json`.
 
 Every request carries `x-pm-appversion` and
 `x-pm-drive-sdk-version: js@<vendored SDK release>`, as the official
 `ApiClient` does (`apiClient.ts`, `cli/src/api/index.ts`).
 
-## Safety Contract
+## Session Storage
 
-The fork payload contains `keyPassword`, which is needed to unlock Proton user
-keys for Drive operations. Proton's official CLI stores that secret in an OS
-secret store. This project stores the derived key password in a configured
-credential provider and verifies readback before saving the browser-fork
-session. The secret is never written to `~/.proton-drive-cli/session.json`.
+The fork payload contains `keyPassword`, which unlocks the Proton user keys,
+and the response carries the access and refresh tokens. RFC 6749 (10.4)
+requires refresh tokens to be kept confidential in storage, and RFC 6819
+(5.1.4.1.4, 4.1.3) asks clients to keep such secrets in an encrypted store
+and access tokens under the same protection. Proton's official CLI stores
+all three in one OS secret-store entry (`Bun.secrets`). This CLI stores them
+the same way, as one entry per session in a credential store, and keeps only
+non-secret data in `~/.proton-drive-cli/session.json` (mode 0600, directory
+0700).
 
-Key-password provider selection is explicit:
+Credential store selection is explicit:
 
-- `--key-password-provider <pass-cli|git-credential>` wins.
-- `PROTON_KEY_PASSWORD_PROVIDER` is used when the flag is absent; otherwise
-  the default is `pass-cli`.
-- `--key-password-host` or `PROTON_KEY_PASSWORD_HOST` can override the default
-  `proton-drive-key.proton-lfs-cli.local` credential host.
+- `--credential-store <pass-cli|git-credential>` wins.
+- `PROTON_CREDENTIAL_STORE` is used when the flag is absent; otherwise the
+  default is `pass-cli`.
+- `--credential-host` or `PROTON_CREDENTIAL_HOST` can override the default
+  credential host `proton-drive-cli.invalid` (RFC 6761, 6.4: the name never
+  resolves, so a credential helper that probes it reaches no server).
 
-The session file records where the key password lives:
+The entry's username is the session UID and its secret is the compact JSON
+object (RFC 8259) `{"uid", "revision", "accessToken", "refreshToken",
+"keyPassword"}`, at most 1280 characters so that Git's wincred helper, which
+stores UTF-16, stays within `CRED_MAX_CREDENTIAL_BLOB_SIZE` (2560 bytes).
+Every write is read back and compared before the session counts as saved. See
+[Credentials](../security/credentials.md) for the stores and the helpers
+git-credential accepts.
+
+`session.json` records where the entry lives:
 
 ```json
 {
   "uid": "…",
-  "accessToken": "…",
-  "refreshToken": "…",
   "scopes": ["…"],
-  "keyPasswordProvider": "pass-cli",
-  "keyPasswordHost": "proton-drive-key.proton-lfs-cli.local",
+  "credentialStore": "pass-cli",
+  "credentialHost": "proton-drive-cli.invalid",
+  "revision": "6f1c2b9e-4d8a-4c2f-9a51-3b7e0d4c8f12",
   "tokenExpiresAt": 1893456000000
 }
 ```
 
-A `session.json` without a non-blank `uid`, `accessToken`, `refreshToken`,
-`keyPasswordProvider` (`pass-cli` or `git-credential`) or `keyPasswordHost`
-is not a login session: transfers
-fail closed and `bridge auth-state` reports `session_invalid` until the next
-login.
+`revision` is a version 4 UUID (RFC 9562, 5.4) written into the entry and
+into `session.json`: login and every refresh store the entry first and then
+`session.json` with the new revision, both under the session lock. A process
+reads the entry once per revision and reuses it until `session.json` names
+another one.
 
-If key-password storage fails, or reading the entry back does not return the
-same key password, the login command does not save the session and revokes
-the new server session. If session save fails after key-password storage, it
-removes the stored key password and revokes the new session before returning
-the error. The previous session is read and replaced under the session lock;
-when it has another UID, its key-password entry is removed and the server
-session revoked after the save (failures are logged).
+A `session.json` without a non-blank `uid`, `credentialHost` and `revision`
+and a `credentialStore` of `pass-cli` or `git-credential` is not a login
+session: transfers fail closed and `bridge auth-state` reports
+`session_invalid` until the next login.
+
+If saving the entry fails, or reading it back does not return the same
+secrets, the login command does not save the session, removes the entry and
+revokes the new server session. The previous session is read and replaced
+under the session lock; when it has another UID, its entry is read for the
+revocation, removed, and the server session revoked after the save
+(failures are logged).
 
 ## Key Unlock
 
@@ -77,7 +93,8 @@ every user key is decrypted with the key password; an address key with a
 `Token` is decrypted with that token, which must decrypt with the user keys
 and carry a valid user-key signature; an address key without a `Token` is
 decrypted with the key password. A key password that opens no user key, or
-that the credential provider cannot return, fails with `KEY_PASSWORD_REQUIRED`.
+an entry the credential store cannot return, fails with
+`CREDENTIALS_UNAVAILABLE`.
 
 ## Token Refresh
 
@@ -95,18 +112,33 @@ Refresh follows the official `ApiClient` (`apiClient.ts`
   rate-limited or signed-out failure is reused for 30 seconds, any other
   failure lets the next request try again.
 - The refresh runs under the session lock. After an HTTP 401 it is skipped
-  when the session file already holds another access token than the rejected
-  one, so concurrent processes never spend the single-use refresh token twice.
-  A session file that holds another UID is never refreshed or adopted.
-- The new tokens are written only while the session file still holds the
-  refresh token that was spent, so a logout or sign-out during the request
-  is never undone. That check also applies when proper-lockfile reports the
-  lock compromised, so a refresh Proton already committed is never lost.
+  when `session.json` holds another revision than the one the rejected token
+  came from, and the session of that revision is read after the lock is
+  released; otherwise the entry is read from the credential store under the
+  lock, and the refresh is skipped when it already holds another access
+  token than the rejected one. The entry read under the lock must carry the
+  revision of `session.json`, so a stale entry never spends a refresh token.
+  Concurrent processes therefore never spend the single-use refresh token
+  twice, and a process whose revision is outdated reads the store only after
+  the lock is released. Waiters wait for the lock for about two minutes. A
+  session file that holds another UID is never refreshed or adopted.
+- The new tokens are written only while `session.json` still holds the
+  revision whose refresh token was spent, so a logout or sign-out during the
+  request is never undone. That check also applies when proper-lockfile
+  reports the lock compromised, so a refresh Proton already committed is
+  never lost. When the store rejects the new entry after Proton rotated the
+  token, the command fails with `CREDENTIALS_UNAVAILABLE`. An entry that
+  names the revision of `session.json` as the one it replaces is the result
+  of a refresh that stopped before `session.json` was written: the next
+  refresh writes `session.json` for it and goes on with its tokens. An entry
+  that still holds the spent refresh token makes the next refresh sign the
+  session out.
 - A refresh the API rejects with a Proton error and HTTP 4xx other than 408
-  (RFC 9110, 15.5.9) and 429, or answers with another UID, while the session
-  file still holds that refresh token, signs out: `session.json`, the crypto
-  cache and the key-password entry are removed and the command fails with
-  `SESSION_EXPIRED`. After a compromised lock the session is kept instead.
+  (RFC 9110, 15.5.9) and 429, or answers with another UID, while
+  `session.json` still holds that revision, signs out: `session.json`, the
+  crypto cache and the credential-store entry are removed and the command
+  fails with `SESSION_EXPIRED`. After a compromised lock the session is kept
+  instead.
 - A refresh that fails for another reason keeps its own code
   (`NETWORK_ERROR`, `RATE_LIMITED`, `API_ERROR`, and `TIMEOUT` for a session
   lock another process holds, proper-lockfile `ELOCKED`) on every path,
@@ -116,32 +148,35 @@ Refresh follows the official `ApiClient` (`apiClient.ts`
 ## Logout
 
 `proton-drive-cli logout` revokes the server session (`DELETE /auth/v4`,
-after one refresh when the access token is rejected), removes its
-key-password entry, then deletes `session.json` and the crypto cache under
-the session lock unless a new login replaced them meanwhile. A session
-already ended elsewhere is signed out by that refresh. An invalid session file
-is deleted without a request.
+after one refresh when the access token is rejected) with the tokens of its
+entry, deletes `session.json` and the crypto cache under the session lock
+unless a new login replaced them meanwhile, then removes the entry, so a
+refresh in flight cannot leave a new entry behind. A session already ended
+elsewhere is signed out by that refresh. When the entry cannot be read the
+server session is not revoked and the local cleanup still runs; an entry
+that cannot be removed is reported. An invalid session file is deleted
+without a request.
 
 ## Deviations from the Official Module
 
 | Behaviour | Official account module | This CLI | Reason |
 | --- | --- | --- | --- |
-| Sign-out after a failed refresh | Every HTTP 4xx except 429 (`performTokenRefresh`) | HTTP 4xx except 408 and 429, with a Proton error body | The sign-out deletes files and the key-password entry and can start from the tray's background refresh; 408 is retryable (RFC 9110, 15.5.9) and a proxy's error page is not Proton's verdict |
-| Refresh response with another UID | Adopts the new UID | Signs the session out | The key-password entry and crypto cache are keyed by the UID |
+| Sign-out after a failed refresh | Every HTTP 4xx except 429 (`performTokenRefresh`) | HTTP 4xx except 408 and 429, with a Proton error body | The sign-out deletes files and the credential-store entry and can start from the tray's background refresh; 408 is retryable (RFC 9110, 15.5.9) and a proxy's error page is not Proton's verdict |
+| Refresh response with another UID | Adopts the new UID | Signs the session out | The credential-store entry and crypto cache are keyed by the UID |
 | Logout | Clears local state (`Auth.logout`) | Also revokes the server session (`DELETE /auth/v4`) | A discarded session stays valid on the server until it expires |
 | Locally expired access token | Refreshed on the next HTTP 401 | Refreshed once when a command starts | `tokenExpiresAt` is known and a command needs the account keys first |
-| Session and key-password storage | OS secret store | `session.json` (0600) and the key password in pass-cli or git-credential | Bridge subprocesses share one session; see [Credentials](../security/credentials.md) |
+| Session storage | One OS secret-store entry (`Bun.secrets`), or `pass` | One entry in pass-cli or a git credential helper that encrypts at rest; non-secret `session.json` (0600) | Node.js has no secret-store API; Git's credential helpers reach the OS stores with local-only persistence; see [Credentials](../security/credentials.md#direct-os-secret-store-access) |
 | Concurrent processes | One process | Session lock, compare-and-swap writes, shared refresh per process | Git LFS starts one bridge process per transfer |
 | Telemetry preference | `GET /core/v4/settings` after login | Not requested | This CLI sends no telemetry |
 
 ## Readiness
 
-The bridge `auth-state` command reads the stored key password from the
-session's credential provider without sending a request to the Proton API;
-`pass-cli` can contact Proton Pass to do so. It reports `ready` only when the session
-is locally valid and its key password is readable; otherwise it reports
-`needs_login`, `session_invalid`, `session_expired` (which `bridge init`
-refreshes before use) or `needs_key_password`.
+The bridge `auth-state` command reads the session's entry from its
+credential store without sending a request to the Proton API; `pass-cli` can
+contact Proton Pass to do so. It reports `ready` only when the session is
+locally valid and its entry is readable; otherwise it reports `needs_login`,
+`session_invalid`, `session_expired` (which `bridge init` refreshes before
+use) or `credentials_unavailable`.
 
 ## Testing Rules
 

@@ -18,17 +18,16 @@ jest.mock('os', () => {
   return { ...actual, homedir: () => home };
 });
 jest.mock('../utils/logger');
-jest.mock('../auth/key-password-store', () => ({
-  createKeyPasswordStore: jest.fn(() => ({ provider: 'pass-cli', host: 'h', load: async () => 'kp', remove: async () => {} })),
-}));
+jest.mock('../auth/session-secrets', () => jest.requireActual('../test/memory-session-secrets').mockSessionSecretsModule());
 
 const expired = {
   uid: 'uid-A',
   accessToken: 'access-1',
   refreshToken: 'refresh-1',
+  keyPassword: 'kp',
   scopes: [],
-  keyPasswordProvider: 'pass-cli' as const,
-  keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+  credentialStore: 'pass-cli' as const,
+  credentialHost: 'proton-drive-cli.invalid',
   tokenExpiresAt: Date.now() - 1_000,
 };
 
@@ -49,8 +48,7 @@ it.each([
   ['a server error', 'access-503', () => json(503, { Code: 503, Error: 'Unavailable' }), 'API_ERROR', 502],
   ['a network failure', 'access-net', () => { throw new TypeError('fetch failed'); }, 'NETWORK_ERROR', 502],
 ])('reports %s during the refresh with its own code and keeps the session', async (_label, accessToken, respond, errorCode, status) => {
-  const session = { ...expired, accessToken };
-  await SessionManager.replaceSession(session);
+  const { session } = await SessionManager.replaceSession({ ...expired, accessToken });
   global.fetch = jest.fn(async () => respond()) as typeof fetch;
 
   const envelope = toBridgeErrorResponse(await createSDKClient({}).catch((error: unknown) => error));

@@ -5,11 +5,14 @@ import { SessionManager } from './session';
 import { SessionCredentials } from '../types/auth';
 import { logger } from '../utils/logger';
 
-/** Outcome of DELETE /auth/v4 for a session being logged out. */
-type Revocation = 'revoked' | 'signed-out' | 'failed';
+/**
+ * Outcome of DELETE /auth/v4 for a session being logged out; `signed-out`
+ * carries whether that sign-out removed the credential-store entry.
+ */
+type Revocation = 'revoked' | 'failed' | { signedOut: true; credentialsRemoved: boolean };
 
 /**
- * Lifecycle of an existing session: read, refresh, logout. Sessions are
+ * Lifecycle of an existing session: authentication check and logout. Sessions are
  * created only by BrowserForkAuthService (`proton-drive-cli login`).
  */
 export class AuthService {
@@ -17,17 +20,6 @@ export class AuthService {
 
   constructor(apiBaseUrl?: string, private readonly appVersion?: string) {
     this.authApi = new AuthApiClient(apiBaseUrl, appVersion);
-  }
-
-  /**
-   * The saved session; throws when there is none.
-   */
-  async getSession(): Promise<SessionCredentials> {
-    const existingSession = await SessionManager.loadSession();
-    if (!existingSession) {
-      throw new Error('No valid session found. Please login first using browser sign-in: proton-drive-cli login');
-    }
-    return existingSession;
   }
 
   /**
@@ -40,28 +32,38 @@ export class AuthService {
   /**
    * Logout and clear the current session.
    *
-   * The server session is revoked (DELETE /auth/v4), its key-password entry
-   * removed, then session.json and the crypto cache are deleted unless a new
-   * login replaced them meanwhile. A failed revocation is logged and never
-   * prevents the local cleanup; without a valid session only an invalid
-   * session file is deleted.
+   * The server session is revoked (DELETE /auth/v4) with the tokens of its
+   * credential-store entry; session.json and the crypto cache are deleted
+   * under the session lock unless a new login replaced them meanwhile, then
+   * the entry is removed, so a refresh in flight cannot leave a new entry
+   * behind. A failed revocation, or an entry that cannot be read, is logged
+   * and never prevents the local cleanup; without a valid session only an
+   * invalid session file is deleted.
    *
-   * @returns `revoked`: whether the server session has ended
+   * @returns `revoked`: whether the server session has ended;
+   *   `credentialsRemoved`: whether the credential-store entry is gone
    */
-  async logout(): Promise<{ revoked: boolean }> {
+  async logout(): Promise<{ revoked: boolean; credentialsRemoved: boolean }> {
     try {
-      const session = await SessionManager.loadSession();
-      if (!session) {
+      const stored = await SessionManager.readStoredSession();
+      if (stored.kind !== 'valid') {
         await SessionManager.clearInvalidSession();
-        return { revoked: false };
+        return { revoked: false, credentialsRemoved: true };
       }
-      const revocation = await this.revoke(session);
-      if (revocation !== 'signed-out') {
-        await SessionManager.removeKeyPassword(session);
-        await SessionManager.clearSession(session.uid);
+      const { record } = stored;
+      const session = await SessionManager.loadSession().catch((error: unknown) => {
+        logger.warn(`Cannot revoke the session on the server: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
+      const revocation: Revocation = session?.uid === record.uid ? await this.revoke(session) : 'failed';
+      if (typeof revocation === 'object') {
+        logger.info('Logged out successfully');
+        return { revoked: true, credentialsRemoved: revocation.credentialsRemoved };
       }
+      await SessionManager.clearSession(record.uid);
+      const credentialsRemoved = await SessionManager.removeSecrets(record);
       logger.info('Logged out successfully');
-      return { revoked: revocation !== 'failed' };
+      return { revoked: revocation === 'revoked', credentialsRemoved };
     } catch (error) {
       if (error instanceof Error) {
         throw new Error(`Logout failed: ${error.message}`);
@@ -86,7 +88,7 @@ export class AuthService {
           return 'revoked';
         } catch (retryError) {
           if (retryError instanceof AppError && retryError.details?.signedOut) {
-            return 'signed-out';
+            return { signedOut: true, credentialsRemoved: retryError.details.credentialsRemoved !== false };
           }
           logger.warn(`Could not revoke session on server: ${retryError instanceof Error ? retryError.message : retryError}`);
           return 'failed';

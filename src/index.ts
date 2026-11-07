@@ -86,13 +86,13 @@ program.on('--help', () => {
   console.log(`  ${chalk.cyan('Drive')}          ls, upload, download, mkdir, rm, mv, cat, info`);
   console.log(`  ${chalk.cyan('Git LFS')}        bridge`);
   console.log('');
-  console.log(chalk.bold('Key Password Providers:'));
-  console.log(`  ${chalk.dim('--key-password-provider pass-cli')}        Proton Pass CLI (default)`);
-  console.log(`  ${chalk.dim('--key-password-provider git-credential')}  macOS Keychain / Windows Credential Manager`);
+  console.log(chalk.bold('Credential Stores (session tokens and key password):'));
+  console.log(`  ${chalk.dim('--credential-store pass-cli')}        Proton Pass CLI (default)`);
+  console.log(`  ${chalk.dim('--credential-store git-credential')}  git credential helper: osxkeychain, wincred, libsecret or manager`);
   console.log('');
   console.log(chalk.bold('Examples:'));
   console.log('  $ proton-drive-cli login');
-  console.log('  $ proton-drive-cli login --key-password-provider git-credential');
+  console.log('  $ proton-drive-cli login --credential-store git-credential');
   console.log('  $ proton-drive-cli doctor');
   console.log('  $ proton-drive-cli upload ./file.pdf /Documents');
   console.log('  $ proton-drive-cli ls /Documents');

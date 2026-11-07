@@ -1,6 +1,6 @@
 /**
- * Credential providers holding the browser-fork key password. Entries are
- * addressed by credential host and username (the session UID) and are
+ * Credential stores holding the session secrets: one entry per login
+ * session, addressed by credential host and username (the session UID) and
  * created by this CLI.
  */
 
@@ -9,24 +9,23 @@ export interface Credentials {
   password: string;
 }
 
-export type ProviderName = 'git-credential' | 'pass-cli';
+export type CredentialStoreName = 'git-credential' | 'pass-cli';
 
 /**
- * Provider used for the browser-fork key password when neither the command
- * option nor PROTON_KEY_PASSWORD_PROVIDER selects one. Matches the parent
- * repository's config.DefaultKeyPasswordProvider.
+ * Store used when neither the command option nor PROTON_CREDENTIAL_STORE
+ * selects one. Matches the parent repository's config.DefaultCredentialStore.
  */
-export const DEFAULT_KEY_PASSWORD_PROVIDER = 'pass-cli' satisfies ProviderName;
+export const DEFAULT_CREDENTIAL_STORE = 'pass-cli' satisfies CredentialStoreName;
 
-export interface CredentialProvider {
-  readonly name: ProviderName;
+export interface CredentialStore {
+  readonly name: CredentialStoreName;
 
-  /** Password stored for `username` at the provider's host; rejects when no entry exists. */
+  /** Password stored for `username` at the store's host; rejects when no entry exists. */
   resolve(username: string): Promise<Credentials>;
 
   /** Create or replace the entry for `username`. */
   store(username: string, password: string): Promise<void>;
 
-  /** Delete every entry for `username` at the provider's host. */
+  /** Delete every entry for `username` at the store's host; none existing is success. */
   remove(username: string): Promise<void>;
 }

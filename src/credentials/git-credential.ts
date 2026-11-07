@@ -1,7 +1,10 @@
 import { execFile } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
+import { parse as parseShellWords } from 'shell-quote';
 
 import { AppError, ErrorCode } from '../errors/types';
-import type { CredentialProvider, Credentials } from './types';
+import type { CredentialStore, Credentials } from './types';
 import { authTrace, maskIdentifier } from '../utils/auth-trace';
 
 export interface GitCredential {
@@ -11,8 +14,11 @@ export interface GitCredential {
   password: string;
 }
 
-const DEFAULT_PROTOCOL = 'https';
+const PROTOCOL = 'https';
 const TIMEOUT_MS = 10_000;
+
+/** Root of the file system: git finds no repository above it to apply. */
+const GIT_WORKING_DIRECTORY = path.parse(os.tmpdir()).root;
 
 /**
  * git-credential(1) attribute values may contain any byte except NUL and
@@ -21,17 +27,57 @@ const TIMEOUT_MS = 10_000;
 const FORBIDDEN_VALUE_CHARS = /[\r\n\0]/;
 
 /**
- * Environment for `git credential`: never prompt on the terminal or through
- * an askpass program (git(1): GIT_TERMINAL_PROMPT, GIT_ASKPASS, SSH_ASKPASS),
- * so a missing entry fails immediately instead of blocking until the timeout.
+ * Helpers that encrypt secrets at rest (gitcredentials(7)); manager is Git
+ * Credential Manager, subject to {@link SECURE_GCM_STORES}.
  */
-function gitCredentialEnvironment(): NodeJS.ProcessEnv {
-  return {
+const SECURE_HELPERS = new Set(['osxkeychain', 'wincred', 'libsecret', 'manager']);
+
+type GcmPlatform = 'win32' | 'darwin' | 'other';
+
+/**
+ * Git Credential Manager stores that encrypt at rest, by the platform of the
+ * GCM binary; `default` is the store GCM uses when none is configured
+ * (GCM docs/credstores.md: wincredman on Windows, keychain on macOS, none on Linux).
+ */
+const SECURE_GCM_STORES: Record<GcmPlatform, string[]> = {
+  win32: ['default', 'wincredman', 'dpapi'],
+  darwin: ['default', 'keychain', 'gpg'],
+  other: ['secretservice', 'gpg'],
+};
+
+const GCM_DEFAULT_STORES: Partial<Record<GcmPlatform, string>> = {
+  win32: 'wincredman',
+  darwin: 'keychain',
+};
+
+/** GCM settings this store sets in the environment, which overrides git configuration (GCM docs/environment.md). */
+const GCM_PINNED_VARIABLES = ['GCM_INTERACTIVE', 'GCM_GUI_PROMPT', 'GCM_PROVIDER', 'GCM_CREDENTIAL_STORE'];
+
+/** The helper the store runs and the environment that pins its settings. */
+export interface CredentialHelper {
+  value: string;
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * No terminal, askpass or GUI prompt (git(1) GIT_TERMINAL_PROMPT, GIT_ASKPASS;
+ * GCM docs/environment.md) and no repository: GIT_DIR and GIT_WORK_TREE are
+ * removed and git runs in the file-system root ({@link GIT_WORKING_DIRECTORY}).
+ */
+function gitEnvironment(extra: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
     GIT_ASKPASS: '',
     SSH_ASKPASS: '',
+    GCM_INTERACTIVE: 'false',
+    GCM_GUI_PROMPT: 'false',
+    GCM_PROVIDER: 'generic',
+    ...extra,
   };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  return env;
 }
 
 /**
@@ -79,22 +125,15 @@ function formatCredentialInput(fields: Partial<GitCredential>): string {
   return lines.join('\n');
 }
 
-/**
- * Run a `git credential <action>` command.
- */
-function runGitCredential(
-  action: 'fill' | 'approve' | 'reject',
-  stdinData: string,
-): Promise<string> {
+function runGit(args: string[], stdinData?: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'git',
-      ['credential', action],
-      { timeout: TIMEOUT_MS, env: gitCredentialEnvironment() },
+      args,
+      { timeout: TIMEOUT_MS, cwd: GIT_WORKING_DIRECTORY, env: gitEnvironment(env) },
       (error, stdout, stderr) => {
         if (error) {
-          const msg = stderr?.trim() || error.message;
-          reject(new Error(`git credential ${action} failed: ${msg}`));
+          reject(Object.assign(new Error(stderr?.trim() || error.message), { exitCode: error.code }));
           return;
         }
         resolve(stdout);
@@ -104,9 +143,162 @@ function runGitCredential(
     // An early exit of git closes stdin; the exit status reported to the
     // callback above is the error, so the EPIPE on the stream is not rethrown.
     child.stdin?.on('error', () => {});
-    child.stdin?.write(stdinData);
-    child.stdin?.end();
+    child.stdin?.end(stdinData ?? '');
   });
+}
+
+/**
+ * Values of a configuration key in the system and global scopes, in git's
+ * order and with include directives followed (git-config(1) `--show-scope`,
+ * `--includes`); git-config(1) exits 1 when the key is unset.
+ */
+async function gitConfigValues(key: string): Promise<string[]> {
+  let output: string;
+  try {
+    output = await runGit(['config', '--null', '--includes', '--show-scope', '--get-all', key]);
+  } catch (error) {
+    if ((error as { exitCode?: unknown }).exitCode === 1) {
+      return [];
+    }
+    throw new Error(`git config --get-all ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const fields = output.split('\0');
+  const values: string[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    if (fields[index] === 'system' || fields[index] === 'global') {
+      values.push(fields[index + 1]);
+    }
+  }
+  return values;
+}
+
+/** Quotes, command substitution, parameter expansion and line breaks, which shell-quote does not reject. */
+const SHELL_EXPANSION = /[`$'"\r\n]/;
+
+/** git's is_absolute_path: a leading `/`, or on Windows a drive prefix or a leading backslash. */
+function isAbsoluteHelperPath(value: string): boolean {
+  return value.startsWith('/') || (process.platform === 'win32' && /^(?:[A-Za-z]:)?[\\/]/.test(value));
+}
+
+/**
+ * Helper name of a `credential.helper` value (gitcredentials(7), "CUSTOM
+ * HELPERS"): git passes the value to the shell, as `git credential-<value>`
+ * unless it is an absolute path. The name is `<name>` of a plain word, or of
+ * an absolute path to a `git-credential-<name>` program; null for a shell
+ * snippet (`!...`), a value with quotes, expansions, shell operators,
+ * redirections or globs, or any other program.
+ */
+export function credentialHelperName(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed.startsWith('!') || SHELL_EXPANSION.test(trimmed)) {
+    return null;
+  }
+  const words = parseShellWords(trimmed, (variable) => `$${variable}`);
+  if (words.length === 0 || words.some((word) => typeof word !== 'string')) {
+    return null;
+  }
+  const program = words[0] as string;
+  if (!isAbsoluteHelperPath(trimmed)) {
+    return /^[A-Za-z0-9._-]+$/.test(program) ? program.toLowerCase() : null;
+  }
+  const base = (program.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '');
+  return base.startsWith('git-credential-') ? base.slice('git-credential-'.length) : null;
+}
+
+/** Platform whose GCM build `helper` runs; a `.exe` started outside Windows is the Windows build under WSL. */
+function gcmPlatform(helper: string): GcmPlatform {
+  if (/\.exe\b/i.test(helper) || process.platform === 'win32') {
+    return 'win32';
+  }
+  return process.platform === 'darwin' ? 'darwin' : 'other';
+}
+
+/**
+ * Environment pinning GCM's store to the validated one. A Windows GCM started
+ * from WSL receives Linux variables only when WSLENV names them (Microsoft
+ * WSL documentation, "Share environment variables between Windows and WSL").
+ */
+function gcmEnvironment(helper: string, store: string): NodeJS.ProcessEnv {
+  const platform = gcmPlatform(helper);
+  const env: NodeJS.ProcessEnv = {
+    GCM_CREDENTIAL_STORE: store === 'default' ? GCM_DEFAULT_STORES[platform] : store,
+  };
+  if (platform === 'win32' && process.platform !== 'win32') {
+    env.WSLENV = [process.env.WSLENV, ...GCM_PINNED_VARIABLES].filter(Boolean).join(':');
+  }
+  return env;
+}
+
+/** GCM's credential store: GCM_CREDENTIAL_STORE, else credential.credentialStore (GCM docs/configuration.md). */
+async function gcmCredentialStore(): Promise<string> {
+  const fromEnv = process.env.GCM_CREDENTIAL_STORE?.trim();
+  if (fromEnv) {
+    return fromEnv.toLowerCase();
+  }
+  const configured = (await gitConfigValues('credential.credentialStore')).pop()?.trim();
+  return configured ? configured.toLowerCase() : 'default';
+}
+
+/**
+ * The helper this store runs: the first `credential.helper` of the system and
+ * global configuration that encrypts secrets at rest, with GCM's store pinned
+ * in its environment. `git credential approve` sends the credential to every
+ * configured helper (git-credential(1)), so the store pins this one helper
+ * and a plaintext `store` or an in-memory `cache` never receives the session
+ * secrets. An empty value resets the list, as in git.
+ */
+export async function selectCredentialHelper(): Promise<CredentialHelper> {
+  const helpers: string[] = [];
+  for (const value of await gitConfigValues('credential.helper')) {
+    if (value === '') {
+      helpers.length = 0;
+    } else {
+      helpers.push(value);
+    }
+  }
+  const rejected: string[] = [];
+  for (const helper of helpers) {
+    const name = credentialHelperName(helper);
+    if (name === null || !SECURE_HELPERS.has(name)) {
+      rejected.push(name ?? 'custom program');
+      continue;
+    }
+    let env: NodeJS.ProcessEnv = {};
+    if (name === 'manager') {
+      const store = await gcmCredentialStore();
+      if (!SECURE_GCM_STORES[gcmPlatform(helper)].includes(store)) {
+        rejected.push(`manager with credential store ${store}`);
+        continue;
+      }
+      env = gcmEnvironment(helper, store);
+    }
+    authTrace('credential.git.helper', { helper: name });
+    return { value: helper, env };
+  }
+  throw new Error(
+    'git has no credential helper that encrypts secrets at rest ' +
+      `(configured: ${rejected.length > 0 ? rejected.join(', ') : 'none'}). ` +
+      'Set credential.helper to osxkeychain, wincred, libsecret or manager',
+  );
+}
+
+/** Run `git credential <action>` with the selected helper as the only one (git-config(1), command scope last). */
+async function runGitCredential(action: 'fill' | 'approve' | 'reject', stdinData: string): Promise<string> {
+  const helper = await selectCredentialHelper();
+  try {
+    return await runGit(
+      [
+        '-c', 'credential.helper=',
+        '-c', `credential.helper=${helper.value}`,
+        '-c', 'credential.interactive=false',
+        'credential', action,
+      ],
+      stdinData,
+      helper.env,
+    );
+  } catch (error) {
+    throw new Error(`git credential ${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // ─── git-credential(1) operations ──────────────────────────────────
@@ -119,13 +311,7 @@ export async function gitCredentialFill(host: string, username: string): Promise
     host,
     username: maskIdentifier(username),
   });
-  const input = formatCredentialInput({
-    protocol: DEFAULT_PROTOCOL,
-    host,
-    username,
-  });
-
-  const output = await runGitCredential('fill', input);
+  const output = await runGitCredential('fill', formatCredentialInput({ protocol: PROTOCOL, host, username }));
   const parsed = parseCredentialOutput(output);
 
   if (!parsed.password) {
@@ -133,56 +319,45 @@ export async function gitCredentialFill(host: string, username: string): Promise
       host,
       reason: 'missing-password',
     });
-    throw new Error(
-      'git credential fill did not return a password. ' +
-      'Ensure a credential helper is configured (e.g., git-credential-manager).',
-    );
+    throw new Error('git credential fill returned no entry for this session');
   }
 
-  const credential = {
-    protocol: parsed.protocol || DEFAULT_PROTOCOL,
-    host: parsed.host || host,
-    username,
-    password: parsed.password,
-  };
   authTrace('credential.git.fill.success', {
-    host: credential.host,
-    username: maskIdentifier(credential.username),
+    host,
+    username: maskIdentifier(username),
   });
-  return credential;
+  return { protocol: PROTOCOL, host, username, password: parsed.password };
 }
 
 /**
  * Store credentials using `git credential approve`.
  */
 export async function gitCredentialApprove(cred: GitCredential): Promise<void> {
-  const input = formatCredentialInput(cred);
-  await runGitCredential('approve', input);
+  await runGitCredential('approve', formatCredentialInput(cred));
 }
 
 /**
- * Remove credentials using `git credential reject`.
+ * Remove every entry of `username` at `host` using `git credential reject`
+ * without a password, which erases regardless of the stored value.
  */
-export async function gitCredentialReject(cred: GitCredential): Promise<void> {
-  const input = formatCredentialInput(cred);
-  await runGitCredential('reject', input);
+export async function gitCredentialReject(host: string, username: string): Promise<void> {
+  await runGitCredential('reject', formatCredentialInput({ protocol: PROTOCOL, host, username }));
 }
 
-// ─── Provider ──────────────────────────────────────────────────────
+// ─── Store ─────────────────────────────────────────────────────────
 
 /**
- * git-credential(1) provider: `git credential fill/approve/reject` against
- * the configured credential helper (macOS Keychain, Windows Credential
- * Manager, Linux Secret Service, ...). Every call runs through execFile
- * without a shell, with a 10-second timeout; attributes travel on stdin,
- * never as command-line arguments (CWE-214).
+ * git-credential(1) store: `git credential fill/approve/reject` through the
+ * helper {@link selectCredentialHelper} selects. Every call runs through
+ * execFile without a shell, with a 10-second timeout; attributes travel on
+ * stdin, never as command-line arguments (CWE-214).
  */
-export class GitCredentialProvider implements CredentialProvider {
+export class GitCredentialStore implements CredentialStore {
   readonly name = 'git-credential' as const;
 
   constructor(private readonly host: string) {
     if (!host.trim()) {
-      throw new Error('git-credential provider requires a credential host');
+      throw new Error('git-credential store requires a credential host');
     }
     assertCredentialValue('host', host);
   }
@@ -192,21 +367,23 @@ export class GitCredentialProvider implements CredentialProvider {
     return { username, password: cred.password };
   }
 
+  /**
+   * `approve`, then `fill` to read it back; a helper that kept the existing
+   * item gets `reject` and `approve` (git-credential(1)), so readers see an
+   * entry at all times unless the helper cannot update one in place.
+   */
   async store(username: string, password: string): Promise<void> {
-    await gitCredentialApprove({
-      protocol: DEFAULT_PROTOCOL,
-      host: this.host,
-      username,
-      password,
-    });
+    const credential = { protocol: PROTOCOL, host: this.host, username, password };
+    await gitCredentialApprove(credential);
+    const stored = await gitCredentialFill(this.host, username).then((cred) => cred.password, () => undefined);
+    if (stored === password) {
+      return;
+    }
+    await gitCredentialReject(this.host, username);
+    await gitCredentialApprove(credential);
   }
 
   async remove(username: string): Promise<void> {
-    await gitCredentialReject({
-      protocol: DEFAULT_PROTOCOL,
-      host: this.host,
-      username,
-      password: '',
-    });
+    await gitCredentialReject(this.host, username);
   }
 }

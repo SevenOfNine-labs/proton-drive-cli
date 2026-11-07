@@ -3,9 +3,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { AuthService } from '../auth';
 import { BrowserForkAuthService, type BrowserForkAuthServiceOptions } from '../auth/browser-fork';
-import { createKeyPasswordStore } from '../auth/key-password-store';
 import { SessionManager } from '../auth/session';
-import { DEFAULT_KEY_PASSWORD_PROVIDER } from '../credentials';
+import { DEFAULT_CREDENTIAL_STORE } from '../credentials';
 import { AppError, ErrorCode, RateLimitError } from '../errors/types';
 import { toAppError } from '../errors/classify';
 import { handleError } from '../errors/handler';
@@ -14,30 +13,30 @@ import { openBrowserUrl } from '../utils/open-browser';
 import { authTrace } from '../utils/auth-trace';
 import { redactSensitive, uidFingerprint } from '../utils/redaction';
 
-export interface BrowserForkKeyPasswordOptions {
-  keyPasswordProvider?: string;
-  keyPasswordHost?: string;
+export interface CredentialStoreOptions {
+  credentialStore?: string;
+  credentialHost?: string;
 }
 
 /**
- * Resolve the key-password store options: command option, then
- * PROTON_KEY_PASSWORD_PROVIDER / PROTON_KEY_PASSWORD_HOST, then the default
- * provider (pass-cli). No other environment variable is consulted.
+ * Resolve where login saves the session secrets: command option, then
+ * PROTON_CREDENTIAL_STORE / PROTON_CREDENTIAL_HOST, then the default store
+ * (pass-cli). No other environment variable is consulted.
  */
-export function resolveBrowserForkKeyPasswordOptions(
-  options: BrowserForkKeyPasswordOptions = {}
+export function resolveCredentialStoreOptions(
+  options: CredentialStoreOptions = {}
 ): BrowserForkAuthServiceOptions {
-  const keyPasswordProvider =
-    options.keyPasswordProvider?.trim() ||
-    process.env.PROTON_KEY_PASSWORD_PROVIDER?.trim() ||
-    DEFAULT_KEY_PASSWORD_PROVIDER;
-  const keyPasswordHost =
-    options.keyPasswordHost?.trim() ||
-    process.env.PROTON_KEY_PASSWORD_HOST?.trim();
+  const credentialStore =
+    options.credentialStore?.trim() ||
+    process.env.PROTON_CREDENTIAL_STORE?.trim() ||
+    DEFAULT_CREDENTIAL_STORE;
+  const credentialHost =
+    options.credentialHost?.trim() ||
+    process.env.PROTON_CREDENTIAL_HOST?.trim();
 
   return {
-    keyPasswordProvider,
-    ...(keyPasswordHost ? { keyPasswordHost } : {}),
+    credentialStore,
+    ...(credentialHost ? { credentialHost } : {}),
   };
 }
 
@@ -79,7 +78,7 @@ export async function loginWithBrowserFork(
       spinner.succeed(chalk.green('Browser login successful!'));
     }
     if (isVerbose()) {
-      console.log(chalk.dim('Session saved (tokens only). Browser key password stored in the configured credential provider.'));
+      console.log(chalk.dim('Session tokens and key password saved in the credential store.'));
     } else if (!isQuiet()) {
       outputResult('OK');
     }
@@ -102,8 +101,8 @@ export async function loginWithBrowserFork(
  * # Security Features
  *
  * - Account password is entered only in Proton's browser sign-in page
- * - Session tokens are persisted in the CLI session file
- * - Browser-derived key password is stored in the configured credential provider
+ * - Session tokens and the browser-derived key password are stored in the
+ *   credential store; session.json holds no secret
  *
  * # Exit Codes
  *
@@ -117,8 +116,8 @@ export async function loginWithBrowserFork(
  * # Browser login
  * proton-drive-cli login
  *
- * # Store browser-derived key password in Proton Pass
- * proton-drive-cli login --key-password-provider pass-cli
+ * # Store the session secrets with git's credential helper
+ * proton-drive-cli login --credential-store git-credential
  * ```
  *
  * @example
@@ -140,16 +139,16 @@ export function createLoginCommand(): Command {
 
   command
     .description('Authenticate with Proton Drive through browser sign-in')
-    .option('--key-password-provider <type>', `Credential provider for browser-fork key password: pass-cli (default) or git-credential`)
-    .option('--key-password-host <host>', 'Credential host/key for browser-fork key password')
+    .option('--credential-store <store>', 'Credential store for the session tokens and key password: pass-cli (default) or git-credential')
+    .option('--credential-host <host>', 'Credential host of the session entry')
     .action(async (options) => {
       try {
         authTrace('cli.login.start', {
-          keyPasswordProvider: options.keyPasswordProvider,
-          keyPasswordHost: options.keyPasswordHost,
+          credentialStore: options.credentialStore,
+          credentialHost: options.credentialHost,
         });
         await loginWithBrowserFork(new BrowserForkAuthService(
-          resolveBrowserForkKeyPasswordOptions(options)
+          resolveCredentialStoreOptions(options)
         ));
       } catch (error) {
         authTrace('cli.login.failure', traceErrorFields(error));
@@ -182,16 +181,16 @@ function traceErrorFields(error: unknown): Record<string, unknown> {
 /**
  * Create the logout command for the CLI.
  *
- * Logs out from Proton Drive: removes the stored key password, revokes the
- * session on the server (DELETE /auth/v4) and deletes the session file
+ * Logs out from Proton Drive: revokes the session on the server
+ * (DELETE /auth/v4), removes its credential-store entry and deletes the session file
  * (~/.proton-drive-cli/session.json) and the crypto cache. The command is
  * idempotent and safe to run when not authenticated.
  *
  * # Behavior
  *
- * - Saved session, whether or not its access token has expired: the key
- *   password, the server session and the local files are removed; a failed
- *   server revocation is reported as a warning
+ * - Saved session, whether or not its access token has expired: the server
+ *   session, the credential-store entry and the local files are removed; a
+ *   failed server revocation is reported as a warning
  * - session.json that `login` did not write: the file and the crypto cache
  *   are deleted
  * - No session.json: displays "Not currently logged in" and exits 0
@@ -242,9 +241,12 @@ export function createLogoutCommand(): Command {
           return;
         }
 
-        const { revoked } = await new AuthService().logout();
+        const { revoked, credentialsRemoved } = await new AuthService().logout();
         if (stored.kind === 'valid' && !revoked) {
           console.error(chalk.yellow('Warning: the session could not be revoked on the server; it ends when its tokens expire.'));
+        }
+        if (stored.kind === 'valid' && !credentialsRemoved) {
+          console.error(chalk.yellow(`Warning: the session entry could not be removed from ${stored.record.credentialStore}; delete it there.`));
         }
         console.log(chalk.green('✓ Logged out successfully'));
       } catch (error) {
@@ -260,14 +262,14 @@ export function createLogoutCommand(): Command {
  * Create the status command for the CLI.
  *
  * Displays the current authentication status and session information. If
- * authenticated, shows the session UID, its scopes and whether the stored key
- * password is available. If not authenticated, prompts the user to login.
+ * authenticated, shows the session UID, its scopes and whether its
+ * credential-store entry is readable. If not authenticated, prompts the user to login.
  *
  * # Session Information Displayed
  *
  * - **Session UID**: Proton session identifier
  * - **Scopes**: API scopes granted to the session (e.g., drive, calendar)
- * - **Key Password**: whether the session's credential provider holds it
+ * - **Credentials**: whether the session's credential store returns its entry
  *
  * # Exit Codes
  *
@@ -286,7 +288,7 @@ export function createLogoutCommand(): Command {
  * # Session Information:
  * #   Session UID: abc123xyz
  * #   Scopes: drive, calendar
- * #   Key Password: Stored (pass-cli)
+ * #   Credentials: Stored (pass-cli)
  *
  * # Check authentication status (not authenticated)
  * proton-drive-cli status
@@ -322,17 +324,21 @@ export function createStatusCommand(): Command {
         const isAuthenticated = await authService.isAuthenticated();
 
         if (isAuthenticated) {
-          const session = await authService.getSession();
+          const stored = await SessionManager.readStoredSession();
+          if (stored.kind !== 'valid') {
+            console.log(chalk.yellow('✗ Not authenticated'));
+            return;
+          }
+          const { record } = stored;
           console.log(chalk.green('✓ Authenticated\n'));
           console.log(chalk.cyan('Session Information:'));
-          console.log(`  ${chalk.dim('Session UID:')} ${session.uid}`);
-          console.log(`  ${chalk.dim('Scopes:')} ${(session.scopes ?? []).join(', ')}`);
-          const keyPasswordStore = createKeyPasswordStore({
-            provider: session.keyPasswordProvider,
-            host: session.keyPasswordHost,
-          });
-          const keyPasswordAvailable = await keyPasswordStore.verify(session.uid);
-          console.log(`  ${chalk.dim('Key Password:')} ${keyPasswordAvailable ? 'Stored' : 'Missing'} (${keyPasswordStore.provider})`);
+          console.log(`  ${chalk.dim('Session UID:')} ${record.uid}`);
+          console.log(`  ${chalk.dim('Scopes:')} ${(record.scopes ?? []).join(', ')}`);
+          const credentialsAvailable = await SessionManager.loadSession().then(
+            (session) => session?.uid === record.uid,
+            () => false,
+          );
+          console.log(`  ${chalk.dim('Credentials:')} ${credentialsAvailable ? 'Stored' : 'Missing'} (${record.credentialStore})`);
         } else {
           console.log(chalk.yellow('✗ Not authenticated'));
           console.log(chalk.dim('\nRun:'), chalk.bold('proton-drive-cli login'));
@@ -349,7 +355,7 @@ export function createStatusCommand(): Command {
 /**
  * Create the session refresh command.
  *
- * Refreshes the access token using the refresh token stored in the session file.
+ * Refreshes the access token using the refresh token of the session's credential-store entry.
  * This command is designed for headless automation (e.g., system tray heartbeat)
  * and operates silently to avoid interfering with user workflows.
  *
@@ -357,7 +363,7 @@ export function createStatusCommand(): Command {
  *
  * - **If session exists**: Calls POST /auth/v4/refresh to get new access token
  * - **If no session exists**: Exits silently with code 0 (nothing to refresh)
- * - **On success**: Updates session file and exits silently with code 0
+ * - **On success**: Updates the credential-store entry and session file and exits silently with code 0
  * - **On failure**: Exits with code 1 (optionally logs error if DEBUG=true)
  *
  * # Scheduling
@@ -395,7 +401,7 @@ export function createStatusCommand(): Command {
  *
  * @category CLI Commands
  * @see {@link createLoginCommand} for initial authentication
- * @see {@link AuthService.refreshSession} for underlying refresh logic
+ * @see {@link SessionManager.refreshSession} for underlying refresh logic
  */
 export function createSessionRefreshCommand(): Command {
   const command = new Command('session');

@@ -70,7 +70,7 @@ describe('schema files', () => {
         sessionValid: false,
         sessionExpired: false,
         sessionUidPresent: false,
-        keyPasswordAvailable: false,
+        credentialsAvailable: false,
         willAttemptNetwork: false,
         errors: [],
         actions: [],

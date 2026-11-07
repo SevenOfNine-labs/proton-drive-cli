@@ -12,9 +12,9 @@
       "httpStatus": 401,
       "rootCode": "auth_required"
     },
-    "KEY_PASSWORD_REQUIRED": {
+    "CREDENTIALS_UNAVAILABLE": {
       "httpStatus": 401,
-      "rootCode": "key_password_required"
+      "rootCode": "credentials_unavailable"
     },
     "NETWORK_ERROR": {
       "httpStatus": 502,

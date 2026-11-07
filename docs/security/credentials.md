@@ -8,28 +8,112 @@ Proton browser sign-in
 browser session-fork payload
     ↓
 proton-drive-cli login
-    ├── session tokens -> ~/.proton-drive-cli/session.json
-    └── key password   -> UID-scoped key-password provider entry
+    ├── tokens and key password -> one credential-store entry per session UID
+    └── non-secret record       -> ~/.proton-drive-cli/session.json
 ```
 
 The CLI never receives the Proton account password: it is entered only on
 Proton's sign-in page. The session-fork payload carries the user key password
-for every account, including accounts with a separate mailbox password, so
-the key password is the only secret the CLI stores.
+for every account, including accounts with a separate mailbox password.
 
 ## Stored Secrets
 
-| Secret | Storage | Purpose |
+| Data | Storage | Purpose |
 | --- | --- | --- |
-| Access/refresh tokens | `~/.proton-drive-cli/session.json` | Existing session lifecycle |
-| Browser-derived key password | `git-credential` or `pass-cli`, entry keyed by the session UID | Unlock the user keys, then the address keys (official account module, `addresses.ts`) |
+| Access token, refresh token, browser-derived key password | One entry in the credential store (`pass-cli` or `git-credential`), username = session UID, host `proton-drive-cli.invalid` | API requests, token refresh, unlocking the user keys and then the address keys (official account module, `addresses.ts`) |
+| UID, scopes, credential store and host, revision, token expiry | `~/.proton-drive-cli/session.json` (`0600`) | Locating the entry; local expiry check; tray readiness |
+| User and address records with their passphrase-protected keys | `~/.proton-drive-cli/crypto-cache.json` (`0600`, one hour) | Skipping two API reads per bridge process |
 
-The session directory is `0700`; session, crypto-cache and cooldown files
-are `0600`. Logout, a refresh token the API rejects, and a login that yields
-a new session UID remove the key-password entry of the session they end. A
-`pass-cli` entry is stored in a vault the account owns, or, when it owns none
-(personal access token, agent session), in one it may edit as Manager or
-Editor; a vault shared with others is used only in that second case.
+RFC 6749 (10.4) requires refresh tokens to be kept confidential in storage;
+RFC 6819 (5.1.4.1.4, 4.1.3) recommends an encrypted store for client secrets
+and the same protection for access tokens. No file this CLI writes holds a
+token or the key password (CWE-312). The state directory is `0700`.
+
+Every save is read back and compared before it counts, and a failed save is
+retried three times within 30 seconds. Every entry carries the
+`session.json` revision it was written with and, for a refresh, the
+revision it replaces; a refresh refuses an entry of another revision unless
+it replaces the revision of `session.json`, the trace of a refresh that
+stopped before writing `session.json`. Logout, a refresh token the API
+rejects, and a login that yields a new session UID remove the entry of the
+session they end (OWASP ASVS 5.0 14.3.1).
+
+## Credential Stores
+
+### pass-cli
+
+The entry is a Proton Pass login item whose title contains the credential
+host, whose URL is `https://<host>` and whose username is the session UID.
+It is stored in a vault the account owns, or, when it owns none (personal
+access token, agent session), in one it may edit as Manager or Editor. A
+save creates the new item from a template on stdin and then permanently
+deletes every earlier item of the session; `pass-cli item update` is not
+used because it takes values as command-line arguments (CWE-214). A
+deletion that fails is logged and repeated by the next save or logout.
+Reads list active items (`--filter-state active`), view them newest first
+by `create_time` across all vaults and return the first of the session; a
+failed view fails the read, so an older item never stands in for a newer
+one. Every read and save contacts Proton Pass.
+
+### git-credential
+
+`git credential fill/approve/reject` (git-credential(1)) with the entry as
+`protocol=https`, `host=<credential host>`, `username=<UID>` and the JSON
+secret as `password`. `git credential approve` sends the credential to every
+configured helper (git-credential(1)); the `store` helper writes plaintext
+(git-credential-store(1)) and `cache` forgets after a timeout
+(git-credential-cache(1)). The CLI therefore runs git with exactly one
+helper, the first configured one that encrypts secrets at rest:
+
+| Helper | Store |
+| --- | --- |
+| `osxkeychain` | macOS login keychain |
+| `wincred` | Windows Credential Manager, `CRED_PERSIST_LOCAL_MACHINE` |
+| `libsecret` | freedesktop Secret Service, default collection |
+| `manager` (Git Credential Manager) | `wincredman` or `dpapi` on Windows, `keychain` or `gpg` on macOS, `secretservice` or `gpg` elsewhere (`GCM_CREDENTIAL_STORE`, else `credential.credentialStore`) |
+
+Helpers are read from `credential.helper` in the system and global scopes,
+include directives followed (git-config(1) `--show-scope`, `--includes`), so
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` apply as
+for git itself; an empty value resets the list, as in git. Without such a
+helper the save and every read fail with the configured helpers named; the
+scope listing needs git 2.26 or newer. A value with quotes, expansions,
+shell operators, redirections or globs is never selected, since git passes
+it to the shell (gitcredentials(7), "CUSTOM HELPERS"). A save runs
+`approve` and reads the entry back with `fill`; when the helper kept the
+existing item, it runs `reject` and `approve` (git-credential(1)).
+
+git runs outside any repository (in the file-system root, without
+`GIT_DIR` and `GIT_WORK_TREE`), so repository configuration never applies,
+with `-c credential.helper= -c
+credential.helper=<selected> -c credential.interactive=false`,
+`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=false`, `GCM_GUI_PROMPT=false`,
+`GCM_PROVIDER=generic` and, for Git Credential Manager, `GCM_CREDENTIAL_STORE`
+set to the validated store, which overrides any configuration (GCM
+docs/environment.md). A Windows Git Credential Manager started from WSL
+(`git-credential-manager.exe`) receives these through `WSLENV`. Neither git
+nor Git Credential Manager prompts for credentials; the operating system may
+still ask to unlock a locked keychain or keyring, or gpg-agent for a
+passphrase.
+
+The secret is at most 1280 characters, so Git's wincred helper, which stores
+UTF-16, stays within `CRED_MAX_CREDENTIAL_BLOB_SIZE` (2560 bytes, wincred.h).
+The entry carries no `password_expiry_utc`: `git credential fill` drops an
+expired password (git-credential(1)), and with it the refresh token.
+
+### Direct OS secret-store access
+
+Proton's official CLI calls the OS secret store through `Bun.secrets`.
+Node.js has no such API. The maintained binding, `@napi-rs/keyring` 2.1.2,
+writes Windows credentials with `CRED_PERSIST_ENTERPRISE`, which Microsoft
+documents as visible to the user's logon sessions on other computers, with
+no way for the caller to choose `CRED_PERSIST_LOCAL_MACHINE`; on macOS it
+uses the `SecKeychain` API where TN3137 recommends `SecItem`; and
+by default it falls back to the kernel keyring,
+which does not persist across reboots, when no Secret Service is on the
+session bus. The `git-credential` store reaches the same OS stores through
+Git's helpers, which use `CRED_PERSIST_LOCAL_MACHINE` and the Secret Service
+default collection.
 
 ## What Is Never Allowed
 
@@ -37,11 +121,12 @@ Editor; a vault shared with others is used only in that second case.
 | --- | --- |
 | A password in CLI flags, stdin or environment variables | No command reads one |
 | A secret in a bridge request | No request field carries one; unknown fields are rejected |
+| A secret in `session.json`, a log line or an error message | Tokens and key password exist only in the credential-store entry and in process memory |
 | Login from the bridge | No bridge command logs in |
 
 ## Offline Gates
 
 `proton-drive-cli doctor` and `proton-drive-cli bridge auth-state` inspect
-local state and the session's key-password entry. They never refresh tokens
-or send a request to the Proton API; `pass-cli` can contact Proton Pass to
-read the entry.
+local state and read the session's credential-store entry. They never
+refresh tokens or send a request to the Proton API; `pass-cli` can contact
+Proton Pass to read the entry.

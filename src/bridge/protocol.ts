@@ -23,7 +23,7 @@ export function isBridgeCommand(command: string): command is BridgeCommand {
 export const BRIDGE_AUTH_STATES = [
   'ready',
   'needs_login',
-  'needs_key_password',
+  'credentials_unavailable',
   'session_expired',
   'session_invalid',
 ] as const;
@@ -107,15 +107,15 @@ export const BRIDGE_ERROR_DETAIL_FIELDS = [
   'action',
   'retryAfter',
   'protonCode',
-  'keyPasswordProvider',
-  'keyPasswordHost',
-  'providerError',
+  'credentialStore',
+  'credentialHost',
+  'storeError',
 ] as const;
 
 export const ERROR_CODE_STATUS = {
   [ErrorCode.AUTH_FAILED]: 401,
   [ErrorCode.SESSION_EXPIRED]: 401,
-  [ErrorCode.KEY_PASSWORD_REQUIRED]: 401,
+  [ErrorCode.CREDENTIALS_UNAVAILABLE]: 401,
   [ErrorCode.NETWORK_ERROR]: 502,
   [ErrorCode.TIMEOUT]: 504,
   [ErrorCode.CONNECTION_REFUSED]: 502,

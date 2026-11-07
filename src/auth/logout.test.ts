@@ -8,6 +8,7 @@ import { AuthService } from './index';
 import { SessionManager } from './session';
 import { SESSION_FILE } from './state-dir';
 import type { SessionCredentials } from '../types/auth';
+import { memorySessionSecrets, MemorySessionSecrets } from '../test/memory-session-secrets';
 
 jest.mock('os', () => {
   const actual = jest.requireActual('os');
@@ -17,35 +18,122 @@ jest.mock('os', () => {
   return { ...actual, homedir: () => home };
 });
 jest.mock('../utils/logger');
-const mockRemovedKeyPasswords: string[] = [];
-jest.mock('./key-password-store', () => ({
-  createKeyPasswordStore: jest.fn(() => ({
-    remove: async (uid: string) => { mockRemovedKeyPasswords.push(uid); },
-  })),
-}));
+jest.mock('./session-secrets', () => jest.requireActual('../test/memory-session-secrets').mockSessionSecretsModule());
 
+const HOST = 'proton-drive-cli.invalid';
 const base = {
   scopes: ['full'],
-  keyPasswordProvider: 'pass-cli' as const,
-  keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+  keyPassword: 'key-password',
+  credentialStore: 'pass-cli' as const,
+  credentialHost: HOST,
   tokenExpiresAt: Date.now() + 3_600_000,
 };
-const ended: SessionCredentials = { ...base, uid: 'uid-A', accessToken: 'access-A', refreshToken: 'refresh-A' };
-const next: SessionCredentials = { ...base, uid: 'uid-B', accessToken: 'access-B', refreshToken: 'refresh-B' };
+const ended: Omit<SessionCredentials, 'revision'> = { ...base, uid: 'uid-A', accessToken: 'access-A', refreshToken: 'refresh-A' };
+const next: Omit<SessionCredentials, 'revision'> = { ...base, uid: 'uid-B', accessToken: 'access-B', refreshToken: 'refresh-B' };
 
 afterAll(async () => {
   await fs.remove(os.homedir());
 });
 
+beforeEach(() => {
+  memorySessionSecrets.reset();
+});
+
 it('keeps a session a concurrent login wrote while logout revoked the previous one', async () => {
   await SessionManager.replaceSession(ended);
+  let written: SessionCredentials | undefined;
   global.fetch = jest.fn(async () => {
-    await SessionManager.replaceSession(next);
+    written = (await SessionManager.replaceSession(next)).session;
     return new Response(JSON.stringify({ Code: 1000 }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
 
-  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true });
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true, credentialsRemoved: true });
 
-  expect(mockRemovedKeyPasswords).toEqual(['uid-A']);
-  expect(await fs.readJson(SESSION_FILE)).toEqual(next);
+  expect(memorySessionSecrets.removes).toEqual([MemorySessionSecrets.key('pass-cli', HOST, 'uid-A')]);
+  expect(memorySessionSecrets.get('pass-cli', HOST, 'uid-B')).toMatchObject({ accessToken: 'access-B' });
+  expect(await fs.readJson(SESSION_FILE)).toMatchObject({ uid: 'uid-B', revision: written?.revision });
+});
+
+it('revokes the session with the access token of its credential-store entry', async () => {
+  await SessionManager.replaceSession(ended);
+  const authorizations: string[] = [];
+  global.fetch = jest.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    authorizations.push(String((init?.headers as Record<string, string>)?.Authorization));
+    return new Response(JSON.stringify({ Code: 1000 }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true, credentialsRemoved: true });
+
+  expect(authorizations).toEqual(['Bearer access-A']);
+  expect(memorySessionSecrets.get('pass-cli', HOST, 'uid-A')).toBeUndefined();
+  expect(await fs.pathExists(SESSION_FILE)).toBe(false);
+});
+
+it('clears the local session without revoking when the credential store cannot return the entry', async () => {
+  await SessionManager.replaceSession(ended);
+  await fs.writeJson(SESSION_FILE, { ...(await fs.readJson(SESSION_FILE)), revision: 'written-by-another-process' });
+  memorySessionSecrets.entries.clear();
+  global.fetch = jest.fn() as typeof fetch;
+
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: false, credentialsRemoved: true });
+
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(memorySessionSecrets.removes).toEqual([MemorySessionSecrets.key('pass-cli', HOST, 'uid-A')]);
+  expect(await fs.pathExists(SESSION_FILE)).toBe(false);
+});
+
+it('deletes session.json before the entry, so a refresh during the logout leaves no entry behind', async () => {
+  await SessionManager.replaceSession(ended);
+  const sessionFileAtRemoval: boolean[] = [];
+  memorySessionSecrets.onRemove = async () => {
+    sessionFileAtRemoval.push(await fs.pathExists(SESSION_FILE));
+  };
+  global.fetch = jest.fn(async (url: string | URL | Request) => {
+    if (String(url).includes('/auth/v4/refresh')) {
+      return new Response(JSON.stringify({ Code: 1000, UID: 'uid-A', AccessToken: 'access-A2', RefreshToken: 'refresh-A2', ExpiresIn: 3600 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    await SessionManager.refreshSession(undefined);
+    return new Response(JSON.stringify({ Code: 1000 }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true, credentialsRemoved: true });
+
+  expect(sessionFileAtRemoval).toEqual([false]);
+  expect(memorySessionSecrets.get('pass-cli', HOST, 'uid-A')).toBeUndefined();
+  expect(await fs.pathExists(SESSION_FILE)).toBe(false);
+});
+
+it('reports credentialsRemoved false when the sign-out during the revocation cannot remove the entry', async () => {
+  await SessionManager.replaceSession(ended);
+  memorySessionSecrets.removeError = new Error('pass-cli is not logged in');
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+  global.fetch = jest.fn(async (url: string | URL | Request) => (
+    String(url).includes('/auth/v4/refresh')
+      ? json(400, { Code: 10013, Error: 'Invalid refresh token' })
+      : json(401, { Code: 401, Error: 'Invalid access token' })
+  )) as typeof fetch;
+
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true, credentialsRemoved: false });
+
+  expect(await fs.pathExists(SESSION_FILE)).toBe(false);
+  expect(memorySessionSecrets.removes).toEqual([MemorySessionSecrets.key('pass-cli', HOST, 'uid-A')]);
+});
+
+it('reports credentialsRemoved false when the credential store keeps the entry', async () => {
+  await SessionManager.replaceSession(ended);
+  memorySessionSecrets.removeError = new Error('pass-cli is not logged in');
+  global.fetch = jest.fn(async () => new Response(JSON.stringify({ Code: 1000 }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })) as typeof fetch;
+
+  await expect(new AuthService().logout()).resolves.toEqual({ revoked: true, credentialsRemoved: false });
+
+  expect(await fs.pathExists(SESSION_FILE)).toBe(false);
 });

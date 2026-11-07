@@ -5,7 +5,7 @@ export enum ErrorCode {
   // Authentication errors
   AUTH_FAILED = 'AUTH_FAILED',
   SESSION_EXPIRED = 'SESSION_EXPIRED',
-  KEY_PASSWORD_REQUIRED = 'KEY_PASSWORD_REQUIRED',
+  CREDENTIALS_UNAVAILABLE = 'CREDENTIALS_UNAVAILABLE',
 
   // Network errors
   NETWORK_ERROR = 'NETWORK_ERROR',
@@ -72,8 +72,8 @@ export class AppError extends Error {
       case ErrorCode.SESSION_EXPIRED:
         return 'Your session has expired. Please login again with: proton-drive-cli login';
 
-      case ErrorCode.KEY_PASSWORD_REQUIRED:
-        return 'Stored browser-fork key password is missing or does not unlock the account keys.';
+      case ErrorCode.CREDENTIALS_UNAVAILABLE:
+        return 'The session credentials are missing from the credential store or do not unlock the account keys.';
 
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
@@ -152,8 +152,8 @@ export class AppError extends Error {
       case ErrorCode.SESSION_EXPIRED:
         return 'Run: proton-drive-cli login';
 
-      case ErrorCode.KEY_PASSWORD_REQUIRED:
-        return 'Run: proton-drive-cli login';
+      case ErrorCode.CREDENTIALS_UNAVAILABLE:
+        return 'Fix the credential store, or run: proton-drive-cli login';
 
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.TIMEOUT:

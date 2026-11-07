@@ -14,7 +14,7 @@ import { OpenPGPCryptoWithCryptoProxy } from '@protontech/drive-sdk';
 import { FakeProtonApi } from '../test/fake-proton-api';
 import { BrowserForkAuthService } from './browser-fork';
 import { SessionManager } from './session';
-import type { KeyPasswordStore } from './key-password-store';
+import { memorySessionSecrets } from '../test/memory-session-secrets';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import { AccountAdapter } from '../sdk/accountAdapter';
 import { ProtonOpenPGPCryptoProxy } from '../sdk/cryptoProxy';
@@ -28,6 +28,7 @@ jest.mock('os', () => {
   return { ...actual, homedir: () => home };
 });
 jest.mock('../utils/logger');
+jest.mock('./session-secrets', () => jest.requireActual('../test/memory-session-secrets').mockSessionSecretsModule());
 let mockRecordOfficialSleep: (ms: number) => void = () => undefined;
 jest.mock('../../submodules/sdk/incubating/account/js/src/sleep', () => ({
   sleepMs: async (ms: number) => {
@@ -141,23 +142,6 @@ async function verifyManifestSignature(
   return verified;
 }
 
-function memoryKeyPasswordStore(): KeyPasswordStore & { entries: Map<string, string> } {
-  const entries = new Map<string, string>();
-  return {
-    entries,
-    provider: 'pass-cli',
-    host: 'proton-drive-key.proton-lfs-cli.local',
-    async store(uid, keyPassword) { entries.set(uid, keyPassword); },
-    async load(uid) {
-      const keyPassword = entries.get(uid);
-      if (keyPassword === undefined) throw new Error(`no key password for ${uid}`);
-      return keyPassword;
-    },
-    async remove(uid) { entries.delete(uid); },
-    async verify(uid) { return entries.has(uid); },
-  };
-}
-
 /** In-memory SessionCredentials of the official module (sessionCredentials.ts). */
 class MemoryCredentials {
   private info?: { uid: string; accessToken: string; refreshToken?: string };
@@ -232,14 +216,12 @@ async function runOfficialModule(fake: FakeProtonApi): Promise<AccountOutcome> {
 }
 
 async function runThisCli(fake: FakeProtonApi): Promise<AccountOutcome> {
-  const keyPasswordStore = memoryKeyPasswordStore();
   await new BrowserForkAuthService({
     appVersion: APP_VERSION,
-    keyPasswordStore,
     sleepMs: async (ms) => { fake.recordSleep(ms); },
   }).login({ onSignInUrl: (url) => fake.browserCompletesSignIn(url) });
 
-  const keyPassword = keyPasswordStore.entries.get(fake.uid);
+  const keyPassword = memorySessionSecrets.get('pass-cli', 'proton-drive-cli.invalid', fake.uid)?.keyPassword;
   const driveCrypto = new DriveCryptoService(APP_VERSION);
   await driveCrypto.initialize(keyPassword ?? '');
   const proxy = new ProtonOpenPGPCryptoProxy();
@@ -336,6 +318,11 @@ describe('authentication conformance with the official account module', () => {
     expect(fake.timeline.slice(0, 5)).toEqual(EXPECTED_FORK_TIMELINE);
     expect(fake.timeline.filter((entry) => entry.startsWith('sleep'))).toHaveLength(2);
     expect(await SessionManager.loadSession()).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+    expect(memorySessionSecrets.get('pass-cli', 'proton-drive-cli.invalid', fake.uid)).toEqual({
+      accessToken: 'access-2',
+      refreshToken: 'refresh-2',
+      keyPassword: fake.keyPassword,
+    });
     expectRefreshAndHeaders(fake);
   });
 });

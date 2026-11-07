@@ -14,7 +14,7 @@
       "enum": [
         "AUTH_FAILED",
         "SESSION_EXPIRED",
-        "KEY_PASSWORD_REQUIRED",
+        "CREDENTIALS_UNAVAILABLE",
         "NETWORK_ERROR",
         "TIMEOUT",
         "CONNECTION_REFUSED",
@@ -62,19 +62,19 @@
     "protonCode": {
       "type": "number"
     },
-    "keyPasswordProvider": {
+    "credentialStore": {
       "type": "string",
       "enum": [
         "git-credential",
         "pass-cli"
       ]
     },
-    "keyPasswordHost": {
+    "credentialHost": {
       "type": "string"
     },
-    "providerError": {
+    "storeError": {
       "type": "string",
-      "description": "KEY_PASSWORD_REQUIRED: the credential provider's reason why the key password could not be read, with secrets redacted."
+      "description": "CREDENTIALS_UNAVAILABLE: the credential store's reason why the session entry could not be read or saved, with secrets redacted."
     }
   }
 }

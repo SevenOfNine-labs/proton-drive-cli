@@ -10,7 +10,6 @@ import { SRPModuleAdapter } from './srpAdapter';
 import { createSdkTelemetry } from './telemetry';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import { SessionManager } from '../auth/session';
-import { createKeyPasswordStore } from '../auth/key-password-store';
 import { logger } from '../utils/logger';
 import { AppError, ErrorCode } from '../errors/types';
 import { toAppError } from '../errors/classify';
@@ -20,32 +19,10 @@ export interface CreateSDKClientOptions {
   appVersion?: string;
 }
 
-async function loadKeyPassword(session: SessionCredentials): Promise<string> {
-  const store = createKeyPasswordStore({
-    provider: session.keyPasswordProvider,
-    host: session.keyPasswordHost,
-  });
-  try {
-    return await store.load(session.uid);
-  } catch (error) {
-    const providerError = error instanceof Error ? error.message : String(error);
-    throw new AppError(
-      `The key password of the session could not be read from ${store.provider} (${providerError}). ` +
-        'Fix the credential provider, or run: proton-drive-cli login',
-      ErrorCode.KEY_PASSWORD_REQUIRED,
-      {
-        keyPasswordProvider: store.provider,
-        keyPasswordHost: store.host,
-        providerError,
-      },
-      true,
-    );
-  }
-}
-
 /**
- * The saved session, refreshed first when its access token expired locally. A
- * refresh failure keeps its code; SESSION_EXPIRED means signed out, removed or replaced.
+ * The saved session with its secrets, refreshed first when its access token
+ * expired locally. A refresh failure keeps its code; SESSION_EXPIRED means
+ * signed out, removed or replaced, CREDENTIALS_UNAVAILABLE an unreadable store.
  */
 async function loadUsableSession(appVersion?: string): Promise<SessionCredentials | null> {
   const session = await SessionManager.loadSession();
@@ -68,8 +45,9 @@ async function loadUsableSession(appVersion?: string): Promise<SessionCredential
 /**
  * Create an authenticated ProtonDriveClient from the saved browser-fork
  * session: a locally expired access token is refreshed first, then the
- * account keys are unlocked with the stored key password. Without a usable
- * session the call fails with SESSION_EXPIRED; it never logs in.
+ * account keys are unlocked with the key password of its credential-store
+ * entry. Without a usable session the call fails with SESSION_EXPIRED; it
+ * never logs in.
  *
  * @returns Initialized ProtonDriveClient ready for operations
  */
@@ -87,7 +65,7 @@ export async function createSDKClient(
   }
 
   const driveCrypto = new DriveCryptoService(options.appVersion);
-  await driveCrypto.initialize(await loadKeyPassword(session));
+  await driveCrypto.initialize(session.keyPassword);
   logger.debug('SDK client: account keys unlocked');
 
   const cryptoProxy = new ProtonOpenPGPCryptoProxy();

@@ -1,5 +1,4 @@
 const mockDriveCryptoInitialize = jest.fn();
-const mockKeyPasswordLoad = jest.fn();
 
 jest.mock('@protontech/drive-sdk', () => ({
   ProtonDriveClient: jest.fn().mockImplementation((args) => ({ args })),
@@ -33,14 +32,6 @@ jest.mock('../crypto/drive-crypto', () => ({
   })),
 }));
 
-jest.mock('../auth/key-password-store', () => ({
-  createKeyPasswordStore: jest.fn(() => ({
-    provider: 'git-credential',
-    host: 'proton-drive-key.proton-lfs-cli.local',
-    load: mockKeyPasswordLoad,
-  })),
-}));
-
 jest.mock('../auth/session', () => ({
   SessionManager: {
     loadSession: jest.fn(),
@@ -68,9 +59,11 @@ describe('createSDKClient', () => {
     uid: 'uid-1',
     accessToken: 'access',
     refreshToken: 'refresh',
+    keyPassword: 'stored-user-key-password',
     scopes: ['full'],
-    keyPasswordProvider: 'git-credential' as const,
-    keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
+    credentialStore: 'git-credential' as const,
+    credentialHost: 'proton-drive-cli.invalid',
+    revision: 'rev-1',
   };
 
   beforeEach(() => {
@@ -79,35 +72,36 @@ describe('createSDKClient', () => {
     mockedSessionManager.validateSession.mockResolvedValue(true);
     mockedSessionManager.refreshSessionOrAdoptRotated.mockResolvedValue({ ...session, accessToken: 'refreshed' });
     mockDriveCryptoInitialize.mockResolvedValue(undefined);
-    mockKeyPasswordLoad.mockResolvedValue('stored-user-key-password');
   });
 
-  it('unlocks the account keys with the stored browser-fork key password', async () => {
+  it('unlocks the account keys with the key password of the session entry', async () => {
     await createSDKClient({});
 
-    const { createKeyPasswordStore } = jest.requireMock('../auth/key-password-store');
-    expect(createKeyPasswordStore).toHaveBeenCalledWith({
-      provider: 'git-credential',
-      host: 'proton-drive-key.proton-lfs-cli.local',
-    });
-    expect(mockKeyPasswordLoad).toHaveBeenCalledWith('uid-1');
+    expect(mockedSessionManager.loadSession).toHaveBeenCalledTimes(1);
     expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('stored-user-key-password');
     expect(mockedSessionManager.refreshSessionOrAdoptRotated).not.toHaveBeenCalled();
   });
 
-  it('fails with KEY_PASSWORD_REQUIRED carrying the provider reason when the key password is unavailable', async () => {
-    mockKeyPasswordLoad.mockRejectedValue(new Error('pass-cli is not logged in. Run: pass-cli login'));
+  it('keeps CREDENTIALS_UNAVAILABLE when the credential store cannot return the session entry', async () => {
+    const unavailable = new AppError(
+      'The credentials of the session could not be read from git-credential (git credential fill failed)',
+      ErrorCode.CREDENTIALS_UNAVAILABLE,
+      { credentialStore: 'git-credential', credentialHost: 'proton-drive-cli.invalid', storeError: 'git credential fill failed' },
+      true,
+    );
+    mockedSessionManager.loadSession.mockRejectedValue(unavailable);
 
-    await expect(createSDKClient({})).rejects.toMatchObject({
-      code: ErrorCode.KEY_PASSWORD_REQUIRED,
-      message: expect.stringContaining('pass-cli is not logged in'),
-      details: {
-        keyPasswordProvider: 'git-credential',
-        keyPasswordHost: 'proton-drive-key.proton-lfs-cli.local',
-        providerError: 'pass-cli is not logged in. Run: pass-cli login',
-      },
-    });
+    await expect(createSDKClient({})).rejects.toBe(unavailable);
     expect(mockDriveCryptoInitialize).not.toHaveBeenCalled();
+  });
+
+  it('unlocks the keys with the key password of the refreshed session', async () => {
+    mockedSessionManager.validateSession.mockResolvedValue(false);
+    mockedSessionManager.refreshSessionOrAdoptRotated.mockResolvedValue({ ...session, keyPassword: 'refreshed-entry-key-password' });
+
+    await createSDKClient({});
+
+    expect(mockDriveCryptoInitialize).toHaveBeenCalledWith('refreshed-entry-key-password');
   });
 
   it('refreshes a locally expired session before unlocking the keys', async () => {

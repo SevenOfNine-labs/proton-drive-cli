@@ -7,8 +7,8 @@ Do:
 - Show `proton-drive-cli login` as browser sign-in.
 - Show `proton-drive-cli doctor` and `proton-drive-cli bridge auth-state` as
   local readiness checks.
-- Describe the key-password provider as the store of the browser-fork key
-  password.
+- Describe the credential store as the only place the session tokens and the
+  browser-fork key password are kept; `session.json` holds no secret.
 - Describe the current behaviour only; history lives in Git and the
   changelog (AGENTS.md, comment rules).
 

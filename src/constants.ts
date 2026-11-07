@@ -1,7 +1,11 @@
 import { version as pkgVersion } from '../package.json';
 
-/** Credential host of the browser-fork key-password entries (git-credential host, Proton Pass item URL). */
-export const PROTON_KEY_PASSWORD_CREDENTIAL_HOST = 'proton-drive-key.proton-lfs-cli.local';
+/**
+ * Credential host of the session entries (git-credential host, Proton Pass
+ * item URL). Names under `.invalid` never resolve (RFC 6761, 6.4), so a
+ * helper that probes the host reaches no server.
+ */
+export const PROTON_CREDENTIAL_HOST = 'proton-drive-cli.invalid';
 
 /**
  * Release of the vendored Proton Drive SDK (`submodules/sdk`, tag `js/v<version>`).

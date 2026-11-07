@@ -12,7 +12,7 @@ import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { createSDKClient } from '../sdk/client';
 import { ensureFolderPath, findFileNodeInFolder } from '../sdk/pathResolver';
 import { SessionManager } from '../auth/session';
-import { createKeyPasswordStore } from '../auth/key-password-store';
+import { createSessionSecretStore } from '../auth/session-secrets';
 import { AppError, ErrorCode, CaptchaError } from '../errors/types';
 import { toAppError } from '../errors/classify';
 import { redactSensitive } from '../utils/redaction';
@@ -191,9 +191,9 @@ export interface BridgeAuthStatePayload {
   sessionValid: boolean;
   sessionExpired: boolean;
   sessionUidPresent: boolean;
-  keyPasswordAvailable: boolean;
-  keyPasswordProvider?: string;
-  keyPasswordHost?: string;
+  credentialsAvailable: boolean;
+  credentialStore?: string;
+  credentialHost?: string;
   willAttemptNetwork: false;
   errors: string[];
   actions: string[];
@@ -203,28 +203,24 @@ const LOGIN_ACTION = 'Run proton-drive-cli login to complete browser sign-in bef
 
 /**
  * Inspect bridge auth readiness without sending a request to the Proton API
- * and without refreshing tokens: reads the saved session, applies the local
- * expiry check and reads the key-password entry from the session's
- * credential provider (pass-cli can contact Proton Pass to do so).
+ * and without refreshing tokens: reads session.json, applies the local
+ * expiry check and reads the session's entry from its credential store
+ * (pass-cli can contact Proton Pass to do so).
  */
 export async function getBridgeAuthState(sessionFile?: string): Promise<BridgeAuthStatePayload> {
   const stored = await SessionManager.readStoredSession(sessionFile);
-  const session = stored.kind === 'valid' ? stored.session : null;
+  const session = stored.kind === 'valid' ? stored.record : null;
   const sessionValid = session ? await SessionManager.validateSession(session) : false;
   const errors: string[] = [];
   const actions: string[] = [];
 
-  let keyPasswordAvailable = false;
+  let credentialsAvailable = false;
   if (session) {
-    const store = createKeyPasswordStore({
-      provider: session.keyPasswordProvider,
-      host: session.keyPasswordHost,
-    });
     try {
-      await store.load(session.uid);
-      keyPasswordAvailable = true;
+      await createSessionSecretStore({ store: session.credentialStore, host: session.credentialHost }).load(session.uid);
+      credentialsAvailable = true;
     } catch (error) {
-      errors.push(`Key password unavailable from ${store.provider}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`Credentials unavailable from ${session.credentialStore}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -235,12 +231,12 @@ export async function getBridgeAuthState(sessionFile?: string): Promise<BridgeAu
   } else if (stored.kind === 'invalid') {
     state = 'session_invalid';
     actions.push('The saved session is not a proton-drive-cli login session. ' + LOGIN_ACTION);
+  } else if (!credentialsAvailable) {
+    state = 'credentials_unavailable';
+    actions.push('Fix the credential store of the saved session (see errors), or ' + LOGIN_ACTION);
   } else if (!sessionValid) {
     state = 'session_expired';
     actions.push('Transfers refresh the access token before use (bridge init); auth-state did not refresh it.');
-  } else if (!keyPasswordAvailable) {
-    state = 'needs_key_password';
-    actions.push('Fix the credential provider of the saved session (see errors), or ' + LOGIN_ACTION);
   } else {
     state = 'ready';
     actions.push('Local auth inputs are sufficient for SDK initialization; auth-state sent no request to the Proton API.');
@@ -252,9 +248,9 @@ export async function getBridgeAuthState(sessionFile?: string): Promise<BridgeAu
     sessionValid,
     sessionExpired: session !== null && !sessionValid,
     sessionUidPresent: session !== null,
-    keyPasswordAvailable,
-    keyPasswordProvider: session?.keyPasswordProvider,
-    keyPasswordHost: session?.keyPasswordHost,
+    credentialsAvailable,
+    credentialStore: session?.credentialStore,
+    credentialHost: session?.credentialHost,
     willAttemptNetwork: false,
     errors,
     actions,

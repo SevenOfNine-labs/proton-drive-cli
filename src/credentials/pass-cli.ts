@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 
-import type { CredentialProvider, Credentials } from './types';
+import type { CredentialStore, Credentials } from './types';
 import { authTrace, maskIdentifier } from '../utils/auth-trace';
 import { logger } from '../utils/logger';
 
@@ -19,6 +19,8 @@ interface PassCliItemSummary {
   id: string;
   shareId: string;
   title: string;
+  /** `create_time`, an ISO 8601 civil date-time (pass-cli/src/commands/item/list.rs). */
+  createTime: string;
 }
 
 /** A login item hydrated through `pass-cli item view --output json`. */
@@ -77,7 +79,7 @@ function toItemSummary(raw: unknown): PassCliItemSummary | null {
   const id = optionalString(raw.id);
   const shareId = optionalString(raw.share_id);
   if (!id || !shareId) return null;
-  return { id, shareId, title: optionalString(raw.title) ?? '' };
+  return { id, shareId, title: optionalString(raw.title) ?? '', createTime: optionalString(raw.create_time) ?? '' };
 }
 
 function toLoginItem(raw: unknown, vaultName: string): PassCliLoginItem | null {
@@ -197,11 +199,14 @@ async function writableVaultRoles(): Promise<Map<string, string>> {
   return roles;
 }
 
+/** Active login items of `vault`, newest first. */
 async function listLoginItems(vault: PassCliVault): Promise<PassCliItemSummary[]> {
   const output = await runPassCli([
     'item', 'list',
     '--share-id', vault.shareId,
     '--filter-type', 'login',
+    '--filter-state', 'active',
+    '--sort-by', 'created-desc',
     '--output', 'json',
   ]);
   const parsed = parseJsonObject(output, 'item list');
@@ -221,33 +226,33 @@ async function viewLoginItem(vault: PassCliVault, summary: PassCliItemSummary): 
   return toLoginItem(parseJsonObject(output, 'item view'), vault.name);
 }
 
-/**
- * Login items of one vault that belong to `host`. Listing never exposes
- * URLs, so candidates are selected by title and hydrated through
- * `item view`.
- */
-async function searchVault(vault: PassCliVault, host: string): Promise<PassCliLoginItem[]> {
-  authTrace('credential.pass-cli.vault-scan.start', { vault: vault.name });
-  const summaries = await listLoginItems(vault);
-  const matches: PassCliLoginItem[] = [];
-  for (const summary of summaries) {
-    if (!titleMatchesHost(summary.title, host)) continue;
-    const item = await viewLoginItem(vault, summary);
-    if (item && item.urls.some((url) => urlMatchesHost(url, host))) {
-      matches.push(item);
+/** A login item of a vault whose title names `host`, not yet viewed. */
+interface Candidate {
+  vault: PassCliVault;
+  summary: PassCliItemSummary;
+}
+
+/** Items of `vaults` whose title names `host`, newest first; listing never exposes URLs. */
+async function listCandidates(vaults: PassCliVault[], host: string): Promise<Candidate[]> {
+  const candidates: Candidate[] = [];
+  for (const vault of vaults) {
+    for (const summary of await listLoginItems(vault)) {
+      if (titleMatchesHost(summary.title, host)) {
+        candidates.push({ vault, summary });
+      }
     }
   }
-  authTrace('credential.pass-cli.vault-scan.success', {
-    vault: vault.name,
-    itemCount: summaries.length,
-    matchCount: matches.length,
-  });
-  return matches;
+  return candidates.sort((a, b) => b.summary.createTime.localeCompare(a.summary.createTime));
+}
+
+function isEntryOf(item: PassCliLoginItem | null, host: string, username: string): item is PassCliLoginItem {
+  return item !== null && item.username === username && item.urls.some((url) => urlMatchesHost(url, host));
 }
 
 /**
- * First entry of `host` whose username field equals `username`, searching
- * the vaults in `pass-cli vault list` order.
+ * The newest entry of `username` at `host` in any vault; a failed view fails
+ * the search, so an older item never stands in for a newer one, and the
+ * search runs once more, since a save deletes the items it replaces.
  */
 async function findEntry(
   host: string,
@@ -260,28 +265,52 @@ async function findEntry(
     username: maskIdentifier(username),
     vaultCount: searched.length,
   });
-  for (const vault of searched) {
-    const selected = (await searchVault(vault, host)).find((entry) => entry.username === username);
-    if (selected) {
-      authTrace('credential.pass-cli.selected', {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      for (const { vault, summary } of await listCandidates(searched, host)) {
+        const item = await viewLoginItem(vault, summary);
+        if (isEntryOf(item, host, username)) {
+          authTrace('credential.pass-cli.selected', {
+            host,
+            vault: item.vaultName,
+            username: maskIdentifier(item.username),
+            urlHosts: urlHosts(item.urls),
+          });
+          return item;
+        }
+      }
+      authTrace('credential.pass-cli.search.miss', {
         host,
-        vault: selected.vaultName,
-        username: maskIdentifier(selected.username),
-        urlHosts: urlHosts(selected.urls),
+        username: maskIdentifier(username),
+        vaultCount: searched.length,
       });
-      return selected;
+      return null;
+    } catch (error) {
+      if (attempt >= 2) {
+        throw error;
+      }
     }
   }
-  authTrace('credential.pass-cli.search.miss', {
-    host,
-    username: maskIdentifier(username),
-    vaultCount: searched.length,
-  });
-  return null;
+}
+
+/** Every entry of `host` whose username field equals `username`, across all vaults; an item that cannot be viewed is skipped. */
+async function findEntries(
+  host: string,
+  username: string,
+  vaults: PassCliVault[],
+): Promise<PassCliLoginItem[]> {
+  const entries: PassCliLoginItem[] = [];
+  for (const { vault, summary } of await listCandidates(vaults, host)) {
+    const item = await viewLoginItem(vault, summary).catch(() => null);
+    if (isEntryOf(item, host, username)) {
+      entries.push(item);
+    }
+  }
+  return entries;
 }
 
 /**
- * Proton Pass CLI credential provider.
+ * Proton Pass CLI credential store.
  *
  * Stores, resolves and removes secrets as login items in Proton Pass vaults
  * through the `pass-cli` binary. An entry is addressed by credential host and
@@ -296,7 +325,8 @@ async function findEntry(
  *   share_type, share_role }] }`, `share_role` "Owner", "Manager", "Editor" or
  *   "Viewer"; a personal access token or agent session owns no share
  *   (pass-cli/src/commands/share/list.rs, pass/src/share/list.rs)
- * - `item list --share-id <id> --filter-type login --output json`
+ * - `item list --share-id <id> --filter-type login --filter-state active
+ *   --sort-by created-desc --output json`
  *   -> `{ items: [{ id, share_id, vault_id, title, item_type, ... }] }`;
  *   summaries carry neither secrets nor URLs (pass-cli/src/commands/item/list.rs)
  * - `item view --share-id <id> --item-id <id> --output json`
@@ -313,24 +343,24 @@ async function findEntry(
  * is replaced by create-then-delete because `item update` takes field values
  * as command-line arguments, visible to other local processes (CWE-214).
  */
-export class PassCliProvider implements CredentialProvider {
+export class PassCliStore implements CredentialStore {
   readonly name = 'pass-cli' as const;
 
   constructor(private readonly host: string) {
     if (!host.trim()) {
-      throw new Error('pass-cli provider requires a credential host');
+      throw new Error('pass-cli store requires a credential host');
     }
   }
 
   async resolve(username: string): Promise<Credentials> {
     authTrace('credential.resolve.start', {
-      provider: this.name,
+      store: this.name,
       host: this.host,
       username: maskIdentifier(username),
     });
     if (!await passCliSessionActive()) {
       authTrace('credential.resolve.failure', {
-        provider: this.name,
+        store: this.name,
         host: this.host,
         reason: 'pass-cli-not-logged-in',
       });
@@ -340,15 +370,15 @@ export class PassCliProvider implements CredentialProvider {
     const entry = await findEntry(this.host, username);
     if (!entry?.password) {
       authTrace('credential.resolve.failure', {
-        provider: this.name,
+        store: this.name,
         host: this.host,
         reason: 'entry-not-found',
       });
-      throw new Error(`No pass-cli key-password entry found for this session at ${this.host}.`);
+      throw new Error(`No pass-cli session entry found for this session at ${this.host}.`);
     }
 
     authTrace('credential.resolve.success', {
-      provider: this.name,
+      store: this.name,
       host: this.host,
       username: maskIdentifier(username),
       vault: entry.vaultName,
@@ -358,29 +388,29 @@ export class PassCliProvider implements CredentialProvider {
   }
 
   /**
-   * Create the entry for `username` from a stdin template. Candidate vaults
-   * are those the account owns or, when it owns none (a personal access token
-   * or agent session), those it may edit as Manager or Editor; the vault of an
-   * existing entry wins among them, else the first. The existing entry is
-   * deleted after the replacement exists; a failed deletion is reported and
-   * left to remove(), which deletes every duplicate.
+   * Create the entry for `username` from a stdin template, then delete every
+   * entry it replaces. Candidate vaults are those the account owns or, when
+   * it owns none (a personal access token or agent session), those it may
+   * edit as Manager or Editor; the vault of an existing entry wins among
+   * them, else the first. A failed deletion is logged: reads return the
+   * newest entry, and the next save or remove() deletes the rest.
    */
   async store(username: string, password: string): Promise<void> {
     const vaults = await listVaults();
     if (vaults.length === 0) {
-      throw new Error('pass-cli has no vault to store the key-password entry in. Run: pass-cli vault create --name <name>');
+      throw new Error('pass-cli has no vault to store the session entry in. Run: pass-cli vault create --name <name>');
     }
     const roles = await writableVaultRoles();
     const owned = vaults.filter((vault) => roles.get(vault.shareId) === 'Owner');
     const candidates = owned.length > 0 ? owned : vaults.filter((vault) => roles.has(vault.shareId));
     if (candidates.length === 0) {
       throw new Error(
-        'pass-cli lists no vault this account owns or may edit (role Owner, Manager or Editor) for the key-password entry. ' +
+        'pass-cli lists no vault this account owns or may edit (role Owner, Manager or Editor) for the session entry. ' +
           'Run: pass-cli vault create --name <name>, or share a vault with Manager or Editor role to the personal access token',
       );
     }
-    const existing = await findEntry(this.host, username, vaults);
-    const target = (existing && candidates.find((vault) => vault.shareId === existing.shareId)) || candidates[0];
+    const existing = await findEntries(this.host, username, vaults);
+    const target = candidates.find((vault) => existing.some((entry) => entry.shareId === vault.shareId)) || candidates[0];
     const template: PassCliLoginTemplate = {
       title: `Proton ${this.host}`,
       username,
@@ -394,22 +424,23 @@ export class PassCliProvider implements CredentialProvider {
       ['item', 'create', 'login', '--share-id', target.shareId, '--from-template', '-'],
       JSON.stringify(template),
     );
-    if (existing) {
+    for (const entry of existing) {
       try {
-        await deleteItem(existing);
+        await deleteItem(entry);
       } catch (error) {
         authTrace('credential.pass-cli.replace.delete-failed', {
           host: this.host,
           username: maskIdentifier(username),
           errorMessage: error instanceof Error ? error.message : String(error),
         });
-        logger.warn(`pass-cli: the previous key-password entry at ${this.host} could not be deleted (${error instanceof Error ? error.message : String(error)}); remove the duplicate in Proton Pass.`);
+        logger.warn(`pass-cli: a replaced session entry at ${this.host} could not be deleted: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
 
   /**
-   * Delete every entry for `username` on this host. Throws when none exists.
+   * Delete every entry for `username` on this host; none existing is
+   * success, and so is an entry another process deleted meanwhile.
    */
   async remove(username: string): Promise<void> {
     const deleted = new Set<string>();
@@ -420,11 +451,15 @@ export class PassCliProvider implements CredentialProvider {
       if (deleted.has(key)) {
         throw new Error(`pass-cli reported item ${key} as deleted but still lists it`);
       }
-      await deleteItem(entry);
+      try {
+        await deleteItem(entry);
+      } catch (error) {
+        const remaining = await findEntry(this.host, username);
+        if (remaining && `${remaining.shareId}/${remaining.id}` === key) {
+          throw error;
+        }
+      }
       deleted.add(key);
-    }
-    if (deleted.size === 0) {
-      throw new Error(`No pass-cli key-password entry found for this session at ${this.host}.`);
     }
   }
 }
@@ -433,4 +468,4 @@ async function deleteItem(entry: Pick<PassCliLoginItem, 'id' | 'shareId'>): Prom
   await runPassCli(['item', 'delete', '--share-id', entry.shareId, '--item-id', entry.id]);
 }
 
-export { passCliSessionActive, listVaults, writableVaultRoles, searchVault, findEntry };
+export { passCliSessionActive, listVaults, writableVaultRoles, findEntry, findEntries };

@@ -41,7 +41,7 @@ import { isVerbose, isQuiet, outputResult } from '../utils/output';
  *
  * - End-to-end decryption using OpenPGP after download
  * - Manifest signature verification (default enabled)
- * - Password resolved via credential provider (never logged)
+ * - Session tokens and key password read from the credential store (never logged)
  * - Secure stream processing (no full file in memory)
  *
  * # Exit Codes

@@ -20,9 +20,10 @@ The only account authentication path is Proton browser session-fork:
 2. The user signs in on `account.proton.me`.
 3. The CLI polls the fork selector.
 4. The encrypted fork payload is decrypted locally.
-5. Session tokens are saved to `session.json`.
-6. The browser-derived key password is stored in the configured key-password
-   provider and verified by readback before the session is accepted.
+5. The session tokens and the browser-derived key password are saved as one
+   entry in the configured credential store and verified by readback.
+6. `session.json` records the UID, scopes, token expiry and where the entry
+   lives; it holds no secret.
 
 The SRP module adapter (`src/sdk/srpAdapter.ts`) implements the SDK's
 `SRPModule` interface, which the Drive SDK uses for its own password-protected
@@ -63,7 +64,8 @@ No request field carries a secret; unknown fields are rejected.
 - Account password entry happens only in Proton's browser sign-in page.
 - No production path may submit account passwords or SRP auth proofs.
 - `auth-state` and `doctor` send no request to the Proton API; the
-  key-password check runs the credential provider, and `pass-cli` can contact
+  credentials check reads the credential store, and `pass-cli` can contact
   Proton Pass.
-- Session files store tokens and metadata only, never passwords.
+- Files store metadata only; tokens and the key password live in the
+  credential store.
 - The bridge fails closed unless the local auth state is `ready`.

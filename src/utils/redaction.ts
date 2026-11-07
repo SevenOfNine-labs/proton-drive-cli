@@ -19,9 +19,6 @@ const EXACT_SENSITIVE_KEYS = new Set([
   'xpmuid',
 ]);
 
-/** Keys whose values name where a secret is stored, never the secret itself. */
-const SECRET_LOCATION_KEYS = new Set(['keypasswordprovider', 'keypasswordhost']);
-
 const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const SECRET_ASSIGNMENT_PATTERN =
   /\b((?:access|refresh|captcha|human[-_]?verification|session|password|secret|token)[A-Za-z0-9_-]*=)[^&\s]+/gi;
@@ -76,9 +73,6 @@ function isSensitiveKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
   if (EXACT_SENSITIVE_KEYS.has(normalized)) {
     return true;
-  }
-  if (SECRET_LOCATION_KEYS.has(normalized)) {
-    return false;
   }
   if (normalized.includes('password') || normalized.includes('secret')) {
     return true;
