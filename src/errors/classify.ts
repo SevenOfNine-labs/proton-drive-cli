@@ -87,7 +87,7 @@ function mapStatus(
     case 404:
       return new AppError('Resource not found', ErrorCode.NOT_FOUND, withCodes, false);
     case 408:
-      return new AppError('Request timed out', ErrorCode.TIMEOUT, withCodes, true);
+      return new AppError('Request timed out: the server took too long to respond', ErrorCode.TIMEOUT, withCodes, true);
     case 413:
       return new AppError('File is too large', ErrorCode.FILE_TOO_LARGE, withCodes, false);
     case 422:
@@ -121,7 +121,7 @@ export function mapHttpError(error: HttpLikeError): AppError {
       return new AppError('Connection refused', ErrorCode.CONNECTION_REFUSED, { originalError: error.message }, true);
     }
     if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-      return new AppError('Request timed out', ErrorCode.TIMEOUT, { originalError: error.message }, true);
+      return new AppError('Request timed out: the server took too long to respond', ErrorCode.TIMEOUT, { originalError: error.message }, true);
     }
     if (error.code === 'EBADJSON') {
       // The server answered but its body was not valid JSON: a protocol

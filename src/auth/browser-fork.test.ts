@@ -26,13 +26,13 @@ import {
   parseBrowserForkUserKeyPassword,
 } from './browser-fork';
 
-function encryptForkPayload(encryptionKey: Buffer, payload: Record<string, unknown>): string {
+function encryptForkPayload(encryptionKey: Buffer, payload: Record<string, unknown> | string): string {
   const nonce = Buffer.alloc(12, 3);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey, nonce);
   cipher.setAAD(Buffer.from('fork', 'utf8'));
 
   const cipherText = Buffer.concat([
-    cipher.update(JSON.stringify(payload), 'utf8'),
+    cipher.update(typeof payload === 'string' ? payload : JSON.stringify(payload), 'utf8'),
     cipher.final(),
   ]);
   const tag = cipher.getAuthTag();
@@ -79,6 +79,34 @@ describe('browser fork auth helpers', () => {
 
     expect(parseBrowserForkUserKeyPassword(encryptionKey, encryptedPayload))
       .toBe('derived-user-key-password');
+  });
+});
+
+describe('BrowserForkAuthService payload errors', () => {
+  it('reports an undecodable fork payload without quoting the decrypted bytes', async () => {
+    const encryptionKey = Buffer.alloc(32, 10);
+    const authApi = {
+      logout: jest.fn().mockResolvedValue(undefined),
+      refreshToken: jest.fn(),
+      initSessionFork: jest.fn().mockResolvedValue({ Code: 1000, Selector: 'selector-123', UserCode: 'user-code-123' }),
+      getSessionForkStatus: jest.fn().mockResolvedValue({
+        Code: 1000,
+        Payload: encryptForkPayload(encryptionKey, 'keyPassword=plaintext-secret'),
+        UID: 'uid-123',
+        AccessToken: 'access-token',
+        RefreshToken: 'refresh-token',
+      }),
+    };
+    const service = new BrowserForkAuthService({
+      authApi,
+      sleepMs: jest.fn(async () => {}),
+      encryptionKeyFactory: () => encryptionKey,
+    });
+
+    const error = await service.login({ initialDelayMs: 0 }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: ErrorCode.AUTH_FAILED, message: 'Browser fork payload could not be decrypted' });
+    expect(JSON.stringify(error)).not.toContain('plaintext');
+    expect((error as AppError).toUserMessage()).not.toContain('keyPassword');
   });
 });
 
@@ -304,7 +332,8 @@ describe('BrowserForkAuthService', () => {
       pollIntervalMs: 10,
       maxPollTimeMs: 15,
     })).rejects.toMatchObject({
-      code: ErrorCode.TIMEOUT,
+      code: ErrorCode.AUTH_FAILED,
+      message: 'Browser sign-in was not completed within 1 second',
       details: { maxPollTimeMs: 15 },
     });
 
@@ -340,7 +369,8 @@ describe('BrowserForkAuthService', () => {
       pollIntervalMs: 250,
       maxPollTimeMs: 700,
     })).rejects.toMatchObject({
-      code: ErrorCode.TIMEOUT,
+      code: ErrorCode.AUTH_FAILED,
+      message: 'Browser sign-in was not completed within 1 second',
     });
 
     expect(sleepMs.mock.calls.map(([ms]) => ms)).toEqual([0, 250, 250, 250]);

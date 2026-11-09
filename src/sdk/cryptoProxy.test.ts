@@ -4,12 +4,13 @@ import type { PrivateKeyReference, PublicKeyReference } from '@protontech/crypto
 import { VERIFICATION_STATUS } from '@protontech/crypto/constants';
 import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
 import { resetServerTime, updateServerTime } from '../utils/server-time';
+import { keyCreationDate } from '../test/openpgp-keys';
 
 const CONTEXT_NOTATION = 'context@proton.ch';
 const encode = (text: string) => new TextEncoder().encode(text);
 
 async function generateKey(proxy: ProtonOpenPGPCryptoProxy, name = 'Test'): Promise<PrivateKeyReference> {
-  return proxy.generateKey({ userIDs: [{ name }], type: 'ecc', curve: 'ed25519Legacy' });
+  return proxy.generateKey({ userIDs: [{ name }], type: 'ecc', curve: 'ed25519Legacy', date: keyCreationDate() });
 }
 
 async function publicKeyOf(proxy: ProtonOpenPGPCryptoProxy, key: PrivateKeyReference): Promise<PublicKeyReference> {
@@ -84,6 +85,7 @@ describe('ProtonOpenPGPCryptoProxy', () => {
         type: 'ecc',
         curve: 'ed25519Legacy',
         config: { aeadProtect: true },
+        date: keyCreationDate(),
       });
       expect(aeadKey.isPrivate()).toBe(true);
     });
@@ -294,7 +296,7 @@ describe('ProtonOpenPGPCryptoProxy server time', () => {
     const serverNow = new Date(Date.now() - 3_600_000);
     updateServerTime(serverNow);
 
-    const key = await proxy.generateKey({ userIDs: [{ name: 'Test' }], type: 'ecc', curve: 'ed25519Legacy' });
+    const key = await proxy.generateKey({ userIDs: [{ name: 'Test' }], type: 'ecc', curve: 'ed25519Legacy', date: keyCreationDate() });
     // pmcrypto backdates generated keys by its key-generation offset so that
     // clocks slightly behind the server still accept them.
     expect(key.getCreationTime().getTime()).toBeLessThanOrEqual(serverNow.getTime());

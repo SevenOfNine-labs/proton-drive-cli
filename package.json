@@ -76,6 +76,7 @@
     "fs-extra": "^11.3.2",
     "inquirer": "^8.2.7",
     "mime-types": "^3.0.2",
+    "open": "^11.0.4",
     "openpgp": "npm:@protontech/openpgp@^6.3.1",
     "ora": "^9.0.0",
     "p-retry": "^9.0.0",

@@ -9,6 +9,7 @@ import { UserApiClient } from '../api/user';
 import { ErrorCode } from '../errors/types';
 import { logger } from '../utils/logger';
 import type { Address, User } from '../types/crypto';
+import { keyCreationDate } from '../test/openpgp-keys';
 
 jest.mock('../api/user');
 
@@ -21,6 +22,7 @@ async function generateArmoredKey(name: string, passphrase: string): Promise<str
     userIDs: [{ name, email: `${name}@example.test` }],
     passphrase,
     format: 'armored',
+    date: keyCreationDate(),
   });
   return privateKey;
 }

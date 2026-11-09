@@ -11,10 +11,16 @@ official Proton account module
 2. Generate an `account.proton.me/desktop/login?app=drive&pv=3` URL with a
    fragment payload containing the user code, a random 32-byte AES key, and
    the auth client id.
-3. Open the URL for the user, wait 5 s (`FORK_INITIAL_DELAY_MS`), then poll
+3. Print the URL (unless `--quiet`) and open it in the default browser with
+   the `open` package (open(1) on macOS, PowerShell `Start` on Windows and on
+   WSL outside SSH sessions and containers, xdg-open(1) otherwise), then
+   report whether that worked; under `--quiet` a browser that did not open
+   fails the login at once (`AUTH_FAILED`, `details.reason`
+   `browser-not-opened`). Wait 5 s (`FORK_INITIAL_DELAY_MS`), then poll
    `GET /auth/v4/sessions/forks/:selector` every 5 s
    (`FORK_POLL_INTERVAL_MS`) for at most 10 minutes
-   (`FORK_MAX_POLL_TIME_MS`).
+   (`FORK_MAX_POLL_TIME_MS`). A sign-in not completed by then fails with
+   `AUTH_FAILED`.
 4. Treat HTTP 422 as "not approved yet".
 5. Decrypt the returned payload with AES-256-GCM (NIST SP 800-38D) using AAD
    `fork`; it carries the user key password.

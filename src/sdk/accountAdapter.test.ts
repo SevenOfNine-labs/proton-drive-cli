@@ -3,6 +3,7 @@ import { AccountAdapter } from './accountAdapter';
 import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import type { Address } from '../types/crypto';
+import { keyCreationDate } from '../test/openpgp-keys';
 
 async function generateDecryptedKey(name: string): Promise<openpgp.PrivateKey> {
   const { privateKey } = await openpgp.generateKey({
@@ -10,6 +11,7 @@ async function generateDecryptedKey(name: string): Promise<openpgp.PrivateKey> {
     curve: 'ed25519Legacy',
     userIDs: [{ name, email: `${name}@example.test` }],
     format: 'object',
+    date: keyCreationDate(),
   });
   return privateKey;
 }

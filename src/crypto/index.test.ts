@@ -1,5 +1,6 @@
 import * as openpgp from 'openpgp';
 import { CryptoService } from './index';
+import { keyCreationDate } from '../test/openpgp-keys';
 
 async function generateDecryptedKey(name: string): Promise<openpgp.PrivateKey> {
   const { privateKey } = await openpgp.generateKey({
@@ -7,6 +8,7 @@ async function generateDecryptedKey(name: string): Promise<openpgp.PrivateKey> {
     curve: 'ed25519Legacy',
     userIDs: [{ name }],
     format: 'object',
+    date: keyCreationDate(),
   });
   return privateKey;
 }

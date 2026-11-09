@@ -24,7 +24,8 @@ With `pass-cli`, `login` stores the entry in a vault the account owns; when it
 owns none, as with a personal access token or an agent session, in a vault it
 may edit (role Manager or Editor). An existing entry in another vault is
 moved. Login fails when no vault qualifies. With `git-credential`, the first
-`credential.helper` of the system and global configuration among
+`credential.helper` or `credential.https://<credential host>.helper` of the
+system and global configuration among
 `osxkeychain`, `wincred`, `libsecret` and `manager` (with an encrypting
 credential store) is the only helper git runs; login fails when none is
 configured.

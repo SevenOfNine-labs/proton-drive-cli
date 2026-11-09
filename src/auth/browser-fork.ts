@@ -56,6 +56,11 @@ export interface BrowserForkLoginResult {
   session: SessionCredentials;
 }
 
+function formatDuration(ms: number): string {
+  const [count, unit] = ms >= 60_000 ? [Math.round(ms / 60_000), 'minute'] : [Math.ceil(ms / 1_000), 'second'];
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
 function defaultSleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -161,8 +166,8 @@ export class BrowserForkAuthService {
       const elapsedMs = this.now() - startedAt;
       if (elapsedMs > maxPollTimeMs) {
         throw new AppError(
-          'Browser authentication timed out',
-          ErrorCode.TIMEOUT,
+          `Browser sign-in was not completed within ${formatDuration(maxPollTimeMs)}`,
+          ErrorCode.AUTH_FAILED,
           { maxPollTimeMs },
           true
         );
@@ -198,13 +203,9 @@ export class BrowserForkAuthService {
     let userKeyPassword: string;
     try {
       userKeyPassword = parseBrowserForkUserKeyPassword(encryptionKey, status.Payload);
-    } catch (error: unknown) {
-      throw new AppError(
-        `Browser fork payload could not be decrypted: ${error instanceof Error ? error.message : 'unknown error'}`,
-        ErrorCode.AUTH_FAILED,
-        {},
-        true
-      );
+    } catch {
+      // The parser's error text can quote decrypted payload bytes, which hold the key password.
+      throw new AppError('Browser fork payload could not be decrypted', ErrorCode.AUTH_FAILED, {}, true);
     }
 
     const forked = {

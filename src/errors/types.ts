@@ -67,7 +67,7 @@ export class AppError extends Error {
   toUserMessage(): string {
     switch (this.code) {
       case ErrorCode.AUTH_FAILED:
-        return 'Authentication failed. Run: proton-drive-cli login';
+        return this.message || 'Authentication failed.';
 
       case ErrorCode.SESSION_EXPIRED:
         return 'Your session has expired. Please login again with: proton-drive-cli login';
@@ -79,7 +79,7 @@ export class AppError extends Error {
         return 'Network connection failed. Please check your internet connection and try again.';
 
       case ErrorCode.TIMEOUT:
-        return 'Request timed out. The server took too long to respond.';
+        return this.message || 'The operation timed out.';
 
       case ErrorCode.CONNECTION_REFUSED:
         return 'Connection refused. The server may be down or unreachable.';
@@ -156,9 +156,11 @@ export class AppError extends Error {
         return 'Fix the credential store, or run: proton-drive-cli login';
 
       case ErrorCode.NETWORK_ERROR:
-      case ErrorCode.TIMEOUT:
       case ErrorCode.CONNECTION_REFUSED:
         return 'Check your internet connection and try again';
+
+      case ErrorCode.TIMEOUT:
+        return 'Try again';
 
       case ErrorCode.RATE_LIMITED:
         return 'Wait a few moments before trying again';

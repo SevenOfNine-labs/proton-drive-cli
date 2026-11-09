@@ -13,6 +13,12 @@ import { openBrowserUrl } from '../utils/open-browser';
 import { authTrace } from '../utils/auth-trace';
 import { redactSensitive, uidFingerprint } from '../utils/redaction';
 
+/**
+ * `details.reason` of the login failure under --quiet when no browser opened;
+ * the proton-lfs-cli tray matches it in the auth trace.
+ */
+export const BROWSER_NOT_OPENED = 'browser-not-opened';
+
 export interface CredentialStoreOptions {
   credentialStore?: string;
   credentialHost?: string;
@@ -51,21 +57,30 @@ export async function loginWithBrowserFork(
 
   try {
     await authService.login({
-      onSignInUrl: (signInUrl: string) => {
+      onSignInUrl: async (signInUrl: string) => {
         if (spinner) {
           spinner.stop();
           spinner = undefined;
         }
 
-        const opened = openBrowserUrl(signInUrl);
         if (!isQuiet()) {
-          console.log(chalk.cyan('Complete Proton sign-in in your browser.'));
-          console.log(chalk.dim(opened
-            ? 'A browser window was opened for Proton account sign-in.'
-            : 'Could not open a browser automatically.'
-          ));
-          console.log(chalk.dim('If needed, open this URL manually:'));
+          console.log(chalk.cyan('Complete Proton sign-in in your browser:'));
           console.log(signInUrl);
+        }
+        const opened = await openBrowserUrl(signInUrl);
+        if (!opened && isQuiet()) {
+          throw new AppError(
+            'No browser could be opened for the sign-in; run proton-drive-cli login without --quiet to see the sign-in URL',
+            ErrorCode.AUTH_FAILED,
+            { reason: BROWSER_NOT_OPENED },
+            true,
+          );
+        }
+        if (!isQuiet()) {
+          console.log(chalk.dim(opened
+            ? 'The sign-in page was opened in the default browser.'
+            : 'Could not open a browser automatically; open the URL above.'
+          ));
         }
 
         if (isVerbose()) {

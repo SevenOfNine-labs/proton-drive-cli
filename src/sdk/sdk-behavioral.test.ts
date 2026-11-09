@@ -25,6 +25,7 @@ import type {
 import { ProtonOpenPGPCryptoProxy } from './cryptoProxy';
 import { HTTPClientAdapter } from './httpClientAdapter';
 import { SRPModuleAdapter } from './srpAdapter';
+import { keyCreationDate } from '../test/openpgp-keys';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -386,6 +387,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
       userIDs: [{ name: 'Test User' }],
       type: 'ecc',
       curve: 'ed25519Legacy',
+      date: keyCreationDate(),
     });
     publicKey = await publicKeyOf(privateKey);
   });
@@ -485,6 +487,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
       userIDs: [{ name: 'Other' }],
       type: 'ecc',
       curve: 'ed25519Legacy',
+      date: keyCreationDate(),
     });
     const otherSK = await proxy.generateSessionKey({ recipientKeys: [await publicKeyOf(otherKey)] });
 
@@ -530,6 +533,7 @@ describe('CryptoProxy encrypt/decrypt roundtrips', () => {
       userIDs: [{ name: 'Wrong' }],
       type: 'ecc',
       curve: 'ed25519Legacy',
+      date: keyCreationDate(),
     });
 
     const verified = await proxy.verifyMessage({

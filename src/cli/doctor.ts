@@ -4,6 +4,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs-extra';
+import { isSea } from 'node:sea';
 import * as path from 'path';
 
 import { SessionManager } from '../auth/session';
@@ -63,8 +64,16 @@ export const DOCTOR_CHECK_FIELDS = [
   'remediation',
 ] as const satisfies readonly (keyof DoctorCheck)[];
 
+/** The running entry point: the executable of a single-executable application (node:sea isSea), else the script. */
 function defaultDriveCliBin(): string {
-  return process.env.PROTON_DRIVE_CLI_BIN?.trim() || process.argv[1] || path.resolve(process.cwd(), 'dist/index.js');
+  const configured = process.env.PROTON_DRIVE_CLI_BIN?.trim();
+  if (configured) {
+    return configured;
+  }
+  if (isSea()) {
+    return process.execPath;
+  }
+  return process.argv[1] || path.resolve(process.cwd(), 'dist/index.js');
 }
 
 function makeCheck(

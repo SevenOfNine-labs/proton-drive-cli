@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   credentialHelperName,
+  credentialUrlApplies,
   gitCredentialFill,
   gitCredentialApprove,
   gitCredentialReject,
@@ -39,6 +40,8 @@ interface FakeGit {
   local?: Record<string, string[]>;
   /** Values of the command scope by key (`-c`, GIT_CONFIG_COUNT), listed last. */
   command?: Record<string, string[]>;
+  /** Entries in configuration order, in place of the scopes above; a null value is a key without `=`. */
+  entries?: Array<[scope: string, key: string, value: string | null]>;
   /** Exit status of `git config` for every key, in place of the values. */
   configExitCode?: number;
   /** Result of `git credential <action>` for the stdin it received. */
@@ -57,9 +60,9 @@ let calls: GitCall[] = [];
 
 /**
  * Stand-in for git: answers `git config --null --includes --show-scope
- * --get-all <key>` (git-config(1): NUL-terminated scope and value pairs in
- * system, global, local, command order, exit 1 when unset) and the pinned
- * `git credential <action>`; the callback runs after stdin was ended.
+ * --get-regexp <pattern>` with NUL-terminated scope and `key\nvalue` fields in
+ * configuration order, keys with a lower-case variable name, exit 1 when none
+ * match (git-config(1)), and the pinned `git credential <action>`.
  */
 function installGit(fake: FakeGit): void {
   mockExecFile.mockImplementation((
@@ -91,11 +94,17 @@ function installGit(fake: FakeGit): void {
                 finish({ exitCode: fake.configExitCode, stderr: 'fatal: bad config' });
                 return;
               }
-              expect(args.slice(0, -1)).toEqual(['config', '--null', '--includes', '--show-scope', '--get-all']);
-              const key = args[args.length - 1];
+              expect(args).toEqual([
+                'config', '--null', '--includes', '--show-scope', '--get-regexp', '^credential\\.(.*\\.)?(helper|credentialstore)$',
+              ]);
               const scopes = [['system', fake.system], ['global', fake.global], ['local', fake.local], ['command', fake.command]] as const;
-              const pairs = scopes.flatMap(([scope, values]) => (values?.[key] ?? []).map((value) => `${scope}\0${value}\0`));
-              finish(pairs.length > 0 ? { stdout: pairs.join('') } : { exitCode: 1 });
+              const entries = fake.entries ?? scopes.flatMap(([scope, values]) => Object.entries(values ?? {})
+                .flatMap(([key, list]) => list.map((value) => [scope, key, value] as [string, string, string])));
+              const lines = entries
+                .map(([scope, key, value]) => [scope, key.replace(/\.credentialStore$/, '.credentialstore'), value] as const)
+                .filter(([, key]) => /^credential\.(.*\.)?(helper|credentialstore)$/.test(key))
+                .map(([scope, key, value]) => `${scope}\0${key}${value === null ? '' : `\n${value}`}\0`);
+              finish(lines.length > 0 ? { stdout: lines.join('') } : { exitCode: 1 });
               return;
             }
             const action = args[args.length - 1];
@@ -190,15 +199,52 @@ describe('credentialHelperName (gitcredentials(7), CUSTOM HELPERS)', () => {
   });
 });
 
+describe('credentialUrlApplies (gitcredentials(7) CREDENTIAL CONTEXTS), verdicts of git 2.43', () => {
+  it.each([
+    [`https://${KEY_HOST}`, true],
+    [`https://${KEY_HOST}/`, true],
+    ['HTTPS://PROTON-DRIVE-CLI.INVALID', true],
+    [`https://${KEY_HOST}:443`, true],
+    [`https://${KEY_HOST}:0443`, true],
+    [`https://${KEY_HOST}:`, true],
+    [`https://${KEY_HOST}/.`, true],
+    [`https://${KEY_HOST}/a/..`, true],
+    [`https://${KEY_HOST}/%2e`, true],
+    ['https://proton%2Ddrive-cli.invalid', true],
+    [`https://${KEY_HOST}.`, true],
+    ['https://*.invalid', true],
+    ['https://*.*', true],
+    ['https://', true],
+    [KEY_HOST, true],
+    [`https://${KEY_HOST}:8443`, false],
+    [`https://${KEY_HOST}/path`, false],
+    [`http://${KEY_HOST}`, false],
+    ['https:', false],
+    ['https://proton-*.invalid', false],
+    [`https://${KEY_HOST}?x`, false],
+    [`https://${KEY_HOST}#x`, false],
+    [`https://${KEY_HOST}\\`, false],
+    [`https://@${KEY_HOST}`, false],
+    [`https://:pw@${KEY_HOST}`, false],
+    ['https://proton-drive\tcli.invalid', false],
+    ['https://ｐroton-drive-cli.invalid', false],
+    ['https://other@github.com', false],
+    [`https://UID123@${KEY_HOST}`, null],
+    [`UID123@${KEY_HOST}`, null],
+  ])('%s -> %s', (pattern, expected) => {
+    expect(credentialUrlApplies(pattern, KEY_HOST)).toBe(expected);
+  });
+});
+
 describe('selectCredentialHelper', () => {
-  it('reads credential.helper with includes and scopes in one git config call, in the file-system root, outside any repository', async () => {
+  it('reads the credential settings with includes and scopes in one git config call, in the file-system root, outside any repository', async () => {
     process.env.GIT_DIR = '/repo/.git';
     process.env.GIT_WORK_TREE = '/repo';
     installGit({ global: { 'credential.helper': ['osxkeychain'] } });
 
-    await expect(selectCredentialHelper()).resolves.toEqual({ value: 'osxkeychain', env: {} });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'osxkeychain', env: {} });
     expect(calls.map((call) => call.args)).toEqual([
-      ['config', '--null', '--includes', '--show-scope', '--get-all', 'credential.helper'],
+      ['config', '--null', '--includes', '--show-scope', '--get-regexp', '^credential\\.(.*\\.)?(helper|credentialstore)$'],
     ]);
     const [config] = calls;
     expect(config.cwd).toBe(path.parse(os.tmpdir()).root);
@@ -212,7 +258,7 @@ describe('selectCredentialHelper', () => {
       global: { 'credential.helper': ['osxkeychain'] },
     });
 
-    await expect(selectCredentialHelper()).resolves.toMatchObject({ value: 'libsecret' });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toMatchObject({ value: 'libsecret' });
   });
 
   it('ignores helpers of the local and command scopes', async () => {
@@ -222,7 +268,7 @@ describe('selectCredentialHelper', () => {
       command: { 'credential.helper': ['libsecret'] },
     });
 
-    await expect(selectCredentialHelper()).rejects.toThrow('(configured: store)');
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('(configured: store)');
   });
 
   it('lets a global empty value reset a system helper', async () => {
@@ -231,7 +277,7 @@ describe('selectCredentialHelper', () => {
       global: { 'credential.helper': [''] },
     });
 
-    await expect(selectCredentialHelper()).rejects.toThrow('(configured: none)');
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('(configured: none)');
   });
 
   it('applies an empty value as a reset of the helper list, as git does', async () => {
@@ -240,7 +286,7 @@ describe('selectCredentialHelper', () => {
       global: { 'credential.helper': ['', 'store', 'osxkeychain'] },
     });
 
-    await expect(selectCredentialHelper()).resolves.toMatchObject({ value: 'osxkeychain' });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toMatchObject({ value: 'osxkeychain' });
   });
 
   it('skips store and cache and returns the first helper that encrypts secrets at rest', async () => {
@@ -248,34 +294,82 @@ describe('selectCredentialHelper', () => {
       global: { 'credential.helper': ['store', 'cache --timeout=300', '/usr/lib/git-core/git-credential-libsecret', 'osxkeychain'] },
     });
 
-    await expect(selectCredentialHelper()).resolves.toEqual({ value: '/usr/lib/git-core/git-credential-libsecret', env: {} });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: '/usr/lib/git-core/git-credential-libsecret', env: {} });
   });
 
   it('skips a secure helper chained with store in one shell command', async () => {
     installGit({ global: { 'credential.helper': ['osxkeychain; git credential-store', 'libsecret'] } });
 
-    await expect(selectCredentialHelper()).resolves.toMatchObject({ value: 'libsecret' });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toMatchObject({ value: 'libsecret' });
   });
 
   it('rejects a configuration without a helper that encrypts secrets at rest and names what it found', async () => {
     installGit({ global: { 'credential.helper': ['store', 'cache --timeout=300', '!f() { :; }; f'] } });
 
-    await expect(selectCredentialHelper()).rejects.toThrow(
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow(
       'git has no credential helper that encrypts secrets at rest ' +
-        '(configured: store, cache, custom program). Set credential.helper to osxkeychain, wincred, libsecret or manager',
+        `(configured: store, cache, custom program). Set credential.helper, or credential.https://${KEY_HOST}.helper, to osxkeychain, wincred, libsecret or manager`,
     );
+  });
+
+  it('applies general and URL-specific helpers in configuration order, an empty value of either resetting the list', async () => {
+    installGit({
+      entries: [
+        ['global', 'credential.helper', 'store'],
+        ['global', `credential.https://${KEY_HOST}.helper`, ''],
+        ['global', `credential.https://${KEY_HOST}.helper`, 'libsecret'],
+      ],
+    });
+    await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'libsecret', env: {} });
+
+    installGit({
+      entries: [
+        ['global', `credential.https://${KEY_HOST}.helper`, 'osxkeychain'],
+        ['global', 'credential.helper', ''],
+        ['global', 'credential.helper', 'store'],
+      ],
+    });
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('(configured: store)');
+  });
+
+  it('ignores URL-specific helpers git does not apply to the credential host', async () => {
+    installGit({
+      entries: [
+        ['global', 'credential.https://github.com.helper', 'osxkeychain'],
+        ['global', `credential.https://${KEY_HOST}/path.helper`, 'osxkeychain'],
+        ['global', `credential.http://${KEY_HOST}.helper`, 'osxkeychain'],
+        ['global', `credential.https://${KEY_HOST}:8443.helper`, 'osxkeychain'],
+        ['global', 'credential.https://proton-*.invalid.helper', 'osxkeychain'],
+        ['global', 'credential.https://other@github.com.helper', 'osxkeychain'],
+        ['global', 'credential.helper', 'cache'],
+      ],
+    });
+
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('(configured: cache)');
+  });
+
+  it('refuses a URL-specific helper of the credential host that depends on the username', async () => {
+    installGit({ entries: [['global', `credential.https://UID123@${KEY_HOST}.helper`, 'osxkeychain']] });
+
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('depends on the credential username');
+  });
+
+  it('reports a helper key without a value, which git refuses as well', async () => {
+    installGit({ entries: [['global', `credential.https://${KEY_HOST}.helper`, null]] });
+
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow(`git config credential.https://${KEY_HOST}.helper has no value`);
   });
 
   it('rejects a configuration without any helper', async () => {
     installGit({});
 
-    await expect(selectCredentialHelper()).rejects.toThrow('(configured: none)');
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('(configured: none)');
   });
 
   it('reports a git config failure other than an unset key', async () => {
     installGit({ configExitCode: 128 });
 
-    await expect(selectCredentialHelper()).rejects.toThrow('git config --get-all credential.helper failed: fatal: bad config');
+    await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow('git config --get-regexp credential settings failed: fatal: bad config');
   });
 
   describe('Git Credential Manager store (GCM docs/credstores.md)', () => {
@@ -305,9 +399,9 @@ describe('selectCredentialHelper', () => {
       });
 
       if (pinned) {
-        await expect(selectCredentialHelper()).resolves.toEqual({ value: 'manager', env: { GCM_CREDENTIAL_STORE: pinned } });
+        await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'manager', env: { GCM_CREDENTIAL_STORE: pinned } });
       } else {
-        await expect(selectCredentialHelper()).rejects.toThrow(
+        await expect(selectCredentialHelper(KEY_HOST)).rejects.toThrow(
           `manager with credential store ${store ? store.toLowerCase() : 'default'}`,
         );
       }
@@ -318,8 +412,21 @@ describe('selectCredentialHelper', () => {
       process.env.GCM_CREDENTIAL_STORE = 'secretservice';
       installGit({ global: { 'credential.helper': ['manager'], 'credential.credentialStore': ['plaintext'] } });
 
-      await expect(selectCredentialHelper()).resolves.toEqual({ value: 'manager', env: { GCM_CREDENTIAL_STORE: 'secretservice' } });
-      expect(calls.some((call) => call.args.includes('credential.credentialStore'))).toBe(false);
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'manager', env: { GCM_CREDENTIAL_STORE: 'secretservice' } });
+    });
+
+    it('applies credential.credentialStore set for the credential host, in configuration order', async () => {
+      setPlatform('linux');
+      installGit({
+        entries: [
+          ['global', 'credential.credentialStore', 'plaintext'],
+          ['global', `credential.https://${KEY_HOST}.helper`, 'manager'],
+          ['global', `credential.https://${KEY_HOST}.credentialStore`, 'secretservice'],
+          ['global', 'credential.https://github.com.credentialStore', 'plaintext'],
+        ],
+      });
+
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'manager', env: { GCM_CREDENTIAL_STORE: 'secretservice' } });
     });
 
     it('uses the last credential.credentialStore value', async () => {
@@ -329,14 +436,14 @@ describe('selectCredentialHelper', () => {
         global: { 'credential.helper': ['manager'], 'credential.credentialStore': ['secretservice'] },
       });
 
-      await expect(selectCredentialHelper()).resolves.toMatchObject({ value: 'manager' });
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toMatchObject({ value: 'manager' });
     });
 
     it('applies the Windows stores to the GCM executable of Git for Windows called from WSL and names the pins in WSLENV', async () => {
       setPlatform('linux');
       installGit({ global: { 'credential.helper': [WSL_GCM] } });
 
-      await expect(selectCredentialHelper()).resolves.toEqual({
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({
         value: WSL_GCM,
         env: { GCM_CREDENTIAL_STORE: 'wincredman', WSLENV: GCM_WSLENV },
       });
@@ -347,7 +454,7 @@ describe('selectCredentialHelper', () => {
       process.env.WSLENV = 'USERPROFILE/pu';
       installGit({ global: { 'credential.helper': [WSL_GCM], 'credential.credentialStore': ['dpapi'] } });
 
-      await expect(selectCredentialHelper()).resolves.toEqual({
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({
         value: WSL_GCM,
         env: { GCM_CREDENTIAL_STORE: 'dpapi', WSLENV: `USERPROFILE/pu:${GCM_WSLENV}` },
       });
@@ -357,8 +464,8 @@ describe('selectCredentialHelper', () => {
       setPlatform('win32');
       installGit({ global: { 'credential.helper': ['C:/Program\\ Files/Git/mingw64/bin/git-credential-manager.exe'] } });
 
-      await expect(selectCredentialHelper()).resolves.toMatchObject({ env: { GCM_CREDENTIAL_STORE: 'wincredman' } });
-      expect((await selectCredentialHelper()).env).not.toHaveProperty('WSLENV');
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toMatchObject({ env: { GCM_CREDENTIAL_STORE: 'wincredman' } });
+      expect((await selectCredentialHelper(KEY_HOST)).env).not.toHaveProperty('WSLENV');
     });
 
     it('falls through to the next secure helper when GCM uses an unencrypted store', async () => {
@@ -367,7 +474,7 @@ describe('selectCredentialHelper', () => {
         global: { 'credential.helper': ['manager', 'libsecret'], 'credential.credentialStore': ['plaintext'] },
       });
 
-      await expect(selectCredentialHelper()).resolves.toEqual({ value: 'libsecret', env: {} });
+      await expect(selectCredentialHelper(KEY_HOST)).resolves.toEqual({ value: 'libsecret', env: {} });
     });
   });
 });

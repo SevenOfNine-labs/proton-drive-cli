@@ -147,29 +147,106 @@ function runGit(args: string[], stdinData?: string, env: NodeJS.ProcessEnv = {})
   });
 }
 
+/** `pattern` matches `host` label by label, a `*` label matching any one label (git urlmatch.c match_host). */
+function hostPatternMatches(pattern: string, host: string): boolean {
+  const patternLabels = pattern.toLowerCase().replace(/\.$/, '').split('.');
+  const hostLabels = host.toLowerCase().split('.');
+  return patternLabels.length === hostLabels.length &&
+    patternLabels.every((label, index) => label === '*' || label === hostLabels[index]);
+}
+
 /**
- * Values of a configuration key in the system and global scopes, in git's
- * order and with include directives followed (git-config(1) `--show-scope`,
- * `--includes`); git-config(1) exits 1 when the key is unset.
+ * Whether git applies the configuration URL `pattern` of `credential.<url>.*`
+ * to `https://<host>` without path and user: scheme, percent-decoded host
+ * with `*` labels, default port, path, user (gitcredentials(7) CREDENTIAL
+ * CONTEXTS, git urlmatch.c); null when it depends on the username.
  */
-async function gitConfigValues(key: string): Promise<string[]> {
+export function credentialUrlApplies(pattern: string, host: string): boolean | null {
+  const match = /^(?:([A-Za-z][A-Za-z0-9+.-]*):\/\/)?(?:([^@/]*)@)?([^/:]*)(?::([0-9]*))?(\/.*)?$/.exec(pattern);
+  if (!match) {
+    return false;
+  }
+  const [, scheme, user, encodedHost, port, encodedPath] = match;
+  let patternHost: string;
+  let urlPath: string | undefined;
+  try {
+    patternHost = decodeURIComponent(encodedHost);
+    urlPath = encodedPath === undefined ? undefined : decodeURIComponent(encodedPath);
+  } catch {
+    return false;
+  }
+  if (scheme !== undefined && scheme.toLowerCase() !== 'https') {
+    return false;
+  }
+  if (port !== undefined && port !== '' && Number(port) !== 443) {
+    return false;
+  }
+  if (urlPath !== undefined && path.posix.normalize(urlPath) !== '/') {
+    return false;
+  }
+  if (patternHost === '' ? scheme === undefined : !hostPatternMatches(patternHost, host)) {
+    return false;
+  }
+  if (user !== undefined) {
+    return user === '' || user.includes(':') ? false : null;
+  }
+  return true;
+}
+
+/** The `credential.*` settings git applies to one credential host. */
+export interface CredentialConfig {
+  helpers: string[];
+  credentialStore?: string;
+}
+
+/**
+ * `credential.helper` and `credential.credentialStore`, general and for
+ * `https://<host>`, from the system and global scopes in configuration
+ * order, includes followed (git-config(1) `--get-regexp`, `--show-scope`,
+ * `--includes`); an empty helper resets the list, as in git.
+ */
+export async function readCredentialConfig(host: string): Promise<CredentialConfig> {
   let output: string;
   try {
-    output = await runGit(['config', '--null', '--includes', '--show-scope', '--get-all', key]);
+    output = await runGit([
+      'config', '--null', '--includes', '--show-scope', '--get-regexp', '^credential\\.(.*\\.)?(helper|credentialstore)$',
+    ]);
   } catch (error) {
     if ((error as { exitCode?: unknown }).exitCode === 1) {
-      return [];
+      return { helpers: [] };
     }
-    throw new Error(`git config --get-all ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`git config --get-regexp credential settings failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const config: CredentialConfig = { helpers: [] };
   const fields = output.split('\0');
-  const values: string[] = [];
   for (let index = 0; index + 1 < fields.length; index += 2) {
-    if (fields[index] === 'system' || fields[index] === 'global') {
-      values.push(fields[index + 1]);
+    if (fields[index] !== 'system' && fields[index] !== 'global') {
+      continue;
+    }
+    const newline = fields[index + 1].indexOf('\n');
+    const key = newline < 0 ? fields[index + 1] : fields[index + 1].slice(0, newline);
+    const parts = /^credential\.(?:(.*)\.)?(helper|credentialstore)$/.exec(key);
+    if (!parts) {
+      continue;
+    }
+    const applies = parts[1] === undefined ? true : credentialUrlApplies(parts[1], host);
+    if (applies === null) {
+      throw new Error(`git config ${key} depends on the credential username; set credential.helper or credential.https://${host}.helper`);
+    }
+    if (!applies) {
+      continue;
+    }
+    if (newline < 0) {
+      throw new Error(`git config ${key} has no value`);
+    }
+    const value = fields[index + 1].slice(newline + 1);
+    if (parts[2] === 'helper') {
+      config.helpers = value === '' ? [] : [...config.helpers, value];
+    } else {
+      config.credentialStore = value;
     }
   }
-  return values;
+  return config;
 }
 
 /** Quotes, command substitution, parameter expansion and line breaks, which shell-quote does not reject. */
@@ -230,34 +307,24 @@ function gcmEnvironment(helper: string, store: string): NodeJS.ProcessEnv {
 }
 
 /** GCM's credential store: GCM_CREDENTIAL_STORE, else credential.credentialStore (GCM docs/configuration.md). */
-async function gcmCredentialStore(): Promise<string> {
-  const fromEnv = process.env.GCM_CREDENTIAL_STORE?.trim();
-  if (fromEnv) {
-    return fromEnv.toLowerCase();
-  }
-  const configured = (await gitConfigValues('credential.credentialStore')).pop()?.trim();
+function gcmCredentialStore(config: CredentialConfig): string {
+  const configured = process.env.GCM_CREDENTIAL_STORE?.trim() || config.credentialStore?.trim();
   return configured ? configured.toLowerCase() : 'default';
 }
 
 /**
- * The helper this store runs: the first `credential.helper` of the system and
- * global configuration that encrypts secrets at rest, with GCM's store pinned
- * in its environment. `git credential approve` sends the credential to every
- * configured helper (git-credential(1)), so the store pins this one helper
- * and a plaintext `store` or an in-memory `cache` never receives the session
- * secrets. An empty value resets the list, as in git.
+ * The helper this store runs for `host`: the first helper of the system and
+ * global configuration that git applies to `https://<host>` and that encrypts
+ * secrets at rest, with GCM's store pinned in its environment. `git
+ * credential approve` sends the credential to every configured helper
+ * (git-credential(1)), so the store pins this one helper and a plaintext
+ * `store` or an in-memory `cache` never receives the session secrets. An
+ * empty value resets the list, as in git.
  */
-export async function selectCredentialHelper(): Promise<CredentialHelper> {
-  const helpers: string[] = [];
-  for (const value of await gitConfigValues('credential.helper')) {
-    if (value === '') {
-      helpers.length = 0;
-    } else {
-      helpers.push(value);
-    }
-  }
+export async function selectCredentialHelper(host: string): Promise<CredentialHelper> {
+  const config = await readCredentialConfig(host);
   const rejected: string[] = [];
-  for (const helper of helpers) {
+  for (const helper of config.helpers) {
     const name = credentialHelperName(helper);
     if (name === null || !SECURE_HELPERS.has(name)) {
       rejected.push(name ?? 'custom program');
@@ -265,7 +332,7 @@ export async function selectCredentialHelper(): Promise<CredentialHelper> {
     }
     let env: NodeJS.ProcessEnv = {};
     if (name === 'manager') {
-      const store = await gcmCredentialStore();
+      const store = gcmCredentialStore(config);
       if (!SECURE_GCM_STORES[gcmPlatform(helper)].includes(store)) {
         rejected.push(`manager with credential store ${store}`);
         continue;
@@ -278,13 +345,13 @@ export async function selectCredentialHelper(): Promise<CredentialHelper> {
   throw new Error(
     'git has no credential helper that encrypts secrets at rest ' +
       `(configured: ${rejected.length > 0 ? rejected.join(', ') : 'none'}). ` +
-      'Set credential.helper to osxkeychain, wincred, libsecret or manager',
+      `Set credential.helper, or credential.https://${host}.helper, to osxkeychain, wincred, libsecret or manager`,
   );
 }
 
 /** Run `git credential <action>` with the selected helper as the only one (git-config(1), command scope last). */
-async function runGitCredential(action: 'fill' | 'approve' | 'reject', stdinData: string): Promise<string> {
-  const helper = await selectCredentialHelper();
+async function runGitCredential(action: 'fill' | 'approve' | 'reject', host: string, stdinData: string): Promise<string> {
+  const helper = await selectCredentialHelper(host);
   try {
     return await runGit(
       [
@@ -311,7 +378,7 @@ export async function gitCredentialFill(host: string, username: string): Promise
     host,
     username: maskIdentifier(username),
   });
-  const output = await runGitCredential('fill', formatCredentialInput({ protocol: PROTOCOL, host, username }));
+  const output = await runGitCredential('fill', host, formatCredentialInput({ protocol: PROTOCOL, host, username }));
   const parsed = parseCredentialOutput(output);
 
   if (!parsed.password) {
@@ -333,7 +400,7 @@ export async function gitCredentialFill(host: string, username: string): Promise
  * Store credentials using `git credential approve`.
  */
 export async function gitCredentialApprove(cred: GitCredential): Promise<void> {
-  await runGitCredential('approve', formatCredentialInput(cred));
+  await runGitCredential('approve', cred.host, formatCredentialInput(cred));
 }
 
 /**
@@ -341,7 +408,7 @@ export async function gitCredentialApprove(cred: GitCredential): Promise<void> {
  * without a password, which erases regardless of the stored value.
  */
 export async function gitCredentialReject(host: string, username: string): Promise<void> {
-  await runGitCredential('reject', formatCredentialInput({ protocol: PROTOCOL, host, username }));
+  await runGitCredential('reject', host, formatCredentialInput({ protocol: PROTOCOL, host, username }));
 }
 
 // ─── Store ─────────────────────────────────────────────────────────

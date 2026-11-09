@@ -25,6 +25,9 @@ jest.mock('fs-extra', () => ({
   stat: jest.fn(),
 }));
 
+const mockIsSea = jest.fn(() => false);
+jest.mock('node:sea', () => ({ isSea: () => mockIsSea() }));
+
 import * as nodeFs from 'fs';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -84,6 +87,25 @@ describe('createDoctorCommand', () => {
     const cmd = createDoctorCommand();
     for (const long of ['--credential-store', '--credential-host']) {
       expect(cmd.options.find((o: any) => o.long === long)?.defaultValue).toBeUndefined();
+    }
+  });
+
+  it('checks the executable itself as the entry point of a single-executable application', () => {
+    const configured = process.env.PROTON_DRIVE_CLI_BIN;
+    delete process.env.PROTON_DRIVE_CLI_BIN;
+    try {
+      mockIsSea.mockReturnValue(true);
+      const option = createDoctorCommand().options.find((o: any) => o.long === '--drive-cli-bin');
+      expect(option?.defaultValue).toBe(process.execPath);
+
+      mockIsSea.mockReturnValue(false);
+      const scriptOption = createDoctorCommand().options.find((o: any) => o.long === '--drive-cli-bin');
+      expect(scriptOption?.defaultValue).toBe(process.argv[1]);
+    } finally {
+      if (configured !== undefined) {
+        process.env.PROTON_DRIVE_CLI_BIN = configured;
+      }
+      mockIsSea.mockReturnValue(false);
     }
   });
 

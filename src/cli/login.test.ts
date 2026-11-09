@@ -3,6 +3,7 @@ import {
   createLogoutCommand,
   createSessionRefreshCommand,
   createStatusCommand,
+  BROWSER_NOT_OPENED,
   loginWithBrowserFork,
   resolveCredentialStoreOptions,
 } from './login';
@@ -24,7 +25,7 @@ jest.mock('../utils/output', () => ({
 }));
 
 jest.mock('../utils/open-browser', () => ({
-  openBrowserUrl: jest.fn(() => true),
+  openBrowserUrl: jest.fn(async () => true),
 }));
 
 jest.mock('../auth/session', () => ({
@@ -36,7 +37,7 @@ jest.mock('../auth/session', () => ({
   },
 }));
 
-import { outputResult } from '../utils/output';
+import { isQuiet, outputResult } from '../utils/output';
 import { openBrowserUrl } from '../utils/open-browser';
 
 const mockOutputResult = outputResult as jest.MockedFunction<typeof outputResult>;
@@ -117,6 +118,10 @@ describe('loginWithBrowserFork', () => {
       }),
     } as any;
     const logSpy = jest.spyOn(console, 'log').mockImplementation();
+    mockOpenBrowserUrl.mockImplementationOnce(async (url: string) => {
+      expect(logSpy.mock.calls.flat()).toContain(url);
+      return true;
+    });
 
     await loginWithBrowserFork(fakeAuthService);
 
@@ -127,6 +132,46 @@ describe('loginWithBrowserFork', () => {
     );
     expect(mockOutputResult).toHaveBeenCalledWith('OK');
     expect(consoleOutput).not.toContain('keyPassword');
+    expect(consoleOutput).toContain('The sign-in page was opened in the default browser.');
+  });
+
+  it('fails at once under --quiet when no browser opened, with the reason the tray matches', async () => {
+    (isQuiet as jest.Mock).mockReturnValue(true);
+    mockOpenBrowserUrl.mockResolvedValueOnce(false);
+    const fakeAuthService = {
+      login: jest.fn(async ({ onSignInUrl }) => {
+        await onSignInUrl('https://account.proton.me/desktop/login?app=drive&pv=3#payload=test');
+        throw new Error('polling must not start');
+      }),
+    } as any;
+    const logSpy = jest.spyOn(console, 'log').mockImplementation();
+    try {
+      await expect(loginWithBrowserFork(fakeAuthService)).rejects.toMatchObject({
+        code: ErrorCode.AUTH_FAILED,
+        details: { reason: BROWSER_NOT_OPENED },
+      });
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      (isQuiet as jest.Mock).mockReturnValue(false);
+    }
+  });
+
+  it('says so when no browser could be opened, after printing the URL', async () => {
+    mockOpenBrowserUrl.mockResolvedValueOnce(false);
+    const fakeAuthService = {
+      login: jest.fn(async ({ onSignInUrl }) => {
+        await onSignInUrl('https://account.proton.me/desktop/login?app=drive&pv=3#payload=test');
+        return { session: { uid: 'uid-123' } };
+      }),
+    } as any;
+    const logSpy = jest.spyOn(console, 'log').mockImplementation();
+
+    await loginWithBrowserFork(fakeAuthService);
+
+    const consoleOutput = logSpy.mock.calls.flat().join('\n');
+    expect(consoleOutput).toContain('https://account.proton.me/desktop/login?app=drive&pv=3#payload=test');
+    expect(consoleOutput).toContain('Could not open a browser automatically; open the URL above.');
+    expect(consoleOutput).not.toContain('opened in the default browser');
   });
 });
 

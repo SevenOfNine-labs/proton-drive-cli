@@ -70,12 +70,18 @@ helper, the first configured one that encrypts secrets at rest:
 | `osxkeychain` | macOS login keychain |
 | `wincred` | Windows Credential Manager, `CRED_PERSIST_LOCAL_MACHINE` |
 | `libsecret` | freedesktop Secret Service, default collection |
-| `manager` (Git Credential Manager) | `wincredman` or `dpapi` on Windows, `keychain` or `gpg` on macOS, `secretservice` or `gpg` elsewhere (`GCM_CREDENTIAL_STORE`, else `credential.credentialStore`) |
+| `manager` (Git Credential Manager) | `wincredman` or `dpapi` on Windows, `keychain` or `gpg` on macOS, `secretservice` or `gpg` elsewhere (`GCM_CREDENTIAL_STORE`, else the last `credential.credentialStore` git applies to the host) |
 
-Helpers are read from `credential.helper` in the system and global scopes,
-include directives followed (git-config(1) `--show-scope`, `--includes`), so
-`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` apply as
-for git itself; an empty value resets the list, as in git. Without such a
+Helpers are read from `credential.helper` and from every
+`credential.<url>.helper` whose URL git applies to `https://<credential
+host>` (gitcredentials(7), "CREDENTIAL CONTEXTS": scheme, host with `*`
+labels, default port, path; for example
+`credential.https://proton-drive-cli.invalid.helper`), in the system and
+global scopes, in configuration order, include directives followed
+(`--show-scope`, `--includes`); a URL with a user name is refused, since it
+depends on the session UID. `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL` and
+`GIT_CONFIG_NOSYSTEM` apply as for git itself; an empty value resets the
+list, as in git. Without such a
 helper the save and every read fail with the configured helpers named; the
 scope listing needs git 2.26 or newer. A value with quotes, expansions,
 shell operators, redirections or globs is never selected, since git passes

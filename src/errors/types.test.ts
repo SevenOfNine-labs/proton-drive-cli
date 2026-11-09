@@ -305,9 +305,11 @@ describe('error types', () => {
   });
 
   describe('AppError.toUserMessage', () => {
-    it('should return user-friendly message for AUTH_FAILED', () => {
-      const error = new AppError('Auth failed', ErrorCode.AUTH_FAILED);
-      expect(error.toUserMessage()).toContain('Authentication failed');
+    it('should return the specific message of an AUTH_FAILED error, else a generic one', () => {
+      const error = new AppError('Browser sign-in was not completed within 10 minutes', ErrorCode.AUTH_FAILED);
+      expect(error.toUserMessage()).toBe('Browser sign-in was not completed within 10 minutes');
+      expect(error.getRecoverySuggestion()).toBe('Run: proton-drive-cli login');
+      expect(new AppError('', ErrorCode.AUTH_FAILED).toUserMessage()).toBe('Authentication failed.');
     });
 
     it('should return user-friendly message for SESSION_EXPIRED', () => {
@@ -320,9 +322,11 @@ describe('error types', () => {
       expect(error.toUserMessage()).toContain('Network connection failed');
     });
 
-    it('should return user-friendly message for TIMEOUT', () => {
-      const error = new AppError('Timed out', ErrorCode.TIMEOUT);
-      expect(error.toUserMessage()).toContain('timed out');
+    it('should return the specific message of a TIMEOUT error, which is not always the network', () => {
+      const error = new AppError('The session lock is held by another process', ErrorCode.TIMEOUT);
+      expect(error.toUserMessage()).toBe('The session lock is held by another process');
+      expect(error.getRecoverySuggestion()).toBe('Try again');
+      expect(new AppError('', ErrorCode.TIMEOUT).toUserMessage()).toBe('The operation timed out.');
     });
 
     it('should return user-friendly message for FILE_NOT_FOUND with path', () => {
