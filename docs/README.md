@@ -21,6 +21,7 @@ Project-owned docs live here. The vendored SDK docs remain under `submodules/sdk
 ### Operations
 
 - [Configuration](operations/configuration.md): state files, environment variables, command options, build.
+- [Releasing](operations/releasing.md): release workflow, single executables, tag message, verification.
 
 ### Reference
 

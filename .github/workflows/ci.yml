@@ -28,8 +28,11 @@ jobs:
         with:
           node-version-file: .node-version
 
+      # Node.js 25 and later ship without Corepack (https://nodejs.org/docs/latest-v24.x/api/corepack.html).
       - name: Enable Corepack
-        run: corepack enable
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
 
       - name: Build vendored SDK
         run: cd submodules/sdk/client/js && npm install --no-package-lock --no-audit --no-fund && npm run build
@@ -60,8 +63,11 @@ jobs:
         with:
           node-version-file: .node-version
 
+      # Node.js 25 and later ship without Corepack (https://nodejs.org/docs/latest-v24.x/api/corepack.html).
       - name: Enable Corepack
-        run: corepack enable
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
 
       - name: Build vendored SDK
         run: cd submodules/sdk/client/js && npm install --no-package-lock --no-audit --no-fund && npm run build

@@ -88,8 +88,8 @@ Node.js 22 or newer is required to run `dist/index.js` (`engines.node`): the
 SDK relies on `Array.fromAsync`, `Promise.withResolvers` and the `Uint8Array`
 base64/hex helpers (the latter are polyfilled by `src/crypto/polyfill.ts` with
 `core-js` on Node 22/24). CI runs the Jest suite on Node.js 22 and 26. The
-single-executable build (`sea-config.json`, `node --build-sea`) needs Node.js
-26, the version in the parent repository's `.node-version`.
+single-executable build (`scripts/build-sea.sh`: `sea-config.json`,
+`node --build-sea`) needs the Node.js version in `.node-version`.
 
 ## Offline Preflight
 

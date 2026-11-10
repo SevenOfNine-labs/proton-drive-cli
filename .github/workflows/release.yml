@@ -1,0 +1,175 @@
+name: Release
+
+# On a v* tag: builds proton-drive-cli as a Node.js single executable per
+# platform and publishes one GitHub Release with the executables,
+# SHA256SUMS.txt and a git-cliff changelog. workflow_dispatch builds the
+# executables without a release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+          - os: ubuntu-latest
+            target: linux-amd64
+          - os: windows-latest
+            target: windows-amd64
+            exe: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Init vendored SDK submodule
+        shell: bash
+        run: git submodule update --init --depth=1 submodules/sdk
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Tag matches package.json version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json $version"
+            exit 1
+          fi
+
+      - name: Enable Corepack + Yarn 4
+        shell: bash
+        run: |
+          # The Windows runner's global yarn 1.x would shadow the Corepack shim.
+          npm uninstall -g yarn 2>/dev/null || true
+          # Node.js 25 and later ship without Corepack (https://nodejs.org/docs/latest-v24.x/api/corepack.html).
+          npm install -g corepack@0.36.0
+          corepack enable
+          yarn --version
+
+      - name: Build vendored SDK
+        shell: bash
+        run: |
+          cd submodules/sdk/client/js
+          npm install --no-package-lock --no-audit --no-fund
+          npm run build
+
+      - name: Install dependencies
+        shell: bash
+        run: yarn install --immutable
+
+      - name: Build runtime
+        shell: bash
+        run: yarn build
+
+      - name: Build single executable
+        shell: bash
+        env:
+          SEA_OUTPUT_DIR: build
+        run: bash scripts/build-sea.sh
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(node -p "require('./package.json').version")"
+          actual="$(./build/proton-drive-cli${{ matrix.exe }} --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::--version printed '$actual', expected '$expected'"
+            exit 1
+          fi
+          ./build/proton-drive-cli${{ matrix.exe }} --help > /dev/null
+
+      - name: Name the release asset
+        shell: bash
+        run: |
+          mkdir -p release
+          mv "build/proton-drive-cli${{ matrix.exe }}" "release/proton-drive-cli-${{ matrix.target }}${{ matrix.exe }}"
+
+      - name: Upload executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proton-drive-cli-${{ matrix.target }}
+          path: release/
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Download executables
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: proton-drive-cli-*
+          path: release/
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release
+          ls -l
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Install git-cliff
+        env:
+          GIT_CLIFF_VERSION: 2.14.2
+          # sha512 published next to the release asset:
+          # https://github.com/orhun/git-cliff/releases/tag/v2.14.2
+          GIT_CLIFF_SHA512: 26d1f7c8ea2400f2ccb0b2e7f321635f600b583bf4cd1f7afaa5e8c24068ad1088a2504e0a4d9f4333d4bb20a80329327d9462634343ee3af91e1a7fbdc6f18a
+        run: |
+          set -euo pipefail
+          archive="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/${archive}"
+          echo "${GIT_CLIFF_SHA512}  ${archive}" | sha512sum -c -
+          tar -xzf "$archive"
+          sudo mv "git-cliff-${GIT_CLIFF_VERSION}/git-cliff" /usr/local/bin/
+          git-cliff --version
+
+      - name: Generate changelog
+        env:
+          # Lets git-cliff resolve PR numbers and authors (cliff.toml remote fields).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git-cliff --config cliff.toml --github-repo "${{ github.repository }}" \
+            --latest --strip header --output CHANGELOG.md
+          cat CHANGELOG.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          body_path: CHANGELOG.md
+          files: |
+            release/*

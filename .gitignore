@@ -27,3 +27,6 @@ _book/
 
 # Changeset working files (agent-maintained, never committed)
 .changeset/
+
+# Single executable output (scripts/build-sea.sh)
+bin/

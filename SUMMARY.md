@@ -14,6 +14,7 @@
 ## Operations
 
 - [Configuration](docs/operations/configuration.md)
+- [Releasing](docs/operations/releasing.md)
 
 ## Reference
 

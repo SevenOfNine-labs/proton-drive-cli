@@ -5,6 +5,23 @@ by the official `@protontech/drive-sdk`.
 
 ## Installation
 
+Each [GitHub Release](https://github.com/SevenOfNine-labs/proton-drive-cli/releases)
+carries single executables that need no Node.js:
+`proton-drive-cli-darwin-arm64`, `proton-drive-cli-linux-amd64` and
+`proton-drive-cli-windows-amd64.exe`. Check the download against the
+release's `SHA256SUMS.txt`, then install it as `proton-drive-cli` on your
+`PATH`:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS.txt   # shasum -a 256 -c on macOS
+install -m 0755 proton-drive-cli-linux-amd64 ~/.local/bin/proton-drive-cli
+```
+
+The macOS executable is ad-hoc signed, not notarized: clear the quarantine
+attribute once with `xattr -d com.apple.quarantine <file>`.
+
+### From source
+
 Requires Node.js 22+. The vendored Proton SDK must be built once first:
 
 ```bash
@@ -15,6 +32,8 @@ yarn build
 ```
 
 For local development, invoke the CLI directly with `node dist/index.js`.
+`bash scripts/build-sea.sh` builds the single executable into `bin/` with
+the Node.js version in `.node-version`.
 
 ## Authentication
 

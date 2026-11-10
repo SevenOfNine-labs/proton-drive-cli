@@ -17,6 +17,7 @@
 
 - `corepack enable && yarn install`: Install dependencies with Yarn 4.
 - `yarn build`: Compile TypeScript into `dist/`.
+- `bash scripts/build-sea.sh`: Build the Node.js single executable into `bin/` (Node.js per `.node-version`; `.github/workflows/release.yml` publishes it on `v*` tags, see `docs/operations/releasing.md`).
 - `yarn dev`: Run CLI from source for local iteration.
 - `yarn test`: Run Jest tests (mocked and CI-safe).
 - `yarn test:coverage`: Run Jest with coverage output.
