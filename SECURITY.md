@@ -13,4 +13,4 @@ For detailed credential flows, trust boundaries, and threat mitigations, see [do
 
 ## Reporting Vulnerabilities
 
-If you discover a security vulnerability, please report it privately via [GitHub Security Advisories](https://github.com/SevenOfNine-labs/proton-drive-cli/security/advisories/new) rather than opening a public issue.
+If you discover a security vulnerability, please report it privately via [GitHub Security Advisories](https://github.com/SevenOfNine-labs/proton-drive-cli/security/advisories/new) rather than opening a public issue. Fixes go into the latest release only.

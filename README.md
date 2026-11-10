@@ -1,7 +1,13 @@
 # Proton Drive CLI
 
 End-to-end encrypted CLI for Proton Drive with Git LFS bridge support, powered
-by the official `@protontech/drive-sdk`.
+by the official `@protontech/drive-sdk`. It is the storage backend of
+[proton-lfs-cli](https://github.com/SevenOfNine-labs/proton-lfs-cli) and is
+pre-alpha: command output and the bridge contract can change between minor
+versions.
+
+Documentation: <https://sevenofnine-labs.github.io/proton-drive-cli/>.
+Release notes and upgrade steps: [GitHub Releases](https://github.com/SevenOfNine-labs/proton-drive-cli/releases).
 
 ## Installation
 
@@ -18,13 +24,31 @@ install -m 0755 proton-drive-cli-linux-amd64 ~/.local/bin/proton-drive-cli
 ```
 
 The macOS executable is ad-hoc signed, not notarized: clear the quarantine
-attribute once with `xattr -d com.apple.quarantine <file>`.
+attribute once with `xattr -d com.apple.quarantine <file>`. On Windows,
+check `Get-FileHash proton-drive-cli-windows-amd64.exe` against
+`SHA256SUMS.txt` and put the file on `PATH` as `proton-drive-cli.exe`.
+
+### Platforms
+
+| Executable | Runs on |
+| --- | --- |
+| `proton-drive-cli-darwin-arm64` | macOS 13.5 or later on Apple silicon |
+| `proton-drive-cli-linux-amd64` | Linux x86-64 with glibc 2.28 or later |
+| `proton-drive-cli-windows-amd64.exe` | Windows 10 or later, x64 |
+
+The executables embed Node.js 26 and share its platform minimums. Other
+platforms (Intel macOS, Linux arm64, musl, Windows on Arm) run the CLI from
+source.
 
 ### From source
 
-Requires Node.js 22+. The vendored Proton SDK must be built once first:
+Requires Node.js 22 or later and Git. Yarn 4 comes from Corepack; Node.js 25
+and later ship without it, so install it with npm there. The vendored Proton
+SDK must be built once first:
 
 ```bash
+git submodule update --init --depth 1 submodules/sdk
+npm install -g corepack   # Node.js 25 or later
 corepack enable
 yarn install
 (cd submodules/sdk/client/js && npm install --no-package-lock && npm run build)
@@ -34,6 +58,33 @@ yarn build
 For local development, invoke the CLI directly with `node dist/index.js`.
 `bash scripts/build-sea.sh` builds the single executable into `bin/` with
 the Node.js version in `.node-version`.
+
+## Before You Sign In
+
+`login` saves the session in a credential store, which must be ready first.
+
+- **pass-cli** (default): install the
+  [Proton Pass CLI](https://protonpass.github.io/pass-cli/get-started/installation/)
+  and run `pass-cli login`. On Linux, pass-cli keeps its local key in the
+  kernel keyring by default, which a reboot clears and a login session with
+  its own session keyring (keyrings(7), such as an SSH login) cannot see;
+  pass-cli then logs itself out and transfers fail with
+  `credentials_unavailable`. Set `PROTON_PASS_LINUX_KEYRING=dbus` (Secret
+  Service) in every environment that runs pass-cli, before `pass-cli login`
+  ([pass-cli key storage](https://protonpass.github.io/pass-cli/get-started/configuration/#secure-key-storage)).
+  Without a Secret Service, `PROTON_PASS_KEY_PROVIDER=fs` keeps the key in a
+  plain file next to the encrypted data, which pass-cli documents as less
+  secure.
+- **git-credential**: configure a git credential helper that encrypts at
+  rest for the credential host (git 2.26 or later), then log in with
+  `--credential-store git-credential`:
+
+  ```bash
+  git config --global 'credential.https://proton-drive-cli.invalid.helper' osxkeychain   # or wincred, libsecret, manager
+  ```
+
+`login` checks the store before it opens the browser and stops with the
+store's reason when the session could not be saved.
 
 ## Authentication
 
@@ -71,6 +122,18 @@ proton-drive-cli doctor --json
 `doctor` and `bridge auth-state` are local checks: they never refresh tokens or
 send a request to the Proton API. The credentials check reads the session's
 entry from its credential store, and `pass-cli` can contact Proton Pass to do so.
+
+## Troubleshooting
+
+| Reported by `doctor`, `auth-state` or an error | Fix |
+| --- | --- |
+| `needs_login`, `session_invalid` | `proton-drive-cli login` |
+| `credentials_unavailable` | Fix the store named in the error (for example `pass-cli login`), or log in again |
+| `session_expired` | Nothing: the next transfer refreshes the token; `proton-drive-cli session refresh` does it at once |
+| `RATE_LIMITED` | Wait until the time in the error; every process honours the shared cooldown (`~/.proton-drive-cli/rate-limit-cooldown.json`) |
+
+`--debug` prints the error code and details; `doctor --json` is the report
+to attach to an issue (it holds no secret).
 
 ## File Operations
 
@@ -131,6 +194,14 @@ and [docs/reference/doctor.md](docs/reference/doctor.md).
 | `-q, --quiet` | Suppress non-error output |
 | `-v, --version` | Display version number |
 
+## Known Limitations
+
+- Production Proton endpoints only (`drive-api.proton.me`,
+  `account.proton.me`).
+- Transfers are not resumed: an interrupted transfer starts over.
+- One Proton session per operating-system user: `login` replaces it.
+- The macOS executable is not notarized.
+
 ## Testing
 
 ```bash
@@ -141,6 +212,11 @@ yarn test --runInBand
 All default tests are mocked/offline and CI-safe. Real Proton validation must
 use the separate guarded canary process from the parent `proton-lfs-cli` repo.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities as described
+in [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT
+[MIT](https://github.com/SevenOfNine-labs/proton-drive-cli/blob/main/LICENSE)

@@ -55,6 +55,21 @@ by `create_time` across all vaults and return the first of the session; a
 failed view fails the read, so an older item never stands in for a newer
 one. Every read and save contacts Proton Pass.
 
+pass-cli encrypts its local data with a key from its key provider
+([pass-cli key storage](https://protonpass.github.io/pass-cli/get-started/configuration/#secure-key-storage)).
+On Linux the default is the kernel keyring: a reboot (or a WSL restart)
+clears the key, and a login session with its own session keyring
+(keyrings(7), such as an SSH login) cannot see it. pass-cli then logs out
+and deletes its local data, and the entry becomes unreadable
+(`credentials_unavailable`) until `pass-cli login`.
+`PROTON_PASS_LINUX_KEYRING=dbus` keeps the key in the Secret Service; set it
+before `pass-cli login` for every process that runs pass-cli, which inherits
+the environment of this CLI. `PROTON_PASS_KEY_PROVIDER=fs` keeps the key in
+a plain file next to the encrypted data, which pass-cli documents as less
+secure, for systems without a Secret Service. Personal access token and agent sessions last two hours, and agent
+sessions need `PROTON_PASS_AGENT_REASON` for item commands, which this CLI
+does not set.
+
 ### git-credential
 
 `git credential fill/approve/reject` (git-credential(1)) with the entry as

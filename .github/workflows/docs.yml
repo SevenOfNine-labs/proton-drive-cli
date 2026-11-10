@@ -32,6 +32,7 @@ jobs:
             README.md
             SUMMARY.md
             SECURITY.md
+            CONTRIBUTING.md
             docs/**/*.md
 
   deploy:

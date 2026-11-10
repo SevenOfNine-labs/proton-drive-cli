@@ -29,7 +29,7 @@
 - TypeScript: keep strict typing, explicit errors, and narrow interfaces.
 - Favor small command/service units over large monolithic handlers.
 - Tests use `*.test.ts` naming and should sit near the behavior under test.
-- Keep command flags and output contracts stable unless a migration is documented.
+- Keep command flags and output contracts stable; a breaking change carries `!` and a `BREAKING CHANGE:` footer.
 
 ## Testing Guidelines
 
