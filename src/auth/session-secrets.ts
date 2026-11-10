@@ -39,6 +39,8 @@ export interface SessionSecretStore {
   /** The stored entry; rejects with the store's redacted reason when it is missing or unreadable. */
   load(uid: string): Promise<StoredSessionSecrets>;
   remove(uid: string): Promise<void>;
+  /** Rejects with the store's redacted reason when `save` could not write an entry; writes nothing. */
+  checkWritable(): Promise<void>;
 }
 
 export function normalizeCredentialStore(store?: string): CredentialStoreName {
@@ -131,6 +133,14 @@ class CredentialSessionSecretStore implements SessionSecretStore {
   async remove(uid: string): Promise<void> {
     this.assertUid(uid);
     await createCredentialStore(this.name, this.host).remove(uid);
+  }
+
+  async checkWritable(): Promise<void> {
+    try {
+      await createCredentialStore(this.name, this.host).checkWritable();
+    } catch (error) {
+      throw new Error(String(redactSensitive(error instanceof Error ? error.message : String(error))));
+    }
   }
 
   private assertUid(uid: string): void {

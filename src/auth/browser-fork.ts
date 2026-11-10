@@ -146,7 +146,12 @@ export class BrowserForkAuthService {
     this.encryptionKeyFactory = options.encryptionKeyFactory ?? (() => randomBytes(32));
   }
 
+  /**
+   * Browser sign-in through a session fork. The credential store is checked
+   * first, so a store that cannot hold the session fails before the browser opens.
+   */
   async login(options: BrowserForkLoginOptions = {}): Promise<BrowserForkLoginResult> {
+    await this.checkCredentialStore();
     const fork = await this.authApi.initSessionFork();
     const authClientId = options.authClientId ?? resolveAuthClientId(this.appVersion);
     const { encryptionKey, signInUrl } = generateBrowserForkSignInUrl(
@@ -184,6 +189,21 @@ export class BrowserForkAuthService {
         }
         throw error;
       }
+    }
+  }
+
+  /** @throws AppError CREDENTIALS_UNAVAILABLE with the store's reason */
+  private async checkCredentialStore(): Promise<void> {
+    try {
+      await createSessionSecretStore({ store: this.credentialStore, host: this.credentialHost }).checkWritable();
+    } catch (error) {
+      const storeError = error instanceof Error ? error.message : String(error);
+      throw new AppError(
+        `The ${this.credentialStore} credential store cannot save the session: ${storeError}`,
+        ErrorCode.CREDENTIALS_UNAVAILABLE,
+        { credentialStore: this.credentialStore, credentialHost: this.credentialHost, storeError },
+        false,
+      );
     }
   }
 

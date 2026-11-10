@@ -389,26 +389,12 @@ export class PassCliStore implements CredentialStore {
 
   /**
    * Create the entry for `username` from a stdin template, then delete every
-   * entry it replaces. Candidate vaults are those the account owns or, when
-   * it owns none (a personal access token or agent session), those it may
-   * edit as Manager or Editor; the vault of an existing entry wins among
-   * them, else the first. A failed deletion is logged: reads return the
-   * newest entry, and the next save or remove() deletes the rest.
+   * entry it replaces. Among the vaults of {@link writableVaults}, the vault
+   * of an existing entry wins, else the first. A failed deletion is logged:
+   * reads return the newest entry, and the next save or remove() deletes the rest.
    */
   async store(username: string, password: string): Promise<void> {
-    const vaults = await listVaults();
-    if (vaults.length === 0) {
-      throw new Error('pass-cli has no vault to store the session entry in. Run: pass-cli vault create --name <name>');
-    }
-    const roles = await writableVaultRoles();
-    const owned = vaults.filter((vault) => roles.get(vault.shareId) === 'Owner');
-    const candidates = owned.length > 0 ? owned : vaults.filter((vault) => roles.has(vault.shareId));
-    if (candidates.length === 0) {
-      throw new Error(
-        'pass-cli lists no vault this account owns or may edit (role Owner, Manager or Editor) for the session entry. ' +
-          'Run: pass-cli vault create --name <name>, or share a vault with Manager or Editor role to the personal access token',
-      );
-    }
+    const { vaults, candidates } = await writableVaults();
     const existing = await findEntries(this.host, username, vaults);
     const target = candidates.find((vault) => existing.some((entry) => entry.shareId === vault.shareId)) || candidates[0];
     const template: PassCliLoginTemplate = {
@@ -462,6 +448,38 @@ export class PassCliStore implements CredentialStore {
       deleted.add(key);
     }
   }
+
+  /** An authenticated pass-cli session with a vault `store` may write to; creates nothing. */
+  async checkWritable(): Promise<void> {
+    try {
+      await runPassCli(['info']);
+    } catch (error) {
+      throw new Error(`pass-cli has no usable session (${error instanceof Error ? error.message : String(error)}). Run: pass-cli login`);
+    }
+    await writableVaults();
+  }
+}
+
+/**
+ * The account's vaults and those a new entry may go to: the vaults it owns
+ * or, when it owns none (a personal access token or agent session), those
+ * it may edit as Manager or Editor.
+ */
+async function writableVaults(): Promise<{ vaults: PassCliVault[]; candidates: PassCliVault[] }> {
+  const vaults = await listVaults();
+  if (vaults.length === 0) {
+    throw new Error('pass-cli has no vault to store the session entry in. Run: pass-cli vault create --name <name>');
+  }
+  const roles = await writableVaultRoles();
+  const owned = vaults.filter((vault) => roles.get(vault.shareId) === 'Owner');
+  const candidates = owned.length > 0 ? owned : vaults.filter((vault) => roles.has(vault.shareId));
+  if (candidates.length === 0) {
+    throw new Error(
+      'pass-cli lists no vault this account owns or may edit (role Owner, Manager or Editor) for the session entry. ' +
+        'Run: pass-cli vault create --name <name>, or share a vault with Manager or Editor role to the personal access token',
+    );
+  }
+  return { vaults, candidates };
 }
 
 async function deleteItem(entry: Pick<PassCliLoginItem, 'id' | 'shareId'>): Promise<void> {

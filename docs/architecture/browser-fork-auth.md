@@ -7,11 +7,17 @@ official Proton account module
 (`submodules/sdk/incubating/account/js/src/auth.ts` `authViaWeb` and
 `authWeb.ts`):
 
-1. Start a fork with unauthenticated `GET /auth/v4/sessions/forks`.
-2. Generate an `account.proton.me/desktop/login?app=drive&pv=3` URL with a
+1. Check the chosen credential store without writing to it: `pass-cli info`
+   must succeed and the account must own or be allowed to edit a vault; for
+   `git-credential`, git's configuration must name a helper that encrypts
+   secrets at rest (the helper itself is not run, so a helper that fails
+   when called still fails after the sign-in). A failed check ends the login
+   with `CREDENTIALS_UNAVAILABLE` before the browser opens.
+2. Start a fork with unauthenticated `GET /auth/v4/sessions/forks`.
+3. Generate an `account.proton.me/desktop/login?app=drive&pv=3` URL with a
    fragment payload containing the user code, a random 32-byte AES key, and
    the auth client id.
-3. Print the URL (unless `--quiet`) and open it in the default browser with
+4. Print the URL (unless `--quiet`) and open it in the default browser with
    the `open` package (open(1) on macOS, PowerShell `Start` on Windows and on
    WSL outside SSH sessions and containers, xdg-open(1) otherwise), then
    report whether that worked; under `--quiet` a browser that did not open
@@ -21,10 +27,10 @@ official Proton account module
    (`FORK_POLL_INTERVAL_MS`) for at most 10 minutes
    (`FORK_MAX_POLL_TIME_MS`). A sign-in not completed by then fails with
    `AUTH_FAILED`.
-4. Treat HTTP 422 as "not approved yet".
-5. Decrypt the returned payload with AES-256-GCM (NIST SP 800-38D) using AAD
+5. Treat HTTP 422 as "not approved yet".
+6. Decrypt the returned payload with AES-256-GCM (NIST SP 800-38D) using AAD
    `fork`; it carries the user key password.
-6. Save the tokens and the key password in the credential store and the
+7. Save the tokens and the key password in the credential store and the
    non-secret session record in `session.json`.
 
 Every request carries `x-pm-appversion` and
@@ -173,6 +179,8 @@ without a request.
 | Locally expired access token | Refreshed on the next HTTP 401 | Refreshed once when a command starts | `tokenExpiresAt` is known and a command needs the account keys first |
 | Session storage | One OS secret-store entry (`Bun.secrets`), or `pass` | One entry in pass-cli or a git credential helper that encrypts at rest; non-secret `session.json` (0600) | Node.js has no secret-store API; Git's credential helpers reach the OS stores with local-only persistence; see [Credentials](../security/credentials.md#direct-os-secret-store-access) |
 | Concurrent processes | One process | Session lock, compare-and-swap writes, shared refresh per process | Git LFS starts one bridge process per transfer |
+| Credential store check | None: the store is first written after the fork | Before the fork, without writing (`checkWritable`) | A logged-out pass-cli or a git configuration without an encrypting helper fails before the user signs in, instead of discarding the forked session |
+| API and account hosts | `PROTON_DRIVE_BASE_URL`, account host derived from it (`config.ts` `accountUrlFromBaseUrl`) | `drive-api.proton.me` and `account.proton.me` | This CLI targets the production service only |
 | Telemetry preference | `GET /core/v4/settings` after login | Not requested | This CLI sends no telemetry |
 
 ## Readiness

@@ -12,6 +12,8 @@ Source of truth: `src/constants.ts`, `src/auth/state-dir.ts`,
 | `~/.proton-drive-cli/session.lock` | directory | `proper-lockfile` lock guarding refresh-token rotation across processes |
 | `~/.proton-drive-cli/crypto-cache.json` | `0600` | Cached user and address records (armored, passphrase-protected keys) for the current session UID; expires after one hour |
 | `~/.proton-drive-cli/rate-limit-cooldown.json` | `0600` | Local wait-until timestamp after a Proton rate limit |
+| `~/.proton-drive-cli/client-uid.json` | `0600` | Client UID of this installation (`protonlfscli-<UUID>`), sent with upload drafts so an upload replaces a draft this installation left behind; kept on logout, so it is the same for every account signed in from this installation, as the official CLI's client UID |
+| `~/.proton-drive-cli/client-uid.lock` | directory | `proper-lockfile` lock guarding the creation of `client-uid.json` |
 
 No secret is written to a file. The session tokens and the browser-derived
 key password are one entry in the credential store, keyed by the session UID,

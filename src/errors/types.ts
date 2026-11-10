@@ -73,7 +73,7 @@ export class AppError extends Error {
         return 'Your session has expired. Please login again with: proton-drive-cli login';
 
       case ErrorCode.CREDENTIALS_UNAVAILABLE:
-        return 'The session credentials are missing from the credential store or do not unlock the account keys.';
+        return this.message || 'The session credentials are missing from the credential store or do not unlock the account keys.';
 
       case ErrorCode.NETWORK_ERROR:
         return 'Network connection failed. Please check your internet connection and try again.';
@@ -153,7 +153,7 @@ export class AppError extends Error {
         return 'Run: proton-drive-cli login';
 
       case ErrorCode.CREDENTIALS_UNAVAILABLE:
-        return 'Fix the credential store, or run: proton-drive-cli login';
+        return this.message ? null : 'Fix the credential store, or run: proton-drive-cli login';
 
       case ErrorCode.NETWORK_ERROR:
       case ErrorCode.CONNECTION_REFUSED:

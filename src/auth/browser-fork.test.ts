@@ -227,6 +227,40 @@ describe('BrowserForkAuthService', () => {
     ]);
   });
 
+  it('checks the chosen credential store before the session fork and the browser', async () => {
+    const encryptionKey = Buffer.alloc(32, 17);
+    const authApi = forkApi(encryptionKey, 'uid-123');
+    const onSignInUrl = jest.fn();
+    memorySessionSecrets.checkError = new Error('pass-cli is not logged in. Run: pass-cli login');
+
+    const login = new BrowserForkAuthService({ authApi, sleepMs: jest.fn(async () => {}), encryptionKeyFactory: () => encryptionKey })
+      .login({ initialDelayMs: 0, onSignInUrl });
+
+    await expect(login).rejects.toMatchObject({
+      code: ErrorCode.CREDENTIALS_UNAVAILABLE,
+      message: 'The pass-cli credential store cannot save the session: pass-cli is not logged in. Run: pass-cli login',
+      details: { credentialStore: 'pass-cli', credentialHost: HOST },
+    });
+    expect(memorySessionSecrets.checks).toEqual([`pass-cli|${HOST}`]);
+    expect(authApi.initSessionFork).not.toHaveBeenCalled();
+    expect(onSignInUrl).not.toHaveBeenCalled();
+    expect(mockReplaceSession).not.toHaveBeenCalled();
+  });
+
+  it('checks the credential store once per login, then signs in', async () => {
+    const encryptionKey = Buffer.alloc(32, 18);
+
+    await new BrowserForkAuthService({
+      authApi: forkApi(encryptionKey, 'uid-123'),
+      sleepMs: jest.fn(async () => {}),
+      encryptionKeyFactory: () => encryptionKey,
+      credentialStore: 'git-credential',
+    }).login({ initialDelayMs: 0 });
+
+    expect(memorySessionSecrets.checks).toEqual([`git-credential|${HOST}`]);
+    expect(mockReplaceSession).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects an unsupported credential store before contacting Proton', () => {
     expect(() => new BrowserForkAuthService({ credentialStore: 'keychain' })).toThrow('Unsupported credential store: keychain');
   });
