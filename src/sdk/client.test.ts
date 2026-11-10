@@ -40,6 +40,10 @@ jest.mock('../auth/session', () => ({
   },
 }));
 
+jest.mock('./client-uid', () => ({
+  loadClientUid: jest.fn(async () => 'protonlfscli-test-uid'),
+}));
+
 jest.mock('../utils/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
@@ -157,5 +161,13 @@ describe('createSDKClient', () => {
     expect(ProtonDriveClient).toHaveBeenCalledWith(expect.objectContaining({
       telemetry: expect.objectContaining({ getLogger: expect.any(Function), recordMetric: expect.any(Function) }),
     }));
+  });
+
+  it('hands the SDK the installation client UID so it can replace its own upload drafts', async () => {
+    const { ProtonDriveClient } = jest.requireMock('@protontech/drive-sdk');
+
+    await createSDKClient({});
+
+    expect(ProtonDriveClient).toHaveBeenCalledWith(expect.objectContaining({ config: { clientUid: 'protonlfscli-test-uid' } }));
   });
 });

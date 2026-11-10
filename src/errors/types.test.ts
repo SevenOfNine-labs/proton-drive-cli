@@ -365,9 +365,11 @@ describe('error types', () => {
       expect(error.toUserMessage()).toContain('CAPTCHA verification required');
     });
 
-    it('should return user-friendly message for CREDENTIALS_UNAVAILABLE', () => {
-      const error = new AppError('No entry', ErrorCode.CREDENTIALS_UNAVAILABLE);
-      expect(error.toUserMessage()).toContain('The session credentials are missing from the credential store');
+    it('should return the store reason of CREDENTIALS_UNAVAILABLE, else a generic message', () => {
+      const error = new AppError('pass-cli is not logged in. Run: pass-cli login', ErrorCode.CREDENTIALS_UNAVAILABLE);
+      expect(error.toUserMessage()).toBe('pass-cli is not logged in. Run: pass-cli login');
+      expect(new AppError('', ErrorCode.CREDENTIALS_UNAVAILABLE).toUserMessage())
+        .toContain('The session credentials are missing from the credential store');
     });
 
     it('should return user-friendly message for ENCRYPTION_FAILED', () => {
@@ -397,8 +399,9 @@ describe('error types', () => {
       expect(error.getRecoverySuggestion()).toContain('proton-drive-cli login');
     });
 
-    it('should return recovery suggestion for CREDENTIALS_UNAVAILABLE', () => {
-      const error = new AppError('No entry', ErrorCode.CREDENTIALS_UNAVAILABLE);
+    it('should return recovery suggestion for CREDENTIALS_UNAVAILABLE only when the message carries none', () => {
+      expect(new AppError('No entry. Run: pass-cli login', ErrorCode.CREDENTIALS_UNAVAILABLE).getRecoverySuggestion()).toBeNull();
+      const error = new AppError('', ErrorCode.CREDENTIALS_UNAVAILABLE);
       expect(error.getRecoverySuggestion()).toBe('Fix the credential store, or run: proton-drive-cli login');
     });
 

@@ -233,7 +233,7 @@ export async function getBridgeAuthState(sessionFile?: string): Promise<BridgeAu
     actions.push('The saved session is not a proton-drive-cli login session. ' + LOGIN_ACTION);
   } else if (!credentialsAvailable) {
     state = 'credentials_unavailable';
-    actions.push('Fix the credential store of the saved session (see errors), or ' + LOGIN_ACTION);
+    actions.push('Fix the credential store of the saved session (see errors), or run proton-drive-cli login.');
   } else if (!sessionValid) {
     state = 'session_expired';
     actions.push('Transfers refresh the access token before use (bridge init); auth-state did not refresh it.');

@@ -25,6 +25,9 @@ export class MemorySessionSecrets {
   /** Failures of the next saves, one per save; `saveError` applies after them. */
   readonly saveFailures: Error[] = [];
   removeError: Error | null = null;
+  /** Rejection of checkWritable; every call is recorded in `checks`. */
+  checkError: Error | null = null;
+  readonly checks: string[] = [];
   /** Called before an entry is read, with its key. */
   onLoad: ((key: string) => void | Promise<void>) | null = null;
   /** Called before an entry is removed, with its key. */
@@ -46,6 +49,8 @@ export class MemorySessionSecrets {
     this.saveError = null;
     this.saveFailures.length = 0;
     this.removeError = null;
+    this.checkError = null;
+    this.checks.length = 0;
     this.onLoad = null;
     this.onRemove = null;
   }
@@ -111,6 +116,10 @@ export class MemorySessionSecrets {
         this.entries.delete(key(uid));
         this.revisions.delete(key(uid));
         this.previous.delete(key(uid));
+      },
+      checkWritable: async () => {
+        this.checks.push(`${name}|${host}`);
+        if (this.checkError) throw this.checkError;
       },
     };
   }

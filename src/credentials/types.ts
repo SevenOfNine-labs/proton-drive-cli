@@ -26,6 +26,9 @@ export interface CredentialStore {
   /** Create or replace the entry for `username`. */
   store(username: string, password: string): Promise<void>;
 
+  /** Rejects with the reason `store` would fail before it writes; writes nothing. */
+  checkWritable(): Promise<void>;
+
   /** Delete every entry for `username` at the store's host; none existing is success. */
   remove(username: string): Promise<void>;
 }

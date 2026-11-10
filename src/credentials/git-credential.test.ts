@@ -669,6 +669,22 @@ describe('GitCredentialStore', () => {
     expect(credentialCalls()[0].stdin).toBe(`protocol=https\nhost=${KEY_HOST}\nusername=uid-123\n`);
   });
 
+  it('checkWritable selects the helper from git config without running any credential command', async () => {
+    installGit({ global: { 'credential.helper': ['osxkeychain'] } });
+
+    await new GitCredentialStore(KEY_HOST).checkWritable();
+
+    expect(calls.map((call) => call.args[0])).toEqual(['config']);
+    expect(credentialCalls()).toHaveLength(0);
+  });
+
+  it('checkWritable rejects as store does without a helper that encrypts secrets at rest', async () => {
+    installGit({ global: { 'credential.helper': ['store'] } });
+
+    await expect(new GitCredentialStore(KEY_HOST).checkWritable()).rejects.toThrow('(configured: store)');
+    expect(credentialCalls()).toHaveLength(0);
+  });
+
   /** A helper keeping one item per username; `updates` false models one that keeps an existing item on approve. */
   function statefulHelper(options: { updates: boolean; failingFills?: number }) {
     const items = new Map<string, string>();

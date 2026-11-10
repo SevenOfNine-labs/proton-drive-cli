@@ -8,6 +8,7 @@ import { HTTPClientAdapter } from './httpClientAdapter';
 import { AccountAdapter } from './accountAdapter';
 import { SRPModuleAdapter } from './srpAdapter';
 import { createSdkTelemetry } from './telemetry';
+import { loadClientUid } from './client-uid';
 import { DriveCryptoService } from '../crypto/drive-crypto';
 import { SessionManager } from '../auth/session';
 import { logger } from '../utils/logger';
@@ -83,5 +84,6 @@ export async function createSDKClient(
     openPGPCryptoModule: openPGPCrypto,
     srpModule,
     telemetry: createSdkTelemetry(),
+    config: { clientUid: await loadClientUid() },
   });
 }

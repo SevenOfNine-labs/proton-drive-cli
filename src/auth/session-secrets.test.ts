@@ -34,6 +34,7 @@ function memoryStore(): CredentialStore & { entries: Map<string, string> } {
     remove: jest.fn(async (username: string) => {
       entries.delete(username);
     }),
+    checkWritable: jest.fn(async () => undefined),
   };
 }
 
@@ -212,6 +213,19 @@ describe('createSessionSecretStore', () => {
     expect(failure.message).not.toContain('hunter2');
     expect(failure.message).not.toContain('abc.def');
     expect(failure.message).toContain('[redacted]');
+  });
+
+  it('checks the store at its host, writing nothing, and redacts the reason of a failed check', async () => {
+    const store = memoryStore();
+    mockCreateCredentialStore.mockReturnValue(store);
+
+    await createSessionSecretStore({ store: 'git-credential', host: 'other.invalid' }).checkWritable();
+    expect(mockCreateCredentialStore).toHaveBeenCalledWith('git-credential', 'other.invalid');
+    expect(store.store).not.toHaveBeenCalled();
+
+    (store.checkWritable as jest.Mock).mockRejectedValue(new Error('helper said password=hunter2'));
+    await expect(createSessionSecretStore({ store: 'git-credential' }).checkWritable()).rejects.toThrow(/\[redacted\]/);
+    await expect(createSessionSecretStore({ store: 'git-credential' }).checkWritable()).rejects.not.toThrow('hunter2');
   });
 
   it('rejects an entry of another session as unreadable', async () => {

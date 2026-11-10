@@ -593,6 +593,42 @@ describe('PassCliStore', () => {
     expect(stdinWrites).toHaveLength(0);
   });
 
+  it('checkWritable lists vaults and roles of a logged-in pass-cli and writes nothing', async () => {
+    simulateSequentialCalls(
+      { stdout: '{}' },
+      { stdout: vaultList({ name: 'Team', shareId: 'share-team' }) },
+      { stdout: shareList({ id: 'share-team', role: 'Editor' }) },
+    );
+
+    await new PassCliStore(KEY_HOST).checkWritable();
+
+    expect(mockExecFile.mock.calls.map((call) => call[1].slice(0, 2))).toEqual([
+      ['info'],
+      ['vault', 'list'],
+      ['share', 'list'],
+    ]);
+    expect(stdinWrites).toHaveLength(0);
+  });
+
+  it('checkWritable fails when pass-cli is not logged in, before listing vaults', async () => {
+    simulateExecFileError('not logged in');
+
+    await expect(new PassCliStore(KEY_HOST).checkWritable()).rejects.toThrow(
+      'pass-cli has no usable session (pass-cli info failed: not logged in). Run: pass-cli login',
+    );
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkWritable fails as store does when the account may edit no vault', async () => {
+    simulateSequentialCalls(
+      { stdout: '{}' },
+      { stdout: vaultList({ name: 'Team', shareId: 'share-team' }) },
+      { stdout: shareList({ id: 'share-team', role: 'Viewer' }) },
+    );
+
+    await expect(new PassCliStore(KEY_HOST).checkWritable()).rejects.toThrow('no vault this account owns or may edit');
+  });
+
   /** Simulates a vault whose login items disappear when `item delete` succeeds. */
   function simulateVault(ids: string[]) {
     const present = new Set(ids);

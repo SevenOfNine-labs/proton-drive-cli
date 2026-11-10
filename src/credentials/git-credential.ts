@@ -453,4 +453,9 @@ export class GitCredentialStore implements CredentialStore {
   async remove(username: string): Promise<void> {
     await gitCredentialReject(this.host, username);
   }
+
+  /** Selects the helper as `store` does; runs no helper, so none can prompt. */
+  async checkWritable(): Promise<void> {
+    await selectCredentialHelper(this.host);
+  }
 }
