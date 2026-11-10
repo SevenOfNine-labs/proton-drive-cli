@@ -1,0 +1,58 @@
+name: Bug report
+description: A command, the bridge or login does not behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Never paste a session token, key password, pass-cli output or a
+        credential-store entry. Report vulnerabilities as described in
+        SECURITY.md, not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected and what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: proton-drive-cli doctor --json
+      description: Holds no secret.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: debug
+    attributes:
+      label: Output with --debug
+      description: Error code and details of the failing command.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: proton-drive-cli --version
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple silicon)
+        - Linux x86-64
+        - Windows x64
+        - WSL2
+        - Other (from source)
+    validations:
+      required: true
+  - type: dropdown
+    id: store
+    attributes:
+      label: Credential store
+      options:
+        - pass-cli
+        - git-credential
+    validations:
+      required: true

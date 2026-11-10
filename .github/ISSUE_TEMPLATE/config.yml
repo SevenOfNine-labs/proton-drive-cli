@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/SevenOfNine-labs/proton-drive-cli/blob/main/SECURITY.md
+    about: Report vulnerabilities privately as described in SECURITY.md.
+  - name: Git LFS adapter and tray
+    url: https://github.com/SevenOfNine-labs/proton-lfs-cli/issues
+    about: Issues with git-lfs-proton-adapter or proton-lfs-tray belong to proton-lfs-cli.

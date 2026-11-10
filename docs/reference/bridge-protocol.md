@@ -4,8 +4,9 @@
 (`proton-lfs-cli`) uses. One invocation reads one JSON request object from
 stdin, performs one operation with the saved browser-fork session, and writes
 exactly one JSON envelope line to stdout. The contract is published as JSON
-Schema under `schemas/bridge/v1/` (served at
-`https://sevenofnine-labs.github.io/proton-drive-cli/schemas/`) and checked
+Schema under [`schemas/bridge/v1/`](https://github.com/SevenOfNine-labs/proton-drive-cli/tree/main/schemas/bridge/v1)
+(each file is served at `https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/<file>`,
+for example [`request.schema.json`](https://sevenofnine-labs.github.io/proton-drive-cli/schemas/bridge/v1/request.schema.json)) and checked
 against real command output by `src/cli/bridge.test.ts` and
 `src/bridge/schemas.test.ts`. Source of truth: `src/bridge/protocol.ts`,
 `src/bridge/validators.ts`, `src/cli/bridge.ts`.
@@ -16,7 +17,7 @@ Contract version: `1` (`contractVersion` in `error-code-map.json`).
 
 ```bash
 printf '{}\n' | proton-drive-cli bridge auth-state
-printf '{"oid":"<64 hex>","path":"/tmp/object.bin"}\n' | node dist/index.js bridge upload
+printf '{"oid":"<64 hex>","path":"/tmp/object.bin"}\n' | proton-drive-cli bridge upload
 ```
 
 | Aspect | Rule |
@@ -138,8 +139,8 @@ present; the adapter parses it strictly.
 ### upload
 
 Uploads `path` to the OID location. When the object already exists remotely
-nothing is transferred and `deduplicated` is true. The transfer is retried up
-to three times with 1 s to 5 s backoff.
+nothing is transferred and `deduplicated` is true. The transfer makes at most
+three attempts, 1 s to 5 s apart.
 Payload: `{"oid":"<oid>","fileId":"<node uid>","revisionId":"<revision uid or empty>","uploaded":true|false,"deduplicated":true|false}`.
 
 ### download

@@ -2,6 +2,7 @@
 
 - [Introduction](README.md)
 - [Security Policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
 - [Documentation Guide](docs/DOCUMENTATION_GUIDE.md)
 
 ## Architecture

@@ -33,9 +33,10 @@ official Proton account module
 7. Save the tokens and the key password in the credential store and the
    non-secret session record in `session.json`.
 
-Every request carries `x-pm-appversion` and
-`x-pm-drive-sdk-version: js@<vendored SDK release>`, as the official
-`ApiClient` does (`apiClient.ts`, `cli/src/api/index.ts`).
+Every request carries `x-pm-appversion`, as the official `ApiClient` does
+(`apiClient.ts`), and `x-pm-drive-sdk-version: js@<vendored SDK release>`,
+which the official CLI adds through the `ApiClient` `headers` option
+(`cli/src/api/index.ts`).
 
 ## Session Storage
 
@@ -44,7 +45,9 @@ and the response carries the access and refresh tokens. RFC 6749 (10.4)
 requires refresh tokens to be kept confidential in storage, and RFC 6819
 (5.1.4.1.4, 4.1.3) asks clients to keep such secrets in an encrypted store
 and access tokens under the same protection. Proton's official CLI stores
-all three in one OS secret-store entry (`Bun.secrets`). This CLI stores them
+all three in one entry: in the OS secret store (`Bun.secrets`) by default,
+or in pass(1) or a plaintext file, chosen with
+`PROTON_DRIVE_CREDENTIALS_STORE` (`cli/src/config.ts`). This CLI stores them
 the same way, as one entry per session in a credential store, and keeps only
 non-secret data in `~/.proton-drive-cli/session.json` (mode 0600, directory
 0700).
@@ -177,7 +180,7 @@ without a request.
 | Refresh response with another UID | Adopts the new UID | Signs the session out | The credential-store entry and crypto cache are keyed by the UID |
 | Logout | Clears local state (`Auth.logout`) | Also revokes the server session (`DELETE /auth/v4`) | A discarded session stays valid on the server until it expires |
 | Locally expired access token | Refreshed on the next HTTP 401 | Refreshed once when a command starts | `tokenExpiresAt` is known and a command needs the account keys first |
-| Session storage | One OS secret-store entry (`Bun.secrets`), or `pass` | One entry in pass-cli or a git credential helper that encrypts at rest; non-secret `session.json` (0600) | Node.js has no secret-store API; Git's credential helpers reach the OS stores with local-only persistence; see [Credentials](../security/credentials.md#direct-os-secret-store-access) |
+| Session storage | One entry in the OS secret store (`Bun.secrets`, default), pass(1) or a plaintext file | One entry in pass-cli or a git credential helper that encrypts at rest; non-secret `session.json` (0600) | Node.js has no secret-store API; Git's credential helpers reach the OS stores with local-only persistence; see [Credentials](../security/credentials.md#direct-os-secret-store-access) |
 | Concurrent processes | One process | Session lock, compare-and-swap writes, shared refresh per process | Git LFS starts one bridge process per transfer |
 | Credential store check | None: the store is first written after the fork | Before the fork, without writing (`checkWritable`) | A logged-out pass-cli or a git configuration without an encrypting helper fails before the user signs in, instead of discarding the forked session |
 | API and account hosts | `PROTON_DRIVE_BASE_URL`, account host derived from it (`config.ts` `accountUrlFromBaseUrl`) | `drive-api.proton.me` and `account.proton.me` | This CLI targets the production service only |

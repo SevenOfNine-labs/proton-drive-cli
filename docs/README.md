@@ -27,7 +27,7 @@ Project-owned docs live here. The vendored SDK docs remain under `submodules/sdk
 
 - [Bridge Protocol](reference/bridge-protocol.md): `bridge <command>` invocation, request fields, envelope, payloads, error codes.
 - [Doctor](reference/doctor.md): offline preflight checks, report fields, exit status.
-- JSON Schemas: `schemas/bridge/v1/` and `schemas/doctor/v1/` in this repository, published at `https://sevenofnine-labs.github.io/proton-drive-cli/schemas/`.
+- JSON Schemas: `schemas/bridge/v1/` and `schemas/doctor/v1/` in this repository, each file published at `https://sevenofnine-labs.github.io/proton-drive-cli/schemas/<path>` (for example `schemas/bridge/v1/request.schema.json`).
 
 ### Security
 

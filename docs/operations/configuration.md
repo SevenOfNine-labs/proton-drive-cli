@@ -24,8 +24,13 @@ removes the entry of the previous UID and revokes that session.
 
 With `pass-cli`, `login` stores the entry in a vault the account owns; when it
 owns none, as with a personal access token or an agent session, in a vault it
-may edit (role Manager or Editor). An existing entry in another vault is
-moved. Login fails when no vault qualifies. With `git-credential`, the first
+may edit (role Manager or Editor). Personal access token and agent sessions
+of pass-cli last two hours, and agent sessions need `PROTON_PASS_AGENT_REASON`
+for item commands, which this CLI does not set; a full `pass-cli login` suits
+long-running use
+([pass-cli agent](https://protonpass.github.io/pass-cli/commands/agent/)).
+An existing entry in another vault is moved. Login fails when no vault
+qualifies. With `git-credential`, the first
 `credential.helper` or `credential.https://<credential host>.helper` of the
 system and global configuration among
 `osxkeychain`, `wincred`, `libsecret` and `manager` (with an encrypting
@@ -39,6 +44,7 @@ configured.
 | `PROTON_CREDENTIAL_STORE` | `pass-cli` | `login` | Credential store of the session tokens and key password: `pass-cli` or `git-credential` (aliases `pass`, `git`); the `--credential-store` option wins. Later commands use the store recorded in the session |
 | `PROTON_CREDENTIAL_HOST` | `proton-drive-cli.invalid` | `login` | Credential host of the session entry; `--credential-host` wins. Later commands use the host recorded in the session |
 | `PROTON_PASS_CLI_BIN` | `pass-cli` (on `PATH`) | `pass-cli` store | Proton Pass CLI binary |
+| `PROTON_PASS_*` | unset | pass-cli | Inherited by pass-cli, for example `PROTON_PASS_LINUX_KEYRING=dbus` to keep its key across reboots on Linux ([Credential Security](../security/credentials.md#pass-cli)); when proton-lfs-cli's adapter starts this CLI, only the variables of its environment allowlist arrive |
 | `GCM_CREDENTIAL_STORE` | unset | `git-credential` store | Read to check that Git Credential Manager encrypts at rest; see [Credential Security](../security/credentials.md#git-credential) |
 | `PROTON_DRIVE_CLI_APP_VERSION` | `external-drive-protonlfscli@<version>` (the package version) | every API call | Proton `x-pm-appversion` identity (every request also carries `x-pm-drive-sdk-version: js@<vendored SDK release>`); must match `external-drive-{name}@{major.minor.patch}` with an optional `-stable`, `-beta` or `-alpha` channel and `+build` suffix, `{name}` in lowercase letters and underscores; `cli-drive` is rejected. A bridge request's `appVersion` field takes precedence |
 | `PROTON_DRIVE_CLI_BIN` | the running entry point | `doctor` | Entry point whose existence the doctor checks |
@@ -65,13 +71,15 @@ environment.
 | `login` | `--credential-store <pass-cli or git-credential>`, `--credential-host <host>` |
 | `logout` | none; revokes the session (`DELETE /auth/v4`, refreshing an expired access token once; a failure is reported as a warning, a session ended elsewhere is not), deletes the session file and crypto cache unless a new login replaced them, then removes the credential-store entry (a failure is reported as a warning); an invalid session file is deleted without a request |
 | `status` | none; prints the session UID, its scopes and whether the credential store returns its entry |
-| `session refresh` | `--json` for a machine-readable result (`ok`, `refreshed`, `state`, and on failure `errorCode`, `recoverable`, `statusCode`, `protonCode`, `protonError`, `retryAfter` for a rate limit, `action`); `recoverable` is false only when the session ended (`SESSION_EXPIRED`) |
+| `session refresh` | `--json` for a machine-readable result (`ok`, `refreshed`, `state`, `uidFingerprint` and `tokenExpiresAt` after a refresh, and on failure `errorCode`, `error`, `details`, `recoverable`, `statusCode`, `protonCode`, `protonError`, `retryAfter` for a rate limit, `action`); `recoverable` is false only when the session ended (`SESSION_EXPIRED`) |
 | `doctor` | See [Doctor Reference](../reference/doctor.md) |
 | `bridge <command>` | See [Bridge Protocol Reference](../reference/bridge-protocol.md) |
 | `ls`, `upload`, `download`, `mkdir`, `rm`, `mv`, `cat`, `info` | `proton-drive-cli <command> --help` |
 
-Exit status is `0` on success and `1` on failure for every command; `session
-refresh` exits `0` when no session exists.
+Exit status is `0` on success and `1` on failure, with these exceptions:
+`bridge` reports a failed command in its envelope (`ok: false`) and exits
+`1` only when the request cannot be read; `logout`, `status` and `session
+refresh` exit `0` when no session exists.
 
 ## Build and Development
 
@@ -79,6 +87,8 @@ The vendored Proton SDK (`submodules/sdk/client/js`) must be built once before
 the CLI; upstream ships no npm lockfile, so use `npm install`:
 
 ```bash
+git submodule update --init --depth 1 submodules/sdk
+npm install -g corepack   # Node.js 25 or later ship without Corepack
 corepack enable
 yarn install
 (cd submodules/sdk/client/js && npm install --no-package-lock && npm run build)
@@ -89,7 +99,9 @@ yarn test --runInBand
 Node.js 22 or newer is required to run `dist/index.js` (`engines.node`): the
 SDK relies on `Array.fromAsync`, `Promise.withResolvers` and the `Uint8Array`
 base64/hex helpers (the latter are polyfilled by `src/crypto/polyfill.ts` with
-`core-js` on Node 22/24). CI runs the Jest suite on Node.js 22 and 26. The
+`core-js` on Node 22/24). This repository's CI runs the Jest suite on the
+Node.js version in `.node-version` (26); the `proton-lfs-cli` CI runs it on
+Node.js 22 and 26. The
 single-executable build (`scripts/build-sea.sh`: `sea-config.json`,
 `node --build-sea`) needs the Node.js version in `.node-version`.
 
